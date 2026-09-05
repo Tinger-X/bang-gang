@@ -63,8 +63,8 @@ $r=New-Object D+RECT
 $L=$r.L; $T=$r.T; $W=$r.R-$r.L
 Write-Output ("window at {0},{1} {2}x{3}" -f $L,$T,$W,($r.B-$r.T))
 
-# 1) click "+" new conversation (sidebar head plus)
-Click ($L+272) ($T+196)
+# 1) click "+" new conversation (sidebar header + button, centered ~ L+182,T+200)
+Click ($L+182) ($T+200)
 Start-Sleep -Milliseconds 600
 
 # 2) click input area and type + Enter (send)
@@ -73,8 +73,8 @@ TypeText "hello"
 [D]::keybd_event(0x0D,0,0,[UIntPtr]::Zero); Start-Sleep -Milliseconds 30; [D]::keybd_event(0x0D,0,2,[UIntPtr]::Zero)
 Start-Sleep -Milliseconds 1500
 
-# 3) open settings (gear at top-right) then Esc to close
-Click ($L+$W-60) ($T+19)
+# 3) open settings (gear in sidebar header ~ L+270,T+200) then Esc to close
+Click ($L+270) ($T+200)
 Start-Sleep -Milliseconds 900
 [D]::keybd_event(0x1B,0,0,[UIntPtr]::Zero); Start-Sleep -Milliseconds 40; [D]::keybd_event(0x1B,0,2,[UIntPtr]::Zero) # Esc
 Start-Sleep -Milliseconds 400

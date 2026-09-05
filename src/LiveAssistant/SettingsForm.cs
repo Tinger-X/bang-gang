@@ -120,7 +120,6 @@ internal sealed class SettingsForm : Form
             Width = 220;
             Height = 30;
             Text = sc.Label;
-            Cursor = Cursors.Hand;
         }
         public void Set(ShortcutSetting s)
         {
@@ -268,7 +267,6 @@ internal sealed class SettingsForm : Form
         {
             Color = c;
             Size = new Size(120, 26);
-            Cursor = Cursors.Hand;
         }
         protected override void OnPaint(PaintEventArgs e)
         {

@@ -90,7 +90,6 @@ internal sealed class ConvListBox : ListBox
             Invalidate(ItemRect(old));
             if (h >= 0) Invalidate(ItemRect(h));
         }
-        Cursor = h >= 0 && DelRect(ItemRect(h)).Contains(e.Location) ? Cursors.Hand : Cursors.Default;
         base.OnMouseMove(e);
     }
 

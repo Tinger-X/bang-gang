@@ -11,8 +11,8 @@ namespace LiveAssistant;
 /// </summary>
 public class MainForm : Form
 {
-    public const string WindowTitle = "直播助手";
-    public const string AppVersion = "v0.5.0";
+    public const string WindowTitle = "帮帮";
+    public const string AppVersion = "v0.6.0";
 
     private const uint Affinity = Native.WDA_EXCLUDEFROMCAPTURE;
     private const int SideW = 304;
@@ -78,24 +78,29 @@ public class MainForm : Form
         var label = new Label
         {
             Text = "对话", Font = Theme.UI(13f, FontStyle.Bold), ForeColor = Theme.TextMain,
-            AutoSize = true, Location = new Point(20, 10),
+            AutoSize = true, Location = new Point(18, 13),
         };
-        var plus = new IconButton(IconButton.Kind.Plus) { Location = new Point(SideW - 42, 6) };
+        var plus = new IconButton(IconButton.Kind.Plus, Theme.SideBg) { Location = new Point(SideW - 136, 8) };
         new ToolTip().SetToolTip(plus, "新建对话");
         plus.Click += (_, _) => NewConversation();
+
+        _searchIcon = new IconButton(IconButton.Kind.Search, Theme.SideBg) { Location = new Point(SideW - 92, 8) };
+        new ToolTip().SetToolTip(_searchIcon, "搜索对话");
+        _searchIcon.Click += (_, _) => { _searchBox.Focus(); _searchBox.SelectAll(); };
+
+        _gear = new IconButton(IconButton.Kind.Gear, Theme.SideBg) { Location = new Point(SideW - 48, 8) };
+        new ToolTip().SetToolTip(_gear, "设置");
+        _gear.Click += (_, _) => ShowSettings();
+
         _convHead.Controls.Add(label);
         _convHead.Controls.Add(plus);
+        _convHead.Controls.Add(_searchIcon);
+        _convHead.Controls.Add(_gear);
         _sidebar.Controls.Add(_convHead);
 
         _searchBox = new TextBox { BorderStyle = BorderStyle.FixedSingle, Font = Theme.UI(11.5f), ForeColor = Theme.TextMain, BackColor = Theme.InputBg };
         _searchBox.TextChanged += (_, _) => RebindConversations();
-        _searchIcon = new IconButton(IconButton.Kind.Search) { Location = new Point(4, 4) };
-        _gear = new IconButton(IconButton.Kind.Gear) { Location = new Point(SideW - 42, 4) };
-        new ToolTip().SetToolTip(_gear, "设置");
-        _gear.Click += (_, _) => ShowSettings();
-        _sidebar.Controls.Add(_searchIcon);
         _sidebar.Controls.Add(_searchBox);
-        _sidebar.Controls.Add(_gear);
 
         _convList = new ConvListBox();
         _convList.ConversationActivated += ActivateConversation;
@@ -117,6 +122,7 @@ public class MainForm : Form
 
         _welcome = new WelcomeView { BackColor = Theme.ChatBg };
         _welcome.StartRequested += () => NewConversation();
+        _welcome.SuggestionRequested += s => { NewConversation(); _input.Text = s; _input.FocusInput(); };
         _mainArea.Controls.Add(_chatUI);
         _mainArea.Controls.Add(_welcome);
 
@@ -151,14 +157,12 @@ public class MainForm : Form
         int bodyH = H - ChromeH;
         _sidebar.Bounds = new Rectangle(0, ChromeH, SideW, bodyH);
 
-        _brand.Bounds = new Rectangle(0, 0, SideW, 138);
-        _convHead.Bounds = new Rectangle(0, 138, SideW, 40);
+        _brand.Bounds = new Rectangle(0, 0, SideW, 140);
+        _convHead.Bounds = new Rectangle(0, 140, SideW, 46);
 
-        _searchBox.Bounds = new Rectangle(40, 150, SideW - 90, 30);
-        _searchIcon.Bounds = new Rectangle(8, 152, 26, 26);
-        _gear.Bounds = new Rectangle(SideW - 38, 152, 26, 26);
+        _searchBox.Bounds = new Rectangle(12, 190, SideW - 24, 30);
 
-        int listTop = 190;
+        int listTop = 228;
         _convList.Bounds = new Rectangle(0, listTop, SideW, bodyH - listTop);
 
         _mainArea.Bounds = new Rectangle(SideW, ChromeH, W - SideW, bodyH);
@@ -555,7 +559,7 @@ internal sealed class ChromeBar : Panel
 
         var brand = new Label
         {
-            Text = "● 直播助手",
+            Text = "● 帮帮",
             AutoSize = true,
             Font = Theme.UI(10.5f, FontStyle.Bold),
             ForeColor = Theme.Accent,
@@ -572,7 +576,7 @@ internal sealed class ChromeBar : Panel
         };
         Controls.Add(_status);
 
-        _close = new IconButton(IconButton.Kind.Close);
+        _close = new IconButton(IconButton.Kind.Close, Theme.PanelBg);
         new ToolTip().SetToolTip(_close, "关闭");
         _close.Click += (_, _) => CloseRequested?.Invoke();
         Controls.Add(_close);
@@ -623,9 +627,16 @@ internal sealed class BrandBlock : Panel
         using (var name = new SolidBrush(Theme.TextMain))
         using (var sub = new SolidBrush(Theme.TextMuted))
         {
-            g.DrawString("直播助手", Theme.UI(15f, FontStyle.Bold), name, 84, 30);
+            g.DrawString("帮帮", Theme.UI(15f, FontStyle.Bold), name, 84, 30);
             g.DrawString("LLM 聊天 · 防录屏助手", Theme.UI(9.5f), sub, 84, 56);
-            g.DrawString(MainForm.AppVersion + " · © 2026 Tinger", Theme.UI(9f), sub, 18, 96);
+        }
+        // 版本、版权、作者 居中显示
+        string info = MainForm.AppVersion + "  ·  © 2026 Tinger";
+        using (var ifont = Theme.UI(9f))
+        using (var infoBrush = new SolidBrush(Theme.TextMuted))
+        {
+            var iw = g.MeasureString(info, ifont);
+            g.DrawString(info, ifont, infoBrush, (Width - iw.Width) / 2, 104);
         }
         using var line = new Pen(Theme.Border);
         g.DrawLine(line, 12, Height - 1, Width - 12, Height - 1);
@@ -633,59 +644,135 @@ internal sealed class BrandBlock : Panel
     }
 }
 
-/// <summary>无对话时的欢迎页。</summary>
+/// <summary>无对话时的欢迎页（参考主流 LLM 聊天工具的空态设计）。</summary>
 internal sealed class WelcomeView : Panel
 {
     public event Action? StartRequested;
+    public event Action<string>? SuggestionRequested;
+
+    private static readonly (string label, string prompt)[] Chips =
+    {
+        ("写周报", "帮我写一份本周工作周报，请先列出要点："),
+        ("翻译润色", "请把下面这段话翻译成英文，再润色得地道一些："),
+        ("代码审查", "请审查下面这段代码，指出问题并给出改进："),
+    };
+
+    private readonly Rectangle[] _chipRects = new Rectangle[Chips.Length];
+    private Rectangle _startBtn;
+    private int _hover = -1;
+
     public WelcomeView()
     {
         BackColor = Theme.ChatBg;
         SetStyle(ControlStyles.OptimizedDoubleBuffer | ControlStyles.UserPaint | ControlStyles.AllPaintingInWmPaint, true);
-        Cursor = Cursors.Hand;
     }
 
-    protected override void OnClick(EventArgs e) => StartRequested?.Invoke();
+    protected override void OnMouseMove(MouseEventArgs e)
+    {
+        int h = -1;
+        for (int i = 0; i < _chipRects.Length; i++)
+            if (_chipRects[i].Contains(e.Location)) { h = i; break; }
+        if (h != _hover) { _hover = h; Invalidate(); }
+        base.OnMouseMove(e);
+    }
+
+    protected override void OnMouseLeave(EventArgs e)
+    {
+        if (_hover != -1) { _hover = -1; Invalidate(); }
+        base.OnMouseLeave(e);
+    }
+
+    protected override void OnMouseUp(MouseEventArgs e)
+    {
+        if (e.Button == MouseButtons.Left)
+        {
+            for (int i = 0; i < _chipRects.Length; i++)
+                if (_chipRects[i].Contains(e.Location)) { SuggestionRequested?.Invoke(Chips[i].prompt); return; }
+            if (_startBtn.Contains(e.Location)) { StartRequested?.Invoke(); return; }
+            StartRequested?.Invoke();
+        }
+        base.OnMouseUp(e);
+    }
 
     protected override void OnPaint(PaintEventArgs e)
     {
         var g = e.Graphics;
         g.SmoothingMode = SmoothingMode.AntiAlias;
-        var r = ClientRectangle;
+        g.TextRenderingHint = System.Drawing.Text.TextRenderingHint.AntiAlias;
+        float cx = Width / 2f;
+        float top = Math.Max(60f, Height / 2f - 200);
 
-        using (var b = new SolidBrush(Theme.UserBubble))
-            g.FillEllipse(b, r.Width / 2f - 44, r.Height / 2f - 130, 88, 88);
-        using (var f = new Font("Microsoft YaHei UI", 34f, FontStyle.Bold))
+        // LOGO
+        var logo = new Rectangle((int)cx - 46, (int)top, 92, 92);
+        using (var bg = new SolidBrush(Theme.Accent))
+            g.FillEllipse(bg, logo);
+        using (var lf = new Font("Microsoft YaHei UI", 38f, FontStyle.Bold))
         {
-            string icon = "✦";
-            var sz = g.MeasureString(icon, f);
-            using var tb = new SolidBrush(Theme.Accent);
-            g.DrawString(icon, f, tb, r.Width / 2f - sz.Width / 2, r.Height / 2f - 122);
+            string ch = "帮";
+            var sz = g.MeasureString(ch, lf);
+            g.DrawString(ch, lf, Brushes.White, logo.X + (logo.Width - sz.Width) / 2, logo.Y + (logo.Height - sz.Height) / 2 - 3);
         }
 
-        string[] lines =
+        float y = top + logo.Height + 26;
+        using (var t1 = Theme.UI(22f, FontStyle.Bold))
+        using (var tb = new SolidBrush(Theme.TextMain))
         {
-            "欢迎使用 直播助手",
-            "从左侧选择一个会话，或点击下方开始新的对话",
-            "支持 Markdown、文件 / 图片、拖入与粘贴",
-        };
-        float y = r.Height / 2f + 8;
-        for (int i = 0; i < lines.Length; i++)
+            string s = "你好，我是帮帮";
+            var sz = g.MeasureString(s, t1);
+            g.DrawString(s, t1, tb, cx - sz.Width / 2, y);
+            y += sz.Height + 8;
+        }
+        using (var t2 = Theme.UI(12.5f))
+        using (var tb2 = new SolidBrush(Theme.TextMuted))
         {
-            using var b = i == 0 ? new SolidBrush(Theme.TextMain) : new SolidBrush(Theme.TextMuted);
-            using var f = Theme.UI(i == 0 ? 18f : 11.5f);
-            var sz = g.MeasureString(lines[i], f);
-            g.DrawString(lines[i], f, b, r.Width / 2f - sz.Width / 2, y);
-            y += sz.Height + (i == 0 ? 14 : 6);
+            string s = "有什么可以帮你？支持文字、文件与图片，回复自动排版 Markdown。";
+            var sz = g.MeasureString(s, t2);
+            g.DrawString(s, t2, tb2, cx - sz.Width / 2, y);
+            y += sz.Height + 34;
         }
 
-        var btn = new Rectangle((int)(r.Width / 2f - 92), (int)y + 6, 184, 38);
-        using (var p = Rounded(btn, 19))
+        // 建议快捷方式（类似参考工具的引导入口）
+        float chipY = y;
+        var sizes = Chips.Select(c => g.MeasureString(c.label, Theme.UI(11.5f))).ToArray();
+        float gap = 12;
+        float totalW = sizes.Sum(s => s.Width) + Chips.Length * 46 + gap * (Chips.Length - 1);
+        float x = cx - totalW / 2;
+        for (int i = 0; i < Chips.Length; i++)
+        {
+            float cw = sizes[i].Width + 46;
+            var rect = new Rectangle((int)x, (int)chipY, (int)cw, 34);
+            _chipRects[i] = rect;
+            bool over = i == _hover;
+            using (var path = Rounded(rect, 17))
+            using (var bb = new SolidBrush(over ? Theme.UserBubble : Theme.AsstBubble))
+            {
+                g.FillPath(bb, path);
+                if (over)
+                {
+                    using var bp = new Pen(Theme.Accent, 1.2f);
+                    g.DrawPath(bp, path);
+                }
+            }
+            using (var cf = Theme.UI(11.5f))
+            {
+                var sz = g.MeasureString(Chips[i].label, cf);
+                g.DrawString(Chips[i].label, cf, new SolidBrush(Theme.TextMain), rect.X + (rect.Width - sz.Width) / 2, rect.Y + (rect.Height - sz.Height) / 2);
+            }
+            x += cw + gap;
+        }
+        y = chipY + 34 + 26;
+
+        // 新建对话按钮
+        var btn = new Rectangle((int)(cx - 90), (int)y, 180, 40);
+        _startBtn = btn;
+        using (var p = Rounded(btn, 20))
         using (var bb = new SolidBrush(Theme.Accent))
             g.FillPath(bb, p);
         using (var bf = Theme.UI(12.5f, FontStyle.Bold))
         {
-            var sz = g.MeasureString("＋ 新建对话", bf);
-            g.DrawString("＋ 新建对话", bf, Brushes.White, btn.X + (btn.Width - sz.Width) / 2, btn.Y + 8);
+            string t = "＋  新建对话";
+            var sz = g.MeasureString(t, bf);
+            g.DrawString(t, bf, Brushes.White, btn.X + (btn.Width - sz.Width) / 2, btn.Y + 9);
         }
         base.OnPaint(e);
     }

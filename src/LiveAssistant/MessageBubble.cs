@@ -58,11 +58,13 @@ internal sealed class MessageBubble : Control
         foreach (var _ in _files) attachH += 34;
         if (_files.Count > 0 && _imgs.Count > 0) attachH += 4;
 
+        float headH = IsUser ? 0 : 18;  // 助手消息顶部显示“帮帮”
+
         float contentW = Math.Max(60f, _md.Width);
         foreach (var (_, s) in _imgs) contentW = Math.Max(contentW, s.Width);
         foreach (var f in _files) contentW = Math.Max(contentW, f.W);
         Width = (int)Math.Min(InnerCap + PadX * 2, contentW + PadX * 2);
-        Height = (int)(PadY + attachH + _md.Height + PadY);
+        Height = (int)(PadY + headH + attachH + _md.Height + PadY);
         if (Msg.Text.Length == 0 && _imgs.Count == 0 && _files.Count == 0) Height = 28;
     }
 
@@ -87,9 +89,21 @@ internal sealed class MessageBubble : Control
         using (var path = RoundedRect(0, 0, Width - 1, Height - 1, 12))
         using (var b = new SolidBrush(bg))
             g.FillPath(b, path);
+        if (!IsUser)
+        {
+            using var borderPen = new Pen(Color.FromArgb(150, 226, 230, 236), 1f);
+            using var path2 = RoundedRect(0, 0, Width - 1, Height - 1, 12);
+            g.DrawPath(borderPen, path2);
+        }
 
         float x = PadX;
         float y = PadY;
+        if (!IsUser)
+        {
+            using (var hf = Theme.UI(10f, FontStyle.Bold))
+                g.DrawString("帮帮", hf, new SolidBrush(Theme.Accent), x + 2, y);
+            y += 18;
+        }
         foreach (var (img, s) in _imgs)
         {
             if (s.Width > 0 && s.Height > 0)

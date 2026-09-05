@@ -8,6 +8,7 @@ internal sealed class InputPanel : Panel
     private readonly FlowLayoutPanel _draft;
     private readonly TextBox _box;
     private readonly Label _hint;
+    private readonly Label _ph;
     private readonly IconButton _send, _attach;
     public List<Attachment> Draft { get; } = new();
     public event Action? SendRequested;
@@ -48,7 +49,21 @@ internal sealed class InputPanel : Panel
             AcceptsTab = false,
         };
         _box.KeyDown += OnBoxKeyDown;
+        _box.TextChanged += (_, _) => UpdatePh();
         Controls.Add(_box);
+
+        _ph = new Label
+        {
+            AutoSize = true,
+            BackColor = Theme.InputBg,
+            Font = Theme.UI(12f),
+            ForeColor = Theme.TextMuted,
+            Text = "发消息给帮帮…",
+        };
+        _ph.MouseDown += (_, _) => { _box.Focus(); };
+        Controls.Add(_ph);
+        _ph.BringToFront();
+        _box.Resize += (_, _) => UpdatePh();
 
         _hint = new Label
         {
@@ -59,12 +74,12 @@ internal sealed class InputPanel : Panel
         };
         Controls.Add(_hint);
 
-        _send = new IconButton(IconButton.Kind.Send);
+        _send = new IconButton(IconButton.Kind.Send, Theme.InputBg);
         new ToolTip().SetToolTip(_send, "发送 (Enter)");
         _send.Click += (_, _) => { if (HasContent) SendRequested?.Invoke(); };
         Controls.Add(_send);
 
-        _attach = new IconButton(IconButton.Kind.Paperclip);
+        _attach = new IconButton(IconButton.Kind.Paperclip, Theme.InputBg);
         new ToolTip().SetToolTip(_attach, "添加文件 / 图片");
         _attach.Click += (_, _) => PickFiles();
         Controls.Add(_attach);
@@ -90,6 +105,7 @@ internal sealed class InputPanel : Panel
         _hint.Location = new Point(14, bot);
         _send.Location = new Point(Width - 40, bot - 4);
         _attach.Location = new Point(Width - 78, bot - 4);
+        UpdatePh();
     }
 
     private void PickFiles()
@@ -209,6 +225,15 @@ internal sealed class InputPanel : Panel
 
     public void FocusInput() => _box.Focus();
 
+    private void UpdatePh()
+    {
+        if (_ph == null || _box == null) return;
+        bool show = _box.Text.Length == 0;
+        _ph.Visible = show;
+        if (show)
+            _ph.Location = new Point(_box.Left + 4, _box.Top + (int)(_box.Font.Height * 0.25f) + 3);
+    }
+
     // ---------- 输入区随主题 ----------
     public void RefreshTheme()
     {
@@ -217,6 +242,8 @@ internal sealed class InputPanel : Panel
         _box.BackColor = Theme.InputBg;
         _box.ForeColor = Theme.TextMain;
         _hint.ForeColor = Theme.TextMuted;
+        _ph.BackColor = Theme.InputBg;
+        _ph.ForeColor = Theme.TextMuted;
         foreach (Control c in _draft.Controls)
         {
             (c as DraftChip)?.RefreshTheme();
@@ -268,7 +295,7 @@ internal sealed class DraftChip : Control
     protected override void OnMouseMove(MouseEventArgs e)
     {
         bool over = XRect().Contains(e.Location);
-        if (over != _overX) { _overX = over; Cursor = over ? Cursors.Hand : Cursors.Default; Invalidate(); }
+        if (over != _overX) { _overX = over; Invalidate(); }
     }
     protected override void OnMouseClick(MouseEventArgs e)
     {
