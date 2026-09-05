@@ -11,9 +11,24 @@ internal static class Win32
     public const int WM_HOTKEY = 0x0312;
 
     // 虚拟键码
-    public const int VK_O = 0x4F; // Alt+O 显隐
-    public const int VK_C = 0x43; // Alt+C 截屏
-    public const int VK_V = 0x56; // Alt+V 录音
+    public const int VK_MENU = 0x12; // Alt
+    public const int VK_X = 0x58;    // Alt+X 显隐
+    public const int VK_C = 0x43;    // Alt+C 截屏
+    public const int VK_V = 0x56;    // Alt+V 录音（按住）
+    public const short KEY_DOWN = unchecked((short)0x8000); // GetAsyncKeyState 高位
+
+    // 无边框窗口拖动
+    public const int WM_NCLBUTTONDOWN = 0x00A1;
+    public const int HTCAPTION = 0x2;
+
+    [DllImport("user32.dll")]
+    public static extern short GetAsyncKeyState(int vKey);
+
+    [DllImport("user32.dll")]
+    public static extern bool ReleaseCapture();
+
+    [DllImport("user32.dll")]
+    public static extern IntPtr SendMessage(IntPtr hWnd, int msg, IntPtr wParam, IntPtr lParam);
 
     [DllImport("user32.dll", SetLastError = true)]
     public static extern bool RegisterHotKey(IntPtr hWnd, int id, uint fsModifiers, uint vk);

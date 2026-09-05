@@ -166,16 +166,19 @@ internal sealed class AudioMixRecorder
 
         public bool Next(out float l, out float r)
         {
-            if (_i + 1 < _cur.Length)
+            while (true)
             {
-                l = _cur[_i];
-                r = _cur[_i + 1];
-                _i += 2;
-                return true;
+                if (_i + 1 < _cur.Length)
+                {
+                    l = _cur[_i];
+                    r = _cur[_i + 1];
+                    _i += 2;
+                    return true;
+                }
+                if (_q.IsAddingCompleted && _q.Count == 0) { l = 0; r = 0; return false; }
+                if (_q.TryTake(out float[]? b) && b != null) { _cur = b; _i = 0; continue; }
+                l = 0; r = 0; return false;
             }
-            if (_q.IsAddingCompleted && _q.Count == 0) { l = 0; r = 0; return false; }
-            if (_q.TryTake(out float[] b)) { _cur = b!; _i = 0; return Next(out l, out r); }
-            l = 0; r = 0; return false;
         }
     }
 

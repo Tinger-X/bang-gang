@@ -20,3 +20,5 @@ dist/
 # 临时与日志
 *.log
 temp/
+
+.claude/
