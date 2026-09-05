@@ -1,0 +1,22 @@
+# .NET 构建输出
+bin/
+obj/
+
+# 用户级/VS 文件
+.vs/
+*.user
+*.suo
+*.userosscache
+*.sln.docstates
+
+# IDE
+.idea/
+.vscode/
+*.swp
+
+# 构建产物（dist/ 由 dotnet build 生成，不入库）
+dist/
+
+# 临时与日志
+*.log
+temp/

@@ -1,0 +1,17 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <UseWindowsForms>true</UseWindowsForms>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <AssemblyName>LiveAssistant</AssemblyName>
+    <AssemblyTitle>直播助手</AssemblyTitle>
+    <Product>直播助手</Product>
+    <Version>0.1.0</Version>
+    <ApplicationHighDpiMode>PerMonitorV2</ApplicationHighDpiMode>
+    <!-- 发布：dotnet publish -c Release -r win-x64 -p:PublishSingleFile=true -p:SelfContained=false -->
+  </PropertyGroup>
+
+</Project>
