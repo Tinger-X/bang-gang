@@ -121,8 +121,8 @@ Write-Output ("Alt+V hold record -> {0}" -f $(if($ok){'PASS'}else{'FAIL'}))
 # 4) Click the custom close button -> app must exit
 [K]::GetWindowRect($hwnd,[ref]$r) | Out-Null
 $W = $r.Right - $r.Left
-$cx = $r.Left + $W - 33   # ActualCloseRect center X (right margin 18 + 15)
-$cy = $r.Top + 31         # top 16 + 15
+$cx = $r.Left + $W - 23   # ActualCloseRect center X (right margin 8 + 15)
+$cy = $r.Top + 23         # top 8 + 15
 [K]::SetCursorPos($cx,$cy); Start-Sleep -Milliseconds 200
 [K]::mouse_event(0x2,0,0,0,[UIntPtr]::Zero); Start-Sleep -Milliseconds 120
 [K]::mouse_event(0x4,0,0,0,[UIntPtr]::Zero)

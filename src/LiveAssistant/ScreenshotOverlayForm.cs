@@ -28,7 +28,6 @@ public class ScreenshotOverlayForm : Form
         Opacity = 0.30;                                // 半暗背景，突出选区
         DoubleBuffered = true;
         KeyPreview = true;
-        Cursor = Cursors.Cross;
         _ = Handle;                                     // 立即创建句柄以便设置防录屏
         TryExclude();
     }

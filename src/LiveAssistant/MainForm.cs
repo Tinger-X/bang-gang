@@ -187,8 +187,8 @@ public class MainForm : Form
 
     private Rectangle ActualCloseRect()
     {
-        int right = Width - 18;
-        int top = 16;
+        int right = Width - 8;   // 更贴近右上角
+        int top = 8;
         return new Rectangle(right - CloseRect.Width, top, CloseRect.Width, CloseRect.Height);
     }
 
@@ -357,7 +357,7 @@ public class MainForm : Form
 
     private void ApplyRoundRegion()
     {
-        const int r = 14;
+        const int r = 8;   // 圆角减小
         using var path = new GraphicsPath();
         path.AddArc(0, 0, r * 2, r * 2, 180, 90);
         path.AddArc(Width - r * 2, 0, r * 2, r * 2, 270, 90);
