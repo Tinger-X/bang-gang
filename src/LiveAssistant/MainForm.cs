@@ -27,9 +27,9 @@ public class MainForm : Form
     private readonly Panel _sidebar;
     private readonly BrandBlock _brand;
     private readonly Panel _convHead;
-    private readonly TextBox _searchBox;
-    private readonly IconButton _searchIcon;
-    private readonly IconButton _gear;
+    private readonly SearchField _search;
+    private readonly IconButton _btnSettings;
+    private readonly IconButton _btnNew;
     private readonly ConvListBox _convList;
     private readonly Panel _mainArea;
     private readonly WelcomeView _welcome;
@@ -37,6 +37,7 @@ public class MainForm : Form
     private readonly Label _convTitle;
     private readonly ChatView _chatView;
     private readonly InputPanel _input;
+    private readonly SettingsOverlay _settingsOverlay;
 
     // 定时器
     private readonly System.Windows.Forms.Timer _guardTimer;
@@ -75,32 +76,20 @@ public class MainForm : Form
         _sidebar.Controls.Add(_brand);
 
         _convHead = new Panel { BackColor = Theme.SideBg };
-        var label = new Label
-        {
-            Text = "对话", Font = Theme.UI(13f, FontStyle.Bold), ForeColor = Theme.TextMain,
-            AutoSize = true, Location = new Point(18, 13),
-        };
-        var plus = new IconButton(IconButton.Kind.Plus, Theme.SideBg) { Location = new Point(SideW - 136, 8) };
-        new ToolTip().SetToolTip(plus, "新建对话");
-        plus.Click += (_, _) => NewConversation();
+        _search = new SearchField { Location = new Point(10, 11), Size = new Size(SideW - 106, 32) };
+        _search.Debounced += _ => RebindConversations();
+        _convHead.Controls.Add(_search);
 
-        _searchIcon = new IconButton(IconButton.Kind.Search, Theme.SideBg) { Location = new Point(SideW - 92, 8) };
-        new ToolTip().SetToolTip(_searchIcon, "搜索对话");
-        _searchIcon.Click += (_, _) => { _searchBox.Focus(); _searchBox.SelectAll(); };
+        _btnSettings = new IconButton(IconButton.Kind.Gear, Theme.SideBg) { Location = new Point(SideW - 86, 11) };
+        new ToolTip().SetToolTip(_btnSettings, "设置");
+        _btnSettings.Click += (_, _) => OpenSettings();
+        _convHead.Controls.Add(_btnSettings);
 
-        _gear = new IconButton(IconButton.Kind.Gear, Theme.SideBg) { Location = new Point(SideW - 48, 8) };
-        new ToolTip().SetToolTip(_gear, "设置");
-        _gear.Click += (_, _) => ShowSettings();
-
-        _convHead.Controls.Add(label);
-        _convHead.Controls.Add(plus);
-        _convHead.Controls.Add(_searchIcon);
-        _convHead.Controls.Add(_gear);
+        _btnNew = new IconButton(IconButton.Kind.Plus, Theme.SideBg) { Location = new Point(SideW - 46, 11) };
+        new ToolTip().SetToolTip(_btnNew, "新建对话");
+        _btnNew.Click += (_, _) => NewConversation();
+        _convHead.Controls.Add(_btnNew);
         _sidebar.Controls.Add(_convHead);
-
-        _searchBox = new TextBox { BorderStyle = BorderStyle.FixedSingle, Font = Theme.UI(11.5f), ForeColor = Theme.TextMain, BackColor = Theme.InputBg };
-        _searchBox.TextChanged += (_, _) => RebindConversations();
-        _sidebar.Controls.Add(_searchBox);
 
         _convList = new ConvListBox();
         _convList.ConversationActivated += ActivateConversation;
@@ -127,6 +116,12 @@ public class MainForm : Form
         _mainArea.Controls.Add(_welcome);
 
         _chatUI.Visible = false;
+
+        // ---- 内部设置层（覆盖整个窗口，无需单独窗口/托盘） ----
+        _settingsOverlay = new SettingsOverlay();
+        _settingsOverlay.Applied += OnSettingsApplied;
+        _settingsOverlay.Visible = false;
+        Controls.Add(_settingsOverlay);
 
         // ---- 布局 ----
         ApplyLayout();
@@ -158,16 +153,16 @@ public class MainForm : Form
         _sidebar.Bounds = new Rectangle(0, ChromeH, SideW, bodyH);
 
         _brand.Bounds = new Rectangle(0, 0, SideW, 140);
-        _convHead.Bounds = new Rectangle(0, 140, SideW, 46);
+        _convHead.Bounds = new Rectangle(0, 140, SideW, 54);
 
-        _searchBox.Bounds = new Rectangle(12, 190, SideW - 24, 30);
-
-        int listTop = 228;
+        int listTop = 200;
         _convList.Bounds = new Rectangle(0, listTop, SideW, bodyH - listTop);
 
         _mainArea.Bounds = new Rectangle(SideW, ChromeH, W - SideW, bodyH);
         _welcome.Bounds = new Rectangle(0, 0, W - SideW, bodyH);
         _chatUI.Bounds = new Rectangle(0, 0, W - SideW, bodyH);
+
+        _settingsOverlay.Bounds = new Rectangle(0, 0, W, H);
 
         int mw = W - SideW;
         _convTitle.Bounds = new Rectangle(0, 0, mw, 48);
@@ -241,7 +236,7 @@ public class MainForm : Form
 
     private void RebindConversations()
     {
-        string q = _searchBox.Text?.Trim() ?? "";
+        string q = _search.Text.Trim();
         List<Conversation> list;
         if (q.Length == 0)
         {
@@ -316,22 +311,26 @@ public class MainForm : Form
         _chrome.SetStatus("已添加到输入框");
     }
 
-    // ---------------- 设置 ----------------
+    // ---------------- 设置（内部覆盖层） ----------------
 
-    private void ShowSettings()
+    private void OpenSettings()
     {
-        var dlg = new SettingsForm(_settings);
-        if (dlg.ShowDialog(this) == DialogResult.OK)
-        {
-            _settings.CopyFrom(dlg.Result);
-            _settings.Save();
-            _settings.ApplyTheme();
-            ApplyThemeUi();
-            ReapplyHotkeys();
-            _chrome.SetStatus("设置已保存");
-            _statusTimer.Stop();
-            _statusTimer.Start();
-        }
+        _settingsOverlay.ReloadFrom(_settings);
+        _settingsOverlay.BringToFront();
+        _settingsOverlay.Visible = true;
+        _settingsOverlay.Focus();
+    }
+
+    private void OnSettingsApplied(AppSettings s)
+    {
+        _settings.CopyFrom(s);
+        _settings.Save();
+        _settings.ApplyTheme();
+        ApplyThemeUi();
+        ReapplyHotkeys();
+        _chrome.SetStatus("设置已保存");
+        _statusTimer.Stop();
+        _statusTimer.Start();
     }
 
     private void ApplyThemeUi()
@@ -347,8 +346,8 @@ public class MainForm : Form
         _brand.BackColor = Theme.SideBg;
         _convTitle.BackColor = Theme.PanelBg;
         _convTitle.ForeColor = Theme.TextMain;
-        _searchBox.BackColor = Theme.InputBg;
-        _searchBox.ForeColor = Theme.TextMain;
+        _search.ApplyTheme();
+        _settingsOverlay.ApplyTheme();
         _input.RefreshTheme();
         if (_active != null) _chatView.Load(_active);
         RebindConversations();
@@ -417,11 +416,12 @@ public class MainForm : Form
             int id = m.WParam.ToInt32() - 0x201;
             if (id >= 0 && id < _settings.Shortcuts.Count)
             {
+                bool settingsOpen = _settingsOverlay.Visible;
                 switch (_settings.Shortcuts[id].Action)
                 {
-                    case "hide": ToggleVisible(); break;
-                    case "shot": StartScreenshot(); break;
-                    case "record": BeginPttRecording(); break;
+                    case "hide": if (!settingsOpen) ToggleVisible(); break;
+                    case "shot": if (!settingsOpen) StartScreenshot(); break;
+                    case "record": if (!settingsOpen) BeginPttRecording(); break;
                 }
             }
             return;

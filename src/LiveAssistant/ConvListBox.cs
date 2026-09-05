@@ -67,11 +67,22 @@ internal sealed class ConvListBox : ListBox
         if (hover)
         {
             var dr = DelRect(rc);
-            using var bg2 = new SolidBrush(Color.FromArgb(200, 210, 215, 220));
+            using var bg2 = new SolidBrush(Color.FromArgb(64, 226, 64, 60));
             g.FillEllipse(bg2, dr);
-            using var pen = new Pen(sel ? Color.White : Color.FromArgb(120, 130, 140), 1.6f);
-            g.DrawLine(pen, dr.Left + 5, dr.Top + 5, dr.Right - 5, dr.Bottom - 5);
-            g.DrawLine(pen, dr.Right - 5, dr.Top + 5, dr.Left + 5, dr.Bottom - 5);
+            Color red = sel ? Color.White : Color.FromArgb(224, 60, 54);
+            float cx = dr.X + dr.Width / 2f;
+            float cy = dr.Y + dr.Height / 2f;
+            using var pen = new Pen(red, 1.6f) { StartCap = LineCap.Round, EndCap = LineCap.Round };
+            // 垃圾桶：盖子 + 提手 + 桶身
+            g.DrawLine(pen, cx - 5.2f, cy - 4.2f, cx + 5.2f, cy - 4.2f);
+            g.DrawLine(pen, cx - 1.7f, cy - 6.6f, cx - 1.7f, cy - 4.2f);
+            g.DrawLine(pen, cx + 1.7f, cy - 6.6f, cx + 1.7f, cy - 4.2f);
+            g.DrawLine(pen, cx - 4.4f, cy - 2.2f, cx - 4.4f, cy + 5.0f);
+            g.DrawLine(pen, cx + 4.4f, cy - 2.2f, cx + 4.4f, cy + 5.0f);
+            g.DrawLine(pen, cx - 6.0f, cy + 5.0f, cx + 6.0f, cy + 5.0f);
+            using var stripe = new Pen(red, 1.3f);
+            g.DrawLine(stripe, cx - 1.0f, cy - 1.6f, cx - 1.0f, cy + 3.8f);
+            g.DrawLine(stripe, cx + 1.0f, cy - 1.6f, cx + 1.0f, cy + 3.8f);
         }
     }
 

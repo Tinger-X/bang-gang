@@ -72,16 +72,17 @@ internal sealed class IconButton : Control
 
     private void DrawGear(Graphics g, float cx, float cy, float r, Color ink)
     {
-        using var pen = new Pen(ink, 1.7f) { StartCap = LineCap.Round, EndCap = LineCap.Round };
-        g.DrawEllipse(pen, cx - r, cy - r, r * 2, r * 2);
-        for (int i = 0; i < 8; i++)
+        // 设置：三条水平调节滑杆（比齿轮更清晰，避免被误认作太阳）
+        using var pen = new Pen(ink, 1.6f) { StartCap = LineCap.Round, EndCap = LineCap.Round };
+        float[] xs = { -3f, 3f, -3f }; // 旋钮水平偏移
+        for (int i = 0; i < 3; i++)
         {
-            double a = Math.PI / 4 * i;
-            float x1 = (float)(cx + Math.Cos(a) * r);
-            float y1 = (float)(cy + Math.Sin(a) * r);
-            float x2 = (float)(cx + Math.Cos(a) * (r + 3));
-            float y2 = (float)(cy + Math.Sin(a) * (r + 3));
-            g.DrawLine(pen, x1, y1, x2, y2);
+            float y = cy + (i - 1) * 5;
+            g.DrawLine(pen, cx - 7, y, cx + 7, y);
+            using var kb = new SolidBrush(ink);
+            g.FillEllipse(kb, cx + xs[i] - 2.5f, y - 2.5f, 5, 5);
+            using var kw = new SolidBrush(BackColor);
+            g.FillEllipse(kw, cx + xs[i] - 1.1f, y - 1.1f, 2.2f, 2.2f);
         }
     }
 }

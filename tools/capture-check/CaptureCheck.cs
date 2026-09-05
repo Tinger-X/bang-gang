@@ -1,4 +1,4 @@
-// 验证工具：找到"直播助手"窗口，读取其 display affinity，并用 BitBlt 截屏取窗口中心像素
+// 验证工具：找到"帮帮"窗口，读取其 display affinity，并用 BitBlt 截屏取窗口中心像素
 using System;
 using System.Drawing;
 using System.Drawing.Imaging;
@@ -19,7 +19,7 @@ class Check
     [STAThread]
     static int Main()
     {
-        IntPtr hwnd = Native.FindWindow(null, "直播助手");
+        IntPtr hwnd = Native.FindWindow(null, "帮帮");
         if (hwnd == IntPtr.Zero) { Console.WriteLine("RESULT: window NOT found"); return 1; }
 
         uint affinity = 0;
