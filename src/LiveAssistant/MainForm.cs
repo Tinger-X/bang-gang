@@ -1,90 +1,366 @@
 using System.Drawing.Drawing2D;
-using System.Drawing.Text;
 
 namespace LiveAssistant;
 
 /// <summary>
-/// 主窗口：无边框自绘 UI + 自定义关闭按钮。半透明置顶，仅本机用户可见，
-/// 对一切共享 / 录屏 / 截屏完全不可见（SetWindowDisplayAffinity）。
-///
-/// 全局快捷键（RegisterHotKey，非独占）：
-///   Alt+X  显示 / 隐藏窗口
-///   Alt+C  选区截屏 → 剪贴板（选区遮罩同样防录屏）
-///   Alt+V  按住录音（系统声音 + 麦克风，WASAPI 共享模式，不干扰直播/会议），松开保存
+/// 主窗口：1200×800 无边框 LLM 聊天主界面。
+/// 左侧栏（品牌 / 搜索 / 会话列表）+ 右侧对话主区（气泡式 Markdown、输入框支持文件图片）。
+/// 全局快捷键由设置驱动：默认 Alt+X 显隐、Alt+C 选区截屏进输入框、Alt+V 按住录音并自动把文件加入输入框。
+/// 整窗对一切共享/录屏/截屏不可见（WDA_EXCLUDEFROMCAPTURE）。
+/// 布局采用显式坐标（固定窗口尺寸），避免 Dock 顺序歧义。
 /// </summary>
 public class MainForm : Form
 {
     public const string WindowTitle = "直播助手";
+    public const string AppVersion = "v0.5.0";
 
-    private const double UserOpacity = 0.82;
     private const uint Affinity = Native.WDA_EXCLUDEFROMCAPTURE;
+    private const int SideW = 304;
+    private const int ChromeH = 38;
 
-    private const int HK_SHOW = 0x101; // Alt+X
-    private const int HK_SHOT = 0x102; // Alt+C
-    private const int HK_REC = 0x103;  // Alt+V
+    private readonly AppSettings _settings;
+    private readonly List<Conversation> _conversations = new();
+    private Conversation? _active;
 
-    // 自定义关闭按钮区域（右上角，相对窗口）
-    private static readonly Rectangle CloseRect = new(0, 0, 30, 30); // 位置在 OnResizeLayout 里计算
+    // UI（显式布局）
+    private readonly ChromeBar _chrome;
+    private readonly Panel _sidebar;
+    private readonly BrandBlock _brand;
+    private readonly Panel _convHead;
+    private readonly TextBox _searchBox;
+    private readonly IconButton _searchIcon;
+    private readonly IconButton _gear;
+    private readonly ConvListBox _convList;
+    private readonly Panel _mainArea;
+    private readonly WelcomeView _welcome;
+    private readonly Panel _chatUI;
+    private readonly Label _convTitle;
+    private readonly ChatView _chatView;
+    private readonly InputPanel _input;
 
-    private bool _closeHover;
-    private bool _closeDown;
-
+    // 定时器
     private readonly System.Windows.Forms.Timer _guardTimer;
     private readonly System.Windows.Forms.Timer _pttTimer;
     private readonly System.Windows.Forms.Timer _statusTimer;
-    private bool _overlayActive;
+
     private AudioMixRecorder? _recorder;
-
-    private string _statusText = "";
-    private Color _statusColor = Color.FromArgb(60, 110, 170);
-
-    private readonly Color _titleColor = Color.FromArgb(43, 108, 214);
-    private readonly Color _textColor = Color.FromArgb(70, 75, 82);
-    private readonly Color _mutedColor = Color.FromArgb(130, 138, 150);
+    private bool _overlayActive;
 
     public MainForm()
     {
+        _settings = AppSettings.Load(); // 内部已 ApplyTheme
+
         Text = WindowTitle;
-        FormBorderStyle = FormBorderStyle.None;   // 无系统边框 → 自定义关闭按钮
+        FormBorderStyle = FormBorderStyle.None;
         StartPosition = FormStartPosition.CenterScreen;
-        ClientSize = new Size(800, 500);
+        ClientSize = new Size(1200, 800);
         ShowInTaskbar = false;
         TopMost = true;
-        Opacity = UserOpacity;
+        Opacity = Theme.WindowOpacity;
+        BackColor = Theme.SideBg;
         DoubleBuffered = true;
-        BackColor = Color.FromArgb(244, 248, 253);
         ApplyRoundRegion();
+
+        // ---- 顶部工具条 ----
+        _chrome = new ChromeBar();
+        _chrome.DragRequested += BeginWindowDrag;
+        _chrome.CloseRequested += Close;
+        Controls.Add(_chrome);
+
+        // ---- 左侧栏 ----
+        _sidebar = new Panel { BackColor = Theme.SideBg };
+        Controls.Add(_sidebar);
+
+        _brand = new BrandBlock();
+        _sidebar.Controls.Add(_brand);
+
+        _convHead = new Panel { BackColor = Theme.SideBg };
+        var label = new Label
+        {
+            Text = "对话", Font = Theme.UI(13f, FontStyle.Bold), ForeColor = Theme.TextMain,
+            AutoSize = true, Location = new Point(20, 10),
+        };
+        var plus = new IconButton(IconButton.Kind.Plus) { Location = new Point(SideW - 42, 6) };
+        new ToolTip().SetToolTip(plus, "新建对话");
+        plus.Click += (_, _) => NewConversation();
+        _convHead.Controls.Add(label);
+        _convHead.Controls.Add(plus);
+        _sidebar.Controls.Add(_convHead);
+
+        _searchBox = new TextBox { BorderStyle = BorderStyle.FixedSingle, Font = Theme.UI(11.5f), ForeColor = Theme.TextMain, BackColor = Theme.InputBg };
+        _searchBox.TextChanged += (_, _) => RebindConversations();
+        _searchIcon = new IconButton(IconButton.Kind.Search) { Location = new Point(4, 4) };
+        _gear = new IconButton(IconButton.Kind.Gear) { Location = new Point(SideW - 42, 4) };
+        new ToolTip().SetToolTip(_gear, "设置");
+        _gear.Click += (_, _) => ShowSettings();
+        _sidebar.Controls.Add(_searchIcon);
+        _sidebar.Controls.Add(_searchBox);
+        _sidebar.Controls.Add(_gear);
+
+        _convList = new ConvListBox();
+        _convList.ConversationActivated += ActivateConversation;
+        _convList.ConversationDeleted += DeleteConversation;
+        _sidebar.Controls.Add(_convList);
+
+        // ---- 右侧主区 ----
+        _mainArea = new Panel { BackColor = Theme.ChatBg };
+        Controls.Add(_mainArea);
+
+        _chatUI = new Panel { BackColor = Theme.ChatBg };
+        _convTitle = new Label { TextAlign = ContentAlignment.MiddleLeft, Font = Theme.UI(13f, FontStyle.Bold), ForeColor = Theme.TextMain, Padding = new Padding(20, 0, 0, 0), BackColor = Theme.PanelBg };
+        _chatView = new ChatView();
+        _input = new InputPanel();
+        _input.SendRequested += SendFromInput;
+        _chatUI.Controls.Add(_convTitle);
+        _chatUI.Controls.Add(_chatView);
+        _chatUI.Controls.Add(_input);
+
+        _welcome = new WelcomeView { BackColor = Theme.ChatBg };
+        _welcome.StartRequested += () => NewConversation();
+        _mainArea.Controls.Add(_chatUI);
+        _mainArea.Controls.Add(_welcome);
+
+        _chatUI.Visible = false;
+
+        // ---- 布局 ----
+        ApplyLayout();
 
         _guardTimer = new System.Windows.Forms.Timer { Interval = 3000 };
         _guardTimer.Tick += (_, _) => EnsureAffinity();
         _guardTimer.Start();
 
-        // 按住录音的松键监视
         _pttTimer = new System.Windows.Forms.Timer { Interval = 80 };
         _pttTimer.Tick += (_, _) => PttTick();
 
-        // 状态文字自动复原
-        _statusTimer = new System.Windows.Forms.Timer { Interval = 2600 };
-        _statusTimer.Tick += (_, _) => { _statusTimer.Stop(); SetDefaultStatus(); };
+        _statusTimer = new System.Windows.Forms.Timer { Interval = 3000 };
+        _statusTimer.Tick += (_, _) => { _statusTimer.Stop(); _chrome.SetStatus(""); };
 
-        SetDefaultStatus();
+        AllowDrop = true;
+        DragEnter += Main_DragEnter;
+        DragDrop += Main_DragDrop;
+        _welcome.BringToFront();
     }
 
-    protected override CreateParams CreateParams
+    // ---------------- 显式布局 ----------------
+
+    private void ApplyLayout()
     {
-        get
+        int W = ClientSize.Width, H = ClientSize.Height;
+        _chrome.Bounds = new Rectangle(0, 0, W, ChromeH);
+
+        int bodyH = H - ChromeH;
+        _sidebar.Bounds = new Rectangle(0, ChromeH, SideW, bodyH);
+
+        _brand.Bounds = new Rectangle(0, 0, SideW, 138);
+        _convHead.Bounds = new Rectangle(0, 138, SideW, 40);
+
+        _searchBox.Bounds = new Rectangle(40, 150, SideW - 90, 30);
+        _searchIcon.Bounds = new Rectangle(8, 152, 26, 26);
+        _gear.Bounds = new Rectangle(SideW - 38, 152, 26, 26);
+
+        int listTop = 190;
+        _convList.Bounds = new Rectangle(0, listTop, SideW, bodyH - listTop);
+
+        _mainArea.Bounds = new Rectangle(SideW, ChromeH, W - SideW, bodyH);
+        _welcome.Bounds = new Rectangle(0, 0, W - SideW, bodyH);
+        _chatUI.Bounds = new Rectangle(0, 0, W - SideW, bodyH);
+
+        int mw = W - SideW;
+        _convTitle.Bounds = new Rectangle(0, 0, mw, 48);
+        _input.Bounds = new Rectangle(0, bodyH - 150, mw, 150);
+        _chatView.Bounds = new Rectangle(0, 48, mw, bodyH - 48 - 150);
+    }
+
+    protected override void OnResize(EventArgs e)
+    {
+        base.OnResize(e);
+        if (_chrome == null || _mainArea == null) return; // 构造期间
+        if (Width > 0)
         {
-            var cp = base.CreateParams;
-            cp.ExStyle |= 0x80; // WS_EX_TOOLWINDOW：不进任务栏 / Alt+Tab
-            return cp;
+            ApplyRoundRegion();
+            ApplyLayout();
         }
     }
+
+    private void ApplyRoundRegion()
+    {
+        const int r = 8;
+        using var path = new GraphicsPath();
+        path.AddArc(0, 0, r * 2, r * 2, 180, 90);
+        path.AddArc(Width - r * 2, 0, r * 2, r * 2, 270, 90);
+        path.AddArc(Width - r * 2, Height - r * 2, r * 2, r * 2, 0, 90);
+        path.AddArc(0, Height - r * 2, r * 2, r * 2, 90, 90);
+        path.CloseFigure();
+        Region = new Region(path);
+    }
+
+    // ---------------- 拖动 ----------------
+
+    private void BeginWindowDrag()
+    {
+        Win32.ReleaseCapture();
+        _ = Win32.SendMessage(Handle, Win32.WM_NCLBUTTONDOWN, (IntPtr)Win32.HTCAPTION, IntPtr.Zero);
+    }
+
+    // ---------------- 会话管理 ----------------
+
+    private void NewConversation()
+    {
+        var c = new Conversation();
+        _conversations.Add(c);
+        ActivateConversation(c);
+    }
+
+    private void ActivateConversation(Conversation c)
+    {
+        _active = c;
+        _convTitle.Text = string.IsNullOrWhiteSpace(c.Title) ? "新对话" : c.Title;
+        _chatView.Load(c);
+        _chatUI.Visible = true;
+        _welcome.Visible = false;
+        RebindConversations();
+        _input.FocusInput();
+    }
+
+    private void DeleteConversation(Conversation c)
+    {
+        _conversations.Remove(c);
+        if (_active == c)
+        {
+            _active = null;
+            _chatUI.Visible = false;
+            _welcome.Visible = true;
+            _chatView.Load(null!);
+        }
+        RebindConversations();
+    }
+
+    private void RebindConversations()
+    {
+        string q = _searchBox.Text?.Trim() ?? "";
+        List<Conversation> list;
+        if (q.Length == 0)
+        {
+            list = _conversations.OrderByDescending(x => x.UpdatedAt).ToList();
+        }
+        else
+        {
+            list = _conversations
+                .Where(x => x.Title.Contains(q, StringComparison.OrdinalIgnoreCase)
+                            || x.Messages.Any(m => m.Text.Contains(q, StringComparison.OrdinalIgnoreCase)))
+                .OrderByDescending(x => x.UpdatedAt).ToList();
+        }
+        _convList.Rebind(list, _active?.Id);
+    }
+
+    private void SendFromInput()
+    {
+        if (_active == null) return;
+        var m = _input.Flush();
+        if (m == null) return;
+        _active.Messages.Add(m);
+        _chatView.AddMessage(m);
+        _active.RefreshTitle();
+        RebindConversations();
+        _convTitle.Text = _active.Title;
+        _chrome.SetStatus("已发送，等待模型回复…（尚未接入 LLM）");
+        ScheduleDemoReply();
+    }
+
+    private void ScheduleDemoReply()
+    {
+        var timer = new System.Windows.Forms.Timer { Interval = 450 };
+        timer.Tick += (_, _) =>
+        {
+            timer.Stop();
+            timer.Dispose();
+            if (_active == null) return;
+            var reply = new ChatMessage
+            {
+                Role = "assistant",
+                Text = "（**对话模型尚未接入**，此处为占位回复。）\n\n"
+                     + "配置好 LLM 后，这里将显示模型的 Markdown 回复。\n\n"
+                     + "- 支持列表\n- 支持 `行内代码`\n\n"
+                     + "```\n也支持代码块排版\n```"
+            };
+            _active.Messages.Add(reply);
+            _chatView.AddMessage(reply);
+            _active.RefreshTitle();
+            RebindConversations();
+        };
+        timer.Start();
+    }
+
+    private void EnsureActive()
+    {
+        if (_active == null) NewConversation();
+    }
+
+    // ---------------- 拖放 / 粘贴 进输入框 ----------------
+
+    private void Main_DragEnter(object? sender, DragEventArgs e)
+    {
+        if (e.Data!.GetDataPresent(DataFormats.FileDrop)) e.Effect = DragDropEffects.Copy;
+    }
+
+    private void Main_DragDrop(object? sender, DragEventArgs e)
+    {
+        if (!e.Data!.GetDataPresent(DataFormats.FileDrop)) return;
+        EnsureActive();
+        foreach (string f in (string[])e.Data.GetData(DataFormats.FileDrop)!)
+            _input.AddFile(f);
+        _chrome.SetStatus("已添加到输入框");
+    }
+
+    // ---------------- 设置 ----------------
+
+    private void ShowSettings()
+    {
+        var dlg = new SettingsForm(_settings);
+        if (dlg.ShowDialog(this) == DialogResult.OK)
+        {
+            _settings.CopyFrom(dlg.Result);
+            _settings.Save();
+            _settings.ApplyTheme();
+            ApplyThemeUi();
+            ReapplyHotkeys();
+            _chrome.SetStatus("设置已保存");
+            _statusTimer.Stop();
+            _statusTimer.Start();
+        }
+    }
+
+    private void ApplyThemeUi()
+    {
+        Opacity = Theme.WindowOpacity;
+        BackColor = Theme.SideBg;
+        _sidebar.BackColor = Theme.SideBg;
+        _mainArea.BackColor = Theme.ChatBg;
+        _chatUI.BackColor = Theme.ChatBg;
+        _welcome.BackColor = Theme.ChatBg;
+        _convList.BackColor = Theme.SideBg;
+        _convHead.BackColor = Theme.SideBg;
+        _brand.BackColor = Theme.SideBg;
+        _convTitle.BackColor = Theme.PanelBg;
+        _convTitle.ForeColor = Theme.TextMain;
+        _searchBox.BackColor = Theme.InputBg;
+        _searchBox.ForeColor = Theme.TextMain;
+        _input.RefreshTheme();
+        if (_active != null) _chatView.Load(_active);
+        RebindConversations();
+        _convList.Invalidate();
+        _welcome.Invalidate();
+        _chrome.Invalidate();
+        Invalidate();
+    }
+
+    // ---------------- 防录屏 ----------------
 
     protected override void OnLoad(EventArgs e)
     {
         base.OnLoad(e);
         ApplyAffinity();
-        RegisterHotkeys();
+        ReapplyHotkeys();
     }
 
     protected override void OnFormClosed(FormClosedEventArgs e)
@@ -97,13 +373,10 @@ public class MainForm : Form
         base.OnFormClosed(e);
     }
 
-    // ---------------- 防录屏 ----------------
-
     private void ApplyAffinity()
     {
-        bool ok = Native.SetWindowDisplayAffinity(Handle, Affinity);
-        SetStatus(ok ? "● 防录屏已开启 — 界面仅自己可见" : "✗ 防录屏设置失败（需 Windows 10 2004+）",
-                  ok ? _titleColor : Color.Firebrick, -1);
+        if (!Native.SetWindowDisplayAffinity(Handle, Affinity))
+            _chrome.SetStatus("防录屏设置失败（需 Win10 2004+）");
     }
 
     private void EnsureAffinity()
@@ -112,124 +385,40 @@ public class MainForm : Form
             Native.SetWindowDisplayAffinity(Handle, Affinity);
     }
 
-    // ---------------- 状态文案 ----------------
+    // ---------------- 全局快捷键 ----------------
 
-    private void SetDefaultStatus() =>
-        SetStatus("● 防录屏已开启 — 界面仅自己可见", _titleColor, -1);
-
-    /// <summary>更新底部状态文字。revertMs&gt;0 表示随后自动复原默认状态。</summary>
-    private void SetStatus(string text, Color color, int revertMs)
+    private void ReapplyHotkeys()
     {
-        _statusText = text;
-        _statusColor = color;
-        if (revertMs > 0)
+        UnregisterHotkeys();
+        for (int i = 0; i < _settings.Shortcuts.Count && i < 3; i++)
         {
-            _statusTimer.Stop();
-            _statusTimer.Interval = revertMs;
-            _statusTimer.Start();
-        }
-        Invalidate();
-    }
-
-    // ---------------- 无边框窗口拖动 ----------------
-
-    protected override void OnMouseDown(MouseEventArgs e)
-    {
-        if (e.Button == MouseButtons.Left)
-        {
-            if (ActualCloseRect().Contains(e.Location))
-            {
-                _closeDown = true;
-                Invalidate();
-                return; // 交给 MouseUp 决定关闭
-            }
-            // 其余区域拖动窗口
-            Win32.ReleaseCapture();
-            _ = Win32.SendMessage(Handle, Win32.WM_NCLBUTTONDOWN, (IntPtr)Win32.HTCAPTION, IntPtr.Zero);
-        }
-        base.OnMouseDown(e);
-    }
-
-    protected override void OnMouseUp(MouseEventArgs e)
-    {
-        if (e.Button == MouseButtons.Left && _closeDown)
-        {
-            _closeDown = false;
-            if (ActualCloseRect().Contains(e.Location)) Close();
-        }
-        Invalidate();
-        base.OnMouseUp(e);
-    }
-
-    protected override void OnMouseMove(MouseEventArgs e)
-    {
-        bool over = ActualCloseRect().Contains(e.Location);
-        if (over != _closeHover)
-        {
-            _closeHover = over;
-            Cursor = over ? Cursors.Hand : Cursors.Default;
-            Invalidate();
-        }
-        base.OnMouseMove(e);
-    }
-
-    protected override void OnMouseLeave(EventArgs e)
-    {
-        if (_closeHover || _closeDown)
-        {
-            _closeHover = false;
-            _closeDown = false;
-            Cursor = Cursors.Default;
-            Invalidate();
-        }
-        base.OnMouseLeave(e);
-    }
-
-    private Rectangle ActualCloseRect()
-    {
-        int right = Width - 8;   // 更贴近右上角
-        int top = 8;
-        return new Rectangle(right - CloseRect.Width, top, CloseRect.Width, CloseRect.Height);
-    }
-
-    // ---------------- 全局热键 ----------------
-
-    private void RegisterHotkeys()
-    {
-        RegisterOne(HK_SHOW, Win32.VK_X);
-        RegisterOne(HK_SHOT, Win32.VK_C);
-        RegisterOne(HK_REC, Win32.VK_V);
-    }
-
-    private void RegisterOne(int id, int vk)
-    {
-        bool ok = Win32.RegisterHotKey(Handle, id, Win32.MOD_ALT | Win32.MOD_NOREPEAT, (uint)vk);
-        if (!ok)
-        {
-            string which = id == HK_SHOW ? "Alt+X" : id == HK_SHOT ? "Alt+C" : "Alt+V";
-            SetStatus($"⚠ 热键 {which} 注册失败（可能已被占用）", Color.Firebrick, -1);
+            var sc = _settings.Shortcuts[i];
+            if (!ShortcutSetting.IsUsable(sc.Vk, sc.Ctrl || sc.Alt || sc.Shift)) continue;
+            int id = 0x201 + i;
+            bool ok = Win32.RegisterHotKey(Handle, id, sc.Modifiers() | Win32.MOD_NOREPEAT, (uint)sc.Vk);
+            if (!ok) _chrome.SetStatus($"热键 {sc.Label} 注册失败（可能被占用）");
         }
     }
 
     private void UnregisterHotkeys()
     {
-        if (IsHandleCreated)
-        {
-            _ = Win32.UnregisterHotKey(Handle, HK_SHOW);
-            _ = Win32.UnregisterHotKey(Handle, HK_SHOT);
-            _ = Win32.UnregisterHotKey(Handle, HK_REC);
-        }
+        if (!IsHandleCreated) return;
+        for (int i = 0; i < 3; i++) _ = Win32.UnregisterHotKey(Handle, 0x201 + i);
     }
 
     protected override void WndProc(ref Message m)
     {
         if (m.Msg == Win32.WM_HOTKEY)
         {
-            switch (m.WParam.ToInt32())
+            int id = m.WParam.ToInt32() - 0x201;
+            if (id >= 0 && id < _settings.Shortcuts.Count)
             {
-                case HK_SHOW: ToggleVisible(); break;
-                case HK_SHOT: StartScreenshot(); break;
-                case HK_REC: BeginPttRecording(); break;
+                switch (_settings.Shortcuts[id].Action)
+                {
+                    case "hide": ToggleVisible(); break;
+                    case "shot": StartScreenshot(); break;
+                    case "record": BeginPttRecording(); break;
+                }
             }
             return;
         }
@@ -239,14 +428,10 @@ public class MainForm : Form
     private void ToggleVisible()
     {
         if (Visible) Hide();
-        else
-        {
-            Show();
-            Activate();
-        }
+        else { Show(); Activate(); }
     }
 
-    // ---------------- Alt+C 选区截屏 ----------------
+    // ---------------- Alt+截图 / 录音（联动输入框） ----------------
 
     private void StartScreenshot()
     {
@@ -260,63 +445,62 @@ public class MainForm : Form
                 using var img = ScreenGrab.CaptureRegion(overlay.SelectedRectangle);
                 if (img != null)
                 {
-                    try
-                    {
-                        Clipboard.SetImage(img);
-                        SetStatus("✓ 截图已复制到剪贴板", Color.FromArgb(50, 150, 80), 2200);
-                    }
-                    catch
-                    {
-                        SetStatus("✗ 复制到剪贴板失败", Color.Firebrick, 3000);
-                    }
-                }
-                else
-                {
-                    SetStatus("选区无效，未截屏", _mutedColor, 2000);
+                    string path = SaveTempPng(img);
+                    EnsureActive();
+                    try { Clipboard.SetImage(img); } catch { }
+                    _input.Add(new Attachment { Kind = "image", Name = $"截图_{DateTime.Now:HHmmss}.png", Path = path });
+                    _chrome.SetStatus("✓ 截图已加入输入框");
                 }
             }
         }
-        finally
-        {
-            _overlayActive = false;
-        }
+        finally { _overlayActive = false; }
     }
 
-    // ---------------- Alt+V 按住录音 ----------------
+    private static string SaveTempPng(Image img)
+    {
+        string dir = Path.Combine(Path.GetTempPath(), "LiveAssistant");
+        Directory.CreateDirectory(dir);
+        string p = Path.Combine(dir, $"shot_{DateTime.Now:yyyyMMdd_HHmmssfff}.png");
+        img.Save(p, System.Drawing.Imaging.ImageFormat.Png);
+        return p;
+    }
 
     private void BeginPttRecording()
     {
         if (_recorder?.IsRecording == true) return;
-        // 若消息处理时按键已抬起（极短点按），不启动
-        if ((Win32.GetAsyncKeyState(Win32.VK_V) & Win32.KEY_DOWN) == 0) return;
+        var sc = _settings.Shortcuts.FirstOrDefault(s => s.Action == "record");
+        if (sc == null) return;
+        if (!ComboDown(sc)) return;
 
         try
         {
-            string dir = GetRecordingsDir();
-            string path = Path.Combine(dir, $"录音_{DateTime.Now:yyyyMMdd_HHmmss}.wav");
+            string path = Path.Combine(GetRecordingsDir(), $"录音_{DateTime.Now:yyyyMMdd_HHmmss}.wav");
             var rec = new AudioMixRecorder();
             rec.Start(path);
             _recorder = rec;
-            SetStatus(rec.SystemOnlyMic
-                          ? "● 录音中（仅系统声音）… 松开 Alt+V 保存"
-                          : "● 正在录音（系统 + 麦克风）… 松开 Alt+V 保存",
-                      Color.Crimson, -1);
+            _chrome.SetStatus(rec.SystemOnlyMic ? "● 录音中（仅系统声音）…松开结束" : "● 正在录音（系统+麦克风）…松开结束");
             _pttTimer.Start();
         }
         catch (Exception ex)
         {
-            SetStatus("✗ 无法开始录音：" + ex.Message, Color.Firebrick, 5000);
+            _chrome.SetStatus("✗ 无法开始录音：" + ex.Message);
         }
     }
 
     private void PttTick()
     {
-        bool vDown = (Win32.GetAsyncKeyState(Win32.VK_V) & Win32.KEY_DOWN) != 0;
-        bool altDown = (Win32.GetAsyncKeyState(Win32.VK_MENU) & Win32.KEY_DOWN) != 0;
-        if (vDown && altDown) return; // 仍按住 → 继续录
-
+        var sc = _settings.Shortcuts.FirstOrDefault(s => s.Action == "record");
+        if (sc != null && ComboDown(sc)) return;
         _pttTimer.Stop();
         StopRecording();
+    }
+
+    private static bool ComboDown(ShortcutSetting sc)
+    {
+        return (Win32.GetAsyncKeyState(sc.Vk) & Win32.KEY_DOWN) != 0
+            && (!sc.Ctrl || (Win32.GetAsyncKeyState(0x11) & Win32.KEY_DOWN) != 0)
+            && (!sc.Alt || (Win32.GetAsyncKeyState(0x12) & Win32.KEY_DOWN) != 0)
+            && (!sc.Shift || (Win32.GetAsyncKeyState(0x10) & Win32.KEY_DOWN) != 0);
     }
 
     private void StopRecording()
@@ -327,14 +511,14 @@ public class MainForm : Form
         try
         {
             rec.Stop();
+            EnsureActive();
+            _input.AddFile(rec.SavePath);
             string note = rec.SystemOnlyMic ? "（仅系统声音）" : "";
-            string msg = "✓ 已保存 " + Path.GetFileName(rec.SavePath) + " " + note;
-            if (rec.MicNote != null) msg = "✓ 已保存 " + Path.GetFileName(rec.SavePath) + " · " + rec.MicNote;
-            SetStatus(msg, Color.FromArgb(50, 150, 80), 4000);
+            _chrome.SetStatus("✓ 录音已保存并加入输入框 " + note);
         }
         catch (Exception ex)
         {
-            SetStatus("✗ 保存录音出错：" + ex.Message, Color.Firebrick, 5000);
+            _chrome.SetStatus("✗ 保存录音出错：" + ex.Message);
         }
     }
 
@@ -348,102 +532,173 @@ public class MainForm : Form
                 Directory.CreateDirectory(d);
                 return d;
             }
-            catch { /* 尝试下一个位置 */ }
+            catch { }
         }
         return Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments), "recordings");
     }
+}
 
-    // ---------------- 自绘 UI ----------------
+/// <summary>顶部工具条：品牌 + 状态 + 关闭；整条可拖动。</summary>
+internal sealed class ChromeBar : Panel
+{
+    public event Action? DragRequested;
+    public event Action? CloseRequested;
+    public string StatusText { get; private set; } = "";
+    private readonly Label _status;
+    private IconButton _close = null!;
 
-    private void ApplyRoundRegion()
+    public ChromeBar()
     {
-        const int r = 8;   // 圆角减小
-        using var path = new GraphicsPath();
-        path.AddArc(0, 0, r * 2, r * 2, 180, 90);
-        path.AddArc(Width - r * 2, 0, r * 2, r * 2, 270, 90);
-        path.AddArc(Width - r * 2, Height - r * 2, r * 2, r * 2, 0, 90);
-        path.AddArc(0, Height - r * 2, r * 2, r * 2, 90, 90);
-        path.CloseFigure();
-        Region = new Region(path);
+        Height = 38;
+        BackColor = Theme.PanelBg;
+        SetStyle(ControlStyles.OptimizedDoubleBuffer | ControlStyles.UserPaint | ControlStyles.AllPaintingInWmPaint, true);
+
+        var brand = new Label
+        {
+            Text = "● 直播助手",
+            AutoSize = true,
+            Font = Theme.UI(10.5f, FontStyle.Bold),
+            ForeColor = Theme.Accent,
+            Location = new Point(16, 9),
+        };
+        Controls.Add(brand);
+
+        _status = new Label
+        {
+            AutoSize = true,
+            Font = Theme.UI(9.5f),
+            ForeColor = Theme.TextMuted,
+            Location = new Point(180, 11),
+        };
+        Controls.Add(_status);
+
+        _close = new IconButton(IconButton.Kind.Close);
+        new ToolTip().SetToolTip(_close, "关闭");
+        _close.Click += (_, _) => CloseRequested?.Invoke();
+        Controls.Add(_close);
+
+        MouseDown += (_, e) => { if (e.Button == MouseButtons.Left) DragRequested?.Invoke(); };
+        brand.MouseDown += (_, e) => { if (e.Button == MouseButtons.Left) DragRequested?.Invoke(); };
+        Resize += (_, _) => _close.Location = new Point(Width - 40, 5);
+        _close.Location = new Point(Width - 40, 5);
+    }
+
+    public void SetStatus(string s)
+    {
+        StatusText = s;
+        _status.Text = s;
+        _status.ForeColor = s.Contains('●') ? Color.Crimson : Theme.TextMuted;
+    }
+
+    protected override void OnPaint(PaintEventArgs e)
+    {
+        base.OnPaint(e);
+        using var pen = new Pen(Theme.Border);
+        e.Graphics.DrawLine(pen, 0, Height - 1, Width, Height - 1);
+    }
+}
+
+/// <summary>左侧栏顶部品牌块：LOGO / 名称 / 作者版权 / 版本。</summary>
+internal sealed class BrandBlock : Panel
+{
+    public BrandBlock()
+    {
+        BackColor = Theme.SideBg;
+        SetStyle(ControlStyles.OptimizedDoubleBuffer | ControlStyles.UserPaint | ControlStyles.AllPaintingInWmPaint, true);
     }
 
     protected override void OnPaint(PaintEventArgs e)
     {
         var g = e.Graphics;
         g.SmoothingMode = SmoothingMode.AntiAlias;
-        g.TextRenderingHint = TextRenderingHint.AntiAlias;
-
-        // 背景渐变 + 细描边
-        using (var bg = new LinearGradientBrush(ClientRectangle, Color.FromArgb(250, 252, 255), Color.FromArgb(235, 243, 251), LinearGradientMode.Vertical))
-            g.FillRectangle(bg, ClientRectangle);
-        using (var pen = new Pen(Color.FromArgb(70, 203, 223, 244), 1f))
-            g.DrawRectangle(pen, 0, 0, Width - 1, Height - 1);
-
-        int cx = Width / 2;
-
-        // 顶部：标题（主视觉）
-        using (var titleFont = new Font("Microsoft YaHei UI", 42f, FontStyle.Bold))
-        using (var titleBrush = new SolidBrush(_titleColor))
+        using (var bg = new SolidBrush(Theme.Accent))
+            g.FillEllipse(bg, 18, 24, 52, 52);
+        using (var f = new Font("Microsoft YaHei UI", 24f, FontStyle.Bold))
         {
-            var sz = g.MeasureString(WindowTitle, titleFont);
-            g.DrawString(WindowTitle, titleFont, titleBrush, cx - sz.Width / 2, 78);
+            string c = "直";
+            var sz = g.MeasureString(c, f);
+            using var b = new SolidBrush(Color.White);
+            g.DrawString(c, f, b, 18 + (52 - sz.Width) / 2, 24 + (52 - sz.Height) / 2);
+        }
+        using (var name = new SolidBrush(Theme.TextMain))
+        using (var sub = new SolidBrush(Theme.TextMuted))
+        {
+            g.DrawString("直播助手", Theme.UI(15f, FontStyle.Bold), name, 84, 30);
+            g.DrawString("LLM 聊天 · 防录屏助手", Theme.UI(9.5f), sub, 84, 56);
+            g.DrawString(MainForm.AppVersion + " · © 2026 Tinger", Theme.UI(9f), sub, 18, 96);
+        }
+        using var line = new Pen(Theme.Border);
+        g.DrawLine(line, 12, Height - 1, Width - 12, Height - 1);
+        base.OnPaint(e);
+    }
+}
+
+/// <summary>无对话时的欢迎页。</summary>
+internal sealed class WelcomeView : Panel
+{
+    public event Action? StartRequested;
+    public WelcomeView()
+    {
+        BackColor = Theme.ChatBg;
+        SetStyle(ControlStyles.OptimizedDoubleBuffer | ControlStyles.UserPaint | ControlStyles.AllPaintingInWmPaint, true);
+        Cursor = Cursors.Hand;
+    }
+
+    protected override void OnClick(EventArgs e) => StartRequested?.Invoke();
+
+    protected override void OnPaint(PaintEventArgs e)
+    {
+        var g = e.Graphics;
+        g.SmoothingMode = SmoothingMode.AntiAlias;
+        var r = ClientRectangle;
+
+        using (var b = new SolidBrush(Theme.UserBubble))
+            g.FillEllipse(b, r.Width / 2f - 44, r.Height / 2f - 130, 88, 88);
+        using (var f = new Font("Microsoft YaHei UI", 34f, FontStyle.Bold))
+        {
+            string icon = "✦";
+            var sz = g.MeasureString(icon, f);
+            using var tb = new SolidBrush(Theme.Accent);
+            g.DrawString(icon, f, tb, r.Width / 2f - sz.Width / 2, r.Height / 2f - 122);
         }
 
-        // 分隔线
-        using (var line = new Pen(Color.FromArgb(60, 208, 224, 240), 1f))
-            g.DrawLine(line, cx - 260, 196, cx + 260, 196);
-
-        // 状态行
-        using (var stFont = new Font("Microsoft YaHei UI", 11.5f, FontStyle.Bold))
+        string[] lines =
         {
-            var sz = g.MeasureString(_statusText, stFont);
-            g.DrawString(_statusText, stFont, new SolidBrush(_statusColor), cx - sz.Width / 2, 226);
+            "欢迎使用 直播助手",
+            "从左侧选择一个会话，或点击下方开始新的对话",
+            "支持 Markdown、文件 / 图片、拖入与粘贴",
+        };
+        float y = r.Height / 2f + 8;
+        for (int i = 0; i < lines.Length; i++)
+        {
+            using var b = i == 0 ? new SolidBrush(Theme.TextMain) : new SolidBrush(Theme.TextMuted);
+            using var f = Theme.UI(i == 0 ? 18f : 11.5f);
+            var sz = g.MeasureString(lines[i], f);
+            g.DrawString(lines[i], f, b, r.Width / 2f - sz.Width / 2, y);
+            y += sz.Height + (i == 0 ? 14 : 6);
         }
 
-        // 快捷键帮助（居中成块）
-        const int topY = 288;
-        const int lh = 27;
-        using (var small = new Font("Microsoft YaHei UI", 11f))
-        using (var key = new Font("Microsoft YaHei UI", 11f, FontStyle.Bold))
-        using (var keyBrush = new SolidBrush(_titleColor))
-        using (var textBrush = new SolidBrush(_textColor))
+        var btn = new Rectangle((int)(r.Width / 2f - 92), (int)y + 6, 184, 38);
+        using (var p = Rounded(btn, 19))
+        using (var bb = new SolidBrush(Theme.Accent))
+            g.FillPath(bb, p);
+        using (var bf = Theme.UI(12.5f, FontStyle.Bold))
         {
-            DrawKeyLine(g, small, key, keyBrush, textBrush, cx, topY + 0, "Alt+X", "显示 / 隐藏窗口");
-            DrawKeyLine(g, small, key, keyBrush, textBrush, cx, topY + lh, "Alt+C", "选区截屏 → 已自动复制到剪贴板");
-            DrawKeyLine(g, small, key, keyBrush, textBrush, cx, topY + lh * 2, "Alt+V", "按住录音（系统 + 麦克风），松开即保存");
-            DrawKeyLine(g, small, key, keyBrush, textBrush, cx, topY + lh * 3, "备注", "录制内容不干扰直播 / 会议；一切录屏截不到本窗");
+            var sz = g.MeasureString("＋ 新建对话", bf);
+            g.DrawString("＋ 新建对话", bf, Brushes.White, btn.X + (btn.Width - sz.Width) / 2, btn.Y + 8);
         }
-
-        // 右上角自定义关闭按钮
-        DrawCloseButton(g);
-
         base.OnPaint(e);
     }
 
-    private void DrawKeyLine(Graphics g, Font small, Font key, Brush keyBrush, Brush textBrush,
-        int cx, int y, string k, string desc)
+    private static GraphicsPath Rounded(Rectangle r, int rad)
     {
-        var ksz = g.MeasureString(k, key);
-        var wsz = g.MeasureString(desc, small);
-        float gap = 16;
-        float left = cx - (ksz.Width + gap + wsz.Width) / 2;
-        g.DrawString(k, key, keyBrush, left, y);
-        g.DrawString(desc, small, textBrush, left + ksz.Width + gap, y + 1);
-    }
-
-    private void DrawCloseButton(Graphics g)
-    {
-        var r = ActualCloseRect();
-        if (_closeHover || _closeDown)
-        {
-            using var bg = new SolidBrush(_closeDown ? Color.FromArgb(200, 214, 60, 54) : Color.FromArgb(150, 230, 74, 66));
-            g.FillEllipse(bg, r);
-        }
-        using (var pen = new Pen(_closeHover ? Color.White : Color.FromArgb(140, 150, 160), _closeHover ? 2.2f : 1.8f))
-        {
-            float m = 9.5f;
-            g.DrawLine(pen, r.X + m, r.Y + m, r.Right - m, r.Bottom - m);
-            g.DrawLine(pen, r.Right - m, r.Y + m, r.X + m, r.Bottom - m);
-        }
+        var p = new GraphicsPath();
+        int d = rad * 2;
+        p.AddArc(r.X, r.Y, d, d, 180, 90);
+        p.AddArc(r.Right - d, r.Y, d, d, 270, 90);
+        p.AddArc(r.Right - d, r.Bottom - d, d, d, 0, 90);
+        p.AddArc(r.X, r.Bottom - d, d, d, 90, 90);
+        p.CloseFigure();
+        return p;
     }
 }

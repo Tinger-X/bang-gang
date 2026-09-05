@@ -70,7 +70,7 @@ Write-Output ("Alt+X show -> visible={0} {1}" -f $shown,$(if($shown){'PASS'}else
 # 2) Alt+C region screenshot
 [System.Windows.Forms.Clipboard]::Clear()
 Send-HotKey 0x43
-Start-Sleep -Milliseconds 900
+Start-Sleep -Milliseconds 1800
 $x1=300;$y1=200;$x2=640;$y2=400
 [K]::SetCursorPos($x1,$y1); Start-Sleep -Milliseconds 150
 [K]::mouse_event(0x2,0,0,0,[UIntPtr]::Zero)

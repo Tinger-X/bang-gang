@@ -16,8 +16,29 @@ internal static class Program
         }
 
         ApplicationConfiguration.Initialize();
-        Application.Run(new MainForm());
+        Application.ThreadException += (_, e) => LogCrash(e.Exception);
+        AppDomain.CurrentDomain.UnhandledException += (_, e) => LogCrash(e.ExceptionObject as Exception);
+        try
+        {
+            Application.Run(new MainForm());
+        }
+        catch (Exception ex)
+        {
+            LogCrash(ex);
+            throw;
+        }
         GC.KeepAlive(mutex);
+    }
+
+    private static void LogCrash(Exception? ex)
+    {
+        try
+        {
+            if (ex == null) return;
+            string path = Path.Combine(AppContext.BaseDirectory, "crash.log");
+            File.AppendAllText(path, $"[{DateTime.Now:yyyy-MM-dd HH:mm:ss}] {ex}\n\n");
+        }
+        catch { }
     }
 }
 
