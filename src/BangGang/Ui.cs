@@ -26,14 +26,33 @@ internal static class Ui
             EnforceArrowCursor(e.Control);
     }
 
+    private static ToolTipLayer? _tipLayer;
+
     /// <summary>
-    /// 创建并绑定一个受防录屏保护的 ToolTip：弹出前会重新应用
-    /// WDA_EXCLUDEFROMCAPTURE，避免提示框窗口被系统录屏 / 截图捕获。
+    /// 为控件绑定一个悬浮提示。提示以主窗口子控件的形式绘制（见 <see cref="ToolTipLayer"/>），
+    /// 与主窗口共享同一 WDA_EXCLUDEFROMCAPTURE 排除表面，因此不会被录屏 / 截图捕获。
     /// </summary>
     public static void SetToolTip(Control control, string text)
     {
-        var tip = new ToolTip();
-        tip.Popup += (_, _) => CaptureProtector.ProtectTooltips();
-        tip.SetToolTip(control, text);
+        control.MouseEnter += (_, _) => EnsureLayer(control).Arm(control, text);
+        control.MouseLeave += (_, _) => EnsureLayer(control).Disarm(control);
+    }
+
+    /// <summary>主窗口隐藏 / 关闭时调用，清除可能残留的提示浮层。</summary>
+    public static void HideToolTip() => _tipLayer?.HideNow();
+
+    private static ToolTipLayer EnsureLayer(Control control)
+    {
+        if (_tipLayer is null || _tipLayer.IsDisposed)
+            _tipLayer = new ToolTipLayer();
+
+        var form = control.FindForm();
+        if (form is not null && _tipLayer.Parent != form)
+        {
+            _tipLayer.Parent?.Controls.Remove(_tipLayer);
+            form.Controls.Add(_tipLayer);
+            _tipLayer.BringToFront();
+        }
+        return _tipLayer;
     }
 }

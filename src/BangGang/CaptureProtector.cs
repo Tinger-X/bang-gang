@@ -1,13 +1,12 @@
-using System.Diagnostics;
 using System.Runtime.InteropServices;
-using System.Text;
 
 namespace BangGang;
 
 /// <summary>
 /// 进程级防录屏：拦截本线程创建的每个顶层窗口，立即为其应用
-/// WDA_EXCLUDEFROMCAPTURE，确保主窗口、ToolTip 提示框、颜色/文件对话框等
-/// 应用的任何内容都不会被录屏 / 截图捕获。
+/// WDA_EXCLUDEFROMCAPTURE，确保颜色/文件对话框等由本线程弹出的顶层窗口
+/// 都不会被录屏 / 截图捕获。应用内 ToolTip 不再使用独立顶层窗口，
+/// 而是作为主窗口子控件绘制（见 <see cref="ToolTipLayer"/>），随主窗口一并被排除。
 /// </summary>
 internal static class CaptureProtector
 {
@@ -17,7 +16,6 @@ internal static class CaptureProtector
     private const int WS_CHILD = 0x40000000;
 
     private delegate IntPtr HookProc(int nCode, IntPtr wParam, IntPtr lParam);
-    private delegate bool EnumWindowsProc(IntPtr hWnd, IntPtr lParam);
 
     private static HookProc? _proc;
     private static IntPtr _hook;
@@ -30,12 +28,6 @@ internal static class CaptureProtector
         _hook = SetWindowsHookEx(WH_CBT, _proc, IntPtr.Zero, GetCurrentThreadId());
     }
 
-    /// <summary>对进程内的 ToolTip 窗口重新应用排除（隐藏后再显示可能失效）。</summary>
-    public static void ProtectTooltips()
-    {
-        EnumWindows(OnEnumTooltip, IntPtr.Zero);
-    }
-
     private static IntPtr OnCbt(int nCode, IntPtr wParam, IntPtr lParam)
     {
         if (nCode == HCBT_CREATEWND && wParam != IntPtr.Zero)
@@ -45,22 +37,6 @@ internal static class CaptureProtector
                 Native.SetWindowDisplayAffinity(wParam, Native.WDA_EXCLUDEFROMCAPTURE);
         }
         return CallNextHookEx(_hook, nCode, wParam, lParam);
-    }
-
-    private static bool OnEnumTooltip(IntPtr hWnd, IntPtr lParam)
-    {
-        var sb = new StringBuilder(64);
-        GetClassName(hWnd, sb, sb.Capacity);
-        if (sb.ToString() == "tooltips_class32")
-        {
-            GetWindowThreadProcessId(hWnd, out uint pid);
-            if (pid == (uint)Process.GetCurrentProcess().Id)
-            {
-                Native.SetWindowDisplayAffinity(hWnd, Native.WDA_NONE);
-                Native.SetWindowDisplayAffinity(hWnd, Native.WDA_EXCLUDEFROMCAPTURE);
-            }
-        }
-        return true;
     }
 
     [DllImport("user32.dll", SetLastError = true)]
@@ -77,13 +53,4 @@ internal static class CaptureProtector
 
     [DllImport("user32.dll", EntryPoint = "GetWindowLongW")]
     private static extern int GetWindowLong(IntPtr hWnd, int nIndex);
-
-    [DllImport("user32.dll")]
-    private static extern bool EnumWindows(EnumWindowsProc lpEnumFunc, IntPtr lParam);
-
-    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
-    private static extern int GetClassName(IntPtr hWnd, StringBuilder lpClassName, int nMaxCount);
-
-    [DllImport("user32.dll")]
-    private static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint lpdwProcessId);
 }

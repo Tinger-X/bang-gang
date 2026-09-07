@@ -12,7 +12,7 @@ namespace BangGang;
 public class MainForm : Form
 {
     public const string WindowTitle = "帮帮";
-    public const string AppVersion = "v0.7.1";
+    public const string AppVersion = "v0.7.3";
 
     private const uint Affinity = Native.WDA_EXCLUDEFROMCAPTURE;
     private const int SideW = 304;
@@ -411,6 +411,10 @@ public class MainForm : Form
             // 因此每次显示后都显式钉回最上层，避免被其它应用覆盖。
             Native.SetWindowPos(Handle, Native.HWND_TOPMOST, 0, 0, 0, 0,
                 Native.SWP_NOMOVE | Native.SWP_NOSIZE | Native.SWP_NOACTIVATE);
+        }
+        else if (!Visible)
+        {
+            Ui.HideToolTip();
         }
     }
 
