@@ -86,10 +86,7 @@ internal sealed class ToolTipForm : Form
         var owner = anchor.FindForm();
         if (owner is null || owner.IsDisposed || !owner.Visible) { Visible = false; return; }
 
-        SizeF textSize;
-        using (var tmp = new Bitmap(1, 1))
-        using (var g = Graphics.FromImage(tmp))
-            textSize = g.MeasureString(_text, Font, int.MaxValue, CenterFormat());
+        var textSize = MeasureText(_text, Font);
         Size = new Size((int)Math.Ceiling(textSize.Width) + 12, (int)Math.Ceiling(textSize.Height) + 6);
 
         var screen = Screen.FromControl(anchor);
@@ -131,9 +128,7 @@ internal sealed class ToolTipForm : Form
             using (var border = new Pen(Color.FromArgb(60, 120, 128, 136)))
                 g.DrawPath(border, path);
 
-            using var textBrush = new SolidBrush(Color.FromArgb(224, 228, 233));
-            using var fmt = CenterFormat();
-            g.DrawString(_text, Font, textBrush, new RectangleF(0, 0, w, h), fmt);
+            DrawCenteredText(g, _text, Font, Color.FromArgb(224, 228, 233), new RectangleF(0, 0, w, h));
         }
         UpdateLayered(bmp);
     }
@@ -167,14 +162,31 @@ internal sealed class ToolTipForm : Form
         base.Dispose(disposing);
     }
 
-    /// <summary>居中、不裁剪、不省略的文本格式；测量与绘制共用同一格式以保证尺寸一致。</summary>
-    private static StringFormat CenterFormat() => new()
+    /// <summary>紧凑测量格式（与 GenericTypographic 一致：无额外行距/内边距、不省略、不裁剪）。</summary>
+    private static StringFormat TightFormat() => new StringFormat(
+        StringFormatFlags.FitBlackBox | StringFormatFlags.LineLimit | StringFormatFlags.NoClip)
     {
-        Alignment = StringAlignment.Center,
-        LineAlignment = StringAlignment.Center,
         Trimming = StringTrimming.None,
-        FormatFlags = StringFormatFlags.NoClip,
     };
+
+    private static SizeF MeasureText(string text, Font font)
+    {
+        using var bmp = new Bitmap(1, 1);
+        using var g = Graphics.FromImage(bmp);
+        using var fmt = TightFormat();
+        return g.MeasureString(text, font, int.MaxValue, fmt);
+    }
+
+    /// <summary>按紧凑尺寸手动居中绘制文本，保证水平、垂直都真正视觉居中。</summary>
+    private static void DrawCenteredText(Graphics g, string text, Font font, Color color, RectangleF rect)
+    {
+        using var brush = new SolidBrush(color);
+        using var fmt = TightFormat();
+        var size = g.MeasureString(text, font, int.MaxValue, fmt);
+        float x = rect.X + (rect.Width - size.Width) / 2f;
+        float y = rect.Y + (rect.Height - size.Height) / 2f;
+        g.DrawString(text, font, brush, x, y, fmt);
+    }
 
     private static GraphicsPath Rounded(Rectangle r, int rad)
     {
