@@ -1,6 +1,6 @@
 using System.Drawing.Drawing2D;
 
-namespace LiveAssistant;
+namespace BangGang;
 
 /// <summary>小型图标按钮（放大镜 / 齿轮 / 加号 / 发送 / 关闭 / 回形针等），不改变鼠标指针。</summary>
 internal sealed class IconButton : Control

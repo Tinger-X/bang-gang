@@ -1,7 +1,7 @@
 using System.Collections.Concurrent;
 using System.Runtime.InteropServices;
 
-namespace LiveAssistant;
+namespace BangGang;
 
 /// <summary>
 /// 单路 WASAPI 共享模式采集泵：事件驱动捕获设备音频包，

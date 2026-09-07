@@ -1,4 +1,4 @@
-namespace LiveAssistant;
+namespace BangGang;
 
 /// <summary>聊天消息区：垂直排布气泡，支持滚动。</summary>
 internal sealed class ChatView : Panel

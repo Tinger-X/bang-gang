@@ -1,6 +1,6 @@
 using System.Drawing.Drawing2D;
 
-namespace LiveAssistant;
+namespace BangGang;
 
 /// <summary>消息输入区：附件区 + 文本框 + 工具行（发送/文件）。</summary>
 internal sealed class InputPanel : Panel
@@ -75,12 +75,12 @@ internal sealed class InputPanel : Panel
         Controls.Add(_hint);
 
         _send = new IconButton(IconButton.Kind.Send, Theme.InputBg);
-        new ToolTip().SetToolTip(_send, "发送 (Enter)");
+        Ui.SetToolTip(_send, "发送 (Enter)");
         _send.Click += (_, _) => { if (HasContent) SendRequested?.Invoke(); };
         Controls.Add(_send);
 
         _attach = new IconButton(IconButton.Kind.Paperclip, Theme.InputBg);
-        new ToolTip().SetToolTip(_attach, "添加文件 / 图片");
+        Ui.SetToolTip(_attach, "添加文件 / 图片");
         _attach.Click += (_, _) => PickFiles();
         Controls.Add(_attach);
 
@@ -166,7 +166,7 @@ internal sealed class InputPanel : Panel
 
     private static string SaveClipboardImage(Image img)
     {
-        string dir = Path.Combine(Path.GetTempPath(), "LiveAssistant");
+        string dir = Path.Combine(Path.GetTempPath(), "BangGang");
         Directory.CreateDirectory(dir);
         string p = Path.Combine(dir, $"clip_{DateTime.Now:yyyyMMdd_HHmmssfff}.png");
         img.Save(p, System.Drawing.Imaging.ImageFormat.Png);

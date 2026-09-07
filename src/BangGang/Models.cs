@@ -1,4 +1,4 @@
-namespace LiveAssistant;
+namespace BangGang;
 
 /// <summary>一段会话。</summary>
 public class Conversation

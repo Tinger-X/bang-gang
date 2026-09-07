@@ -1,7 +1,7 @@
-# End-to-end test of LiveAssistant (real synthesized keyboard/mouse input).
+# End-to-end test of BangGang (real synthesized keyboard/mouse input).
 # ASCII-only source (avoid PS5.1 ANSI misread of UTF-8 Chinese literals).
 $ErrorActionPreference = 'Stop'
-$exe = 'D:\project\bang-bang\dist\LiveAssistant.exe'
+$exe = 'D:\project\bang-bang\dist\BangGang.exe'
 $dist = Split-Path $exe
 
 Add-Type -AssemblyName System.Windows.Forms
@@ -48,7 +48,7 @@ function Key-Down([byte]$vk){ [K]::keybd_event($vk,0,0,[UIntPtr]::Zero) }
 function Key-Up([byte]$vk){ [K]::keybd_event($vk,0,2,[UIntPtr]::Zero) }
 
 # 0) launch
-Get-Process LiveAssistant -ErrorAction SilentlyContinue | Stop-Process -Force
+Get-Process BangGang -ErrorAction SilentlyContinue | Stop-Process -Force
 Start-Sleep -Milliseconds 600
 $proc = Start-Process -FilePath $exe -WorkingDirectory $dist -PassThru
 $hwnd = [IntPtr]::Zero

@@ -1,6 +1,6 @@
 using System.Text.Json;
 
-namespace LiveAssistant;
+namespace BangGang;
 
 /// <summary>全局主题色（运行时由设置刷新）。</summary>
 public static class Theme

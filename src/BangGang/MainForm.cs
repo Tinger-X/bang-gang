@@ -1,6 +1,6 @@
 using System.Drawing.Drawing2D;
 
-namespace LiveAssistant;
+namespace BangGang;
 
 /// <summary>
 /// 主窗口：1200×800 无边框 LLM 聊天主界面。
@@ -12,7 +12,7 @@ namespace LiveAssistant;
 public class MainForm : Form
 {
     public const string WindowTitle = "帮帮";
-    public const string AppVersion = "v0.7.0";
+    public const string AppVersion = "v0.7.1";
 
     private const uint Affinity = Native.WDA_EXCLUDEFROMCAPTURE;
     private const int SideW = 304;
@@ -81,12 +81,12 @@ public class MainForm : Form
         _convHead.Controls.Add(_search);
 
         _btnSettings = new IconButton(IconButton.Kind.Gear, Theme.SideBg) { Location = new Point(SideW - 86, 11) };
-        new ToolTip().SetToolTip(_btnSettings, "设置");
+        Ui.SetToolTip(_btnSettings, "设置");
         _btnSettings.Click += (_, _) => OpenSettings();
         _convHead.Controls.Add(_btnSettings);
 
         _btnNew = new IconButton(IconButton.Kind.Plus, Theme.SideBg) { Location = new Point(SideW - 46, 11) };
-        new ToolTip().SetToolTip(_btnNew, "新建对话");
+        Ui.SetToolTip(_btnNew, "新建对话");
         _btnNew.Click += (_, _) => NewConversation();
         _convHead.Controls.Add(_btnNew);
         _sidebar.Controls.Add(_convHead);
@@ -366,6 +366,7 @@ public class MainForm : Form
     {
         base.OnLoad(e);
         ApplyAffinity();
+        CaptureProtector.Install();   // 保护 ToolTip / 对话框等所有顶层窗口
         ReapplyHotkeys();
     }
 
@@ -487,7 +488,7 @@ public class MainForm : Form
 
     private static string SaveTempPng(Image img)
     {
-        string dir = Path.Combine(Path.GetTempPath(), "LiveAssistant");
+        string dir = Path.Combine(Path.GetTempPath(), "BangGang");
         Directory.CreateDirectory(dir);
         string p = Path.Combine(dir, $"shot_{DateTime.Now:yyyyMMdd_HHmmssfff}.png");
         img.Save(p, System.Drawing.Imaging.ImageFormat.Png);
@@ -602,7 +603,7 @@ internal sealed class ChromeBar : Panel
         Controls.Add(_status);
 
         _close = new IconButton(IconButton.Kind.Close, Theme.PanelBg);
-        new ToolTip().SetToolTip(_close, "关闭");
+        Ui.SetToolTip(_close, "关闭");
         _close.Click += (_, _) => CloseRequested?.Invoke();
         Controls.Add(_close);
 

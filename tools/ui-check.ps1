@@ -1,6 +1,6 @@
 # Drive the new chat UI: create a conversation, type+send, open settings, screenshot the window.
 $ErrorActionPreference = 'Stop'
-$exe = 'D:\project\bang-bang\dist\LiveAssistant.exe'
+$exe = 'D:\project\bang-bang\dist\BangGang.exe'
 $dist = Split-Path $exe
 
 Add-Type -AssemblyName System.Windows.Forms
@@ -52,7 +52,7 @@ function TypeText([string]$s){
   }
 }
 
-Get-Process LiveAssistant -ErrorAction SilentlyContinue | Stop-Process -Force
+Get-Process BangGang -ErrorAction SilentlyContinue | Stop-Process -Force
 Start-Sleep -Milliseconds 600
 $proc=Start-Process -FilePath $exe -WorkingDirectory $dist -PassThru
 Start-Sleep -Milliseconds 2200

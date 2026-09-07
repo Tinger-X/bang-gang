@@ -1,6 +1,6 @@
 using System.Runtime.InteropServices;
 
-namespace LiveAssistant;
+namespace BangGang;
 
 internal static class Program
 {
@@ -8,7 +8,7 @@ internal static class Program
     static void Main()
     {
         // 单实例：重复启动时把已有窗口带到前台后退出
-        using var mutex = new Mutex(true, "Local\\LiveAssistant_SingleInstance", out bool isNew);
+        using var mutex = new Mutex(true, "Local\\BangGang_SingleInstance", out bool isNew);
         if (!isNew)
         {
             Native.NotifyExistingInstance();

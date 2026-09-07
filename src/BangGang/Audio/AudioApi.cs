@@ -1,6 +1,6 @@
 using System.Runtime.InteropServices;
 
-namespace LiveAssistant;
+namespace BangGang;
 
 #region COM 接口（均以标准顺序对应 vtable，前三个槽位为 IUnknown）
 

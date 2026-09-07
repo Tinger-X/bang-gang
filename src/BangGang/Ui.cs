@@ -1,4 +1,4 @@
-namespace LiveAssistant;
+namespace BangGang;
 
 /// <summary>
 /// 全局 UI 规则：应用内鼠标指针始终保持默认箭头形态，
@@ -24,5 +24,16 @@ internal static class Ui
     {
         if (e.Control is not null)
             EnforceArrowCursor(e.Control);
+    }
+
+    /// <summary>
+    /// 创建并绑定一个受防录屏保护的 ToolTip：弹出前会重新应用
+    /// WDA_EXCLUDEFROMCAPTURE，避免提示框窗口被系统录屏 / 截图捕获。
+    /// </summary>
+    public static void SetToolTip(Control control, string text)
+    {
+        var tip = new ToolTip();
+        tip.Popup += (_, _) => CaptureProtector.ProtectTooltips();
+        tip.SetToolTip(control, text);
     }
 }

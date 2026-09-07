@@ -6,10 +6,10 @@
     <UseWindowsForms>true</UseWindowsForms>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
-    <AssemblyName>LiveAssistant</AssemblyName>
+    <AssemblyName>BangGang</AssemblyName>
     <AssemblyTitle>帮帮</AssemblyTitle>
     <Product>帮帮</Product>
-    <Version>0.7.0</Version>
+    <Version>0.7.1</Version>
     <ApplicationHighDpiMode>PerMonitorV2</ApplicationHighDpiMode>
     <!-- 发布：dotnet publish -c Release -r win-x64 -p:PublishSingleFile=true -p:SelfContained=false -->
   </PropertyGroup>

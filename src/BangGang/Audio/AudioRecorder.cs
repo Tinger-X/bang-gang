@@ -2,7 +2,7 @@ using System.Collections.Concurrent;
 using System.Runtime.InteropServices;
 using System.Text;
 
-namespace LiveAssistant;
+namespace BangGang;
 
 /// <summary>
 /// 非独占音频采集：

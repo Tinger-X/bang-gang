@@ -1,7 +1,7 @@
 using System.Drawing.Imaging;
 using System.Runtime.InteropServices;
 
-namespace LiveAssistant;
+namespace BangGang;
 
 /// <summary>GDI 屏幕区域抓取（物理像素坐标）。</summary>
 internal static class ScreenGrab

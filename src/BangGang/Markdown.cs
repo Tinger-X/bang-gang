@@ -1,7 +1,7 @@
 using System.Drawing.Drawing2D;
 using System.Text.RegularExpressions;
 
-namespace LiveAssistant;
+namespace BangGang;
 
 /// <summary>轻量 Markdown 排版：标题/加粗/斜体/行内代码/代码块/列表/段落。
 /// 支持换行测量与绘制，供气泡自绘使用。</summary>

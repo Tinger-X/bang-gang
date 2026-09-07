@@ -1,6 +1,6 @@
 using System.Drawing.Drawing2D;
 
-namespace LiveAssistant;
+namespace BangGang;
 
 /// <summary>
 /// “设置”内部覆盖层：占据主窗口内容，不再弹出独立窗口 / 托盘图标。
@@ -33,7 +33,7 @@ internal sealed class SettingsOverlay : Panel
         var logo = new Label { Text = "帮", BackColor = Theme.Accent, ForeColor = Color.White, Font = Theme.UI(13f, FontStyle.Bold), TextAlign = ContentAlignment.MiddleCenter, Size = new Size(30, 30), Location = new Point(20, 13) };
         var title = new Label { Text = "设置", Font = Theme.UI(15f, FontStyle.Bold), ForeColor = Theme.TextMain, AutoSize = true, Location = new Point(58, 17) };
         var close = new IconButton(IconButton.Kind.Close, Theme.PanelBg) { Location = new Point(Width - 44, 13), Anchor = AnchorStyles.Top | AnchorStyles.Right };
-        new ToolTip().SetToolTip(close, "关闭");
+        Ui.SetToolTip(close, "关闭");
         close.Click += (_, _) => Visible = false;
         head.Controls.Add(logo);
         head.Controls.Add(title);

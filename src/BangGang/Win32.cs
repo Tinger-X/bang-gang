@@ -1,6 +1,6 @@
 using System.Runtime.InteropServices;
 
-namespace LiveAssistant;
+namespace BangGang;
 
 /// <summary>Win32 P/Invoke：全局热键、屏幕 DC、BitBlt 截屏等。</summary>
 internal static class Win32

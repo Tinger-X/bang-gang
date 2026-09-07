@@ -1,6 +1,6 @@
 using System.Drawing.Drawing2D;
 
-namespace LiveAssistant;
+namespace BangGang;
 
 /// <summary>会话列表（owner-draw）。点击选中；悬浮在右侧显示删除按钮。</summary>
 internal sealed class ConvListBox : ListBox

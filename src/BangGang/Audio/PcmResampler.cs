@@ -1,4 +1,4 @@
-namespace LiveAssistant;
+namespace BangGang;
 
 /// <summary>
 /// 轻量线性重采样器：把"任意采样率、任意声道数"的 float 交错数据，

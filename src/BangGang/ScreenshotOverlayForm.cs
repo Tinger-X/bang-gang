@@ -1,6 +1,6 @@
 using System.Drawing.Drawing2D;
 
-namespace LiveAssistant;
+namespace BangGang;
 
 /// <summary>
 /// 全屏选区遮罩。本身也应用 WDA_EXCLUDEFROMCAPTURE：

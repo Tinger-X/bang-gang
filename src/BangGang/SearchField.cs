@@ -1,6 +1,6 @@
 using System.Drawing.Drawing2D;
 
-namespace LiveAssistant;
+namespace BangGang;
 
 /// <summary>
 /// 侧栏“搜索对话”输入框：无图标、带占位文字与内容清空按钮；内部防抖触发搜索。

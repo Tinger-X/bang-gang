@@ -1,7 +1,7 @@
 using System.Drawing.Drawing2D;
 using System.Text.RegularExpressions;
 
-namespace LiveAssistant;
+namespace BangGang;
 
 /// <summary>一条消息的气泡控件（自绘）。</summary>
 internal sealed class MessageBubble : Control
