@@ -5,8 +5,8 @@ namespace BangGang;
 /// <summary>
 /// 进程级防录屏：拦截本线程创建的每个顶层窗口，立即为其应用
 /// WDA_EXCLUDEFROMCAPTURE，确保颜色/文件对话框等由本线程弹出的顶层窗口
-/// 都不会被录屏 / 截图捕获。应用内 ToolTip 不再使用独立顶层窗口，
-/// 而是作为主窗口子控件绘制（见 <see cref="ToolTipLayer"/>），随主窗口一并被排除。
+/// 都不会被录屏 / 截图捕获。应用内 ToolTip 使用带每像素 Alpha 的独立置顶窗口
+/// （见 <see cref="ToolTipForm"/>），由 ToolTipForm 自身应用 WDA_EXCLUDEFROMCAPTURE。
 /// </summary>
 internal static class CaptureProtector
 {
