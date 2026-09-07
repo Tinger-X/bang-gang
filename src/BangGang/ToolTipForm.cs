@@ -86,8 +86,11 @@ internal sealed class ToolTipForm : Form
         var owner = anchor.FindForm();
         if (owner is null || owner.IsDisposed || !owner.Visible) { Visible = false; return; }
 
-        var sz = TextRenderer.MeasureText(_text, Font);
-        Size = new Size(sz.Width + 20, sz.Height + 12);
+        SizeF textSize;
+        using (var tmp = new Bitmap(1, 1))
+        using (var g = Graphics.FromImage(tmp))
+            textSize = g.MeasureString(_text, Font, int.MaxValue, CenterFormat());
+        Size = new Size((int)Math.Ceiling(textSize.Width) + 12, (int)Math.Ceiling(textSize.Height) + 6);
 
         var screen = Screen.FromControl(anchor);
         var wa = screen.WorkingArea;
@@ -129,7 +132,7 @@ internal sealed class ToolTipForm : Form
                 g.DrawPath(border, path);
 
             using var textBrush = new SolidBrush(Color.FromArgb(224, 228, 233));
-            using var fmt = new StringFormat { Alignment = StringAlignment.Center, LineAlignment = StringAlignment.Center };
+            using var fmt = CenterFormat();
             g.DrawString(_text, Font, textBrush, new RectangleF(0, 0, w, h), fmt);
         }
         UpdateLayered(bmp);
@@ -163,6 +166,15 @@ internal sealed class ToolTipForm : Form
         if (disposing) _timer.Dispose();
         base.Dispose(disposing);
     }
+
+    /// <summary>居中、不裁剪、不省略的文本格式；测量与绘制共用同一格式以保证尺寸一致。</summary>
+    private static StringFormat CenterFormat() => new()
+    {
+        Alignment = StringAlignment.Center,
+        LineAlignment = StringAlignment.Center,
+        Trimming = StringTrimming.None,
+        FormatFlags = StringFormatFlags.NoClip,
+    };
 
     private static GraphicsPath Rounded(Rectangle r, int rad)
     {
