@@ -388,6 +388,22 @@ public class MainForm : Form
             Native.SetWindowDisplayAffinity(Handle, Affinity);
     }
 
+    /// <summary>
+    /// Alt+X 隐藏后再显示时，DWM 会丢失 WDA_EXCLUDEFROMCAPTURE 的“排除”表面，
+    /// 窗口被录屏/截图时会退化为黑框（等价于 WDA_MONITOR），而 GetWindowDisplayAffinity
+    /// 仍返回 0x11，导致上面的守卫定时器无法察觉。因此在窗口每次变为可见时，
+    /// 先清空再重设，强制 DWM 重建排除表面，确保“完全不可见”持续生效。
+    /// </summary>
+    protected override void OnVisibleChanged(EventArgs e)
+    {
+        base.OnVisibleChanged(e);
+        if (Visible && IsHandleCreated)
+        {
+            Native.SetWindowDisplayAffinity(Handle, Native.WDA_NONE);
+            ApplyAffinity();
+        }
+    }
+
     // ---------------- 全局快捷键 ----------------
 
     private void ReapplyHotkeys()
