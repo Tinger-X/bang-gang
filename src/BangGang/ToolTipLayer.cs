@@ -9,6 +9,8 @@ namespace BangGang;
 /// </summary>
 internal sealed class ToolTipLayer : Control
 {
+    private const int Radius = 5;
+
     private string _text = "";
     private Control? _anchor;
     private readonly System.Windows.Forms.Timer _timer;
@@ -17,7 +19,7 @@ internal sealed class ToolTipLayer : Control
     {
         Visible = false;
         Cursor = Cursors.Default;
-        Font = Theme.UI(10.5f);
+        Font = Theme.UI(9f);
         SetStyle(ControlStyles.OptimizedDoubleBuffer | ControlStyles.UserPaint | ControlStyles.AllPaintingInWmPaint, true);
         _timer = new System.Windows.Forms.Timer { Interval = 520 };
         _timer.Tick += (_, _) => { _timer.Stop(); ShowNow(); };
@@ -59,7 +61,7 @@ internal sealed class ToolTipLayer : Control
         if (form is null || form.IsDisposed || !form.Visible) { Visible = false; return; }
 
         var sz = TextRenderer.MeasureText(_text, Font);
-        Size = new Size(sz.Width + 24, sz.Height + 14);
+        Size = new Size(sz.Width + 20, sz.Height + 12);
 
         var p = form.PointToClient(anchor.PointToScreen(Point.Empty));
         int x = p.X + anchor.Width / 2 - Width / 2;
@@ -75,22 +77,48 @@ internal sealed class ToolTipLayer : Control
         BringToFront();
     }
 
+    protected override void OnHandleCreated(EventArgs e)
+    {
+        base.OnHandleCreated(e);
+        ApplyRegion();
+    }
+
+    protected override void OnSizeChanged(EventArgs e)
+    {
+        base.OnSizeChanged(e);
+        ApplyRegion();
+    }
+
+    /// <summary>把窗口区域裁剪成圆角，使四角真正透明（露出其下的内容），避免矩形底色外露。</summary>
+    private void ApplyRegion()
+    {
+        Region?.Dispose();
+        Region = null;
+        if (Width <= 0 || Height <= 0) return;
+
+        using var path = Rounded(new Rectangle(0, 0, Width, Height), Radius);
+        Region = new Region(path);
+    }
+
     protected override void OnPaint(PaintEventArgs e)
     {
         var g = e.Graphics;
         g.SmoothingMode = SmoothingMode.AntiAlias;
         g.TextRenderingHint = System.Drawing.Text.TextRenderingHint.AntiAlias;
 
-        var rc = new Rectangle(0, 0, Width - 1, Height - 1);
-        using var path = Rounded(rc, 6);
-        using (var bg = new SolidBrush(Color.FromArgb(255, 38, 42, 50)))
-            g.FillPath(bg, path);
-        using (var border = new Pen(Color.FromArgb(90, 96, 104, 116)))
-            g.DrawPath(border, path);
+        var rc = new Rectangle(0, 0, Width, Height);
+        using var fill = Rounded(rc, Radius);
+        using (var bg = new SolidBrush(Color.FromArgb(255, 62, 66, 74)))
+            g.FillPath(bg, fill);
+
+        var borderRect = new Rectangle(0, 0, Width - 1, Height - 1);
+        using var borderPath = Rounded(borderRect, Radius);
+        using var border = new Pen(Color.FromArgb(60, 120, 128, 136));
+        g.DrawPath(border, borderPath);
 
         TextRenderer.DrawText(g, _text, Font,
-            new Rectangle(12, 0, Width - 24, Height),
-            Color.White,
+            new Rectangle(10, 0, Width - 20, Height),
+            Color.FromArgb(224, 228, 233),
             TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPrefix);
         base.OnPaint(e);
     }
