@@ -12,7 +12,7 @@ namespace LiveAssistant;
 public class MainForm : Form
 {
     public const string WindowTitle = "帮帮";
-    public const string AppVersion = "v0.6.0";
+    public const string AppVersion = "v0.7.0";
 
     private const uint Affinity = Native.WDA_EXCLUDEFROMCAPTURE;
     private const int SideW = 304;
@@ -140,6 +140,9 @@ public class MainForm : Form
         DragEnter += Main_DragEnter;
         DragDrop += Main_DragDrop;
         _welcome.BringToFront();
+
+        // 应用内鼠标一律为箭头指针，且对后续新增控件同样生效。
+        Ui.EnforceArrowCursor(this);
     }
 
     // ---------------- 显式布局 ----------------
@@ -401,6 +404,12 @@ public class MainForm : Form
         {
             Native.SetWindowDisplayAffinity(Handle, Native.WDA_NONE);
             ApplyAffinity();
+            // 重设显示亲和性会触发 DWM 重建该窗口的合成表面，可能把它从
+            // TOPMOST 层级中挤下来（虽然 WS_EX_TOPMOST 样式还在）。Activate()
+            // 只会把窗口提升到“当前层级”的顶部，无法恢复被移出的层级。
+            // 因此每次显示后都显式钉回最上层，避免被其它应用覆盖。
+            Native.SetWindowPos(Handle, Native.HWND_TOPMOST, 0, 0, 0, 0,
+                Native.SWP_NOMOVE | Native.SWP_NOSIZE | Native.SWP_NOACTIVATE);
         }
     }
 
@@ -635,7 +644,7 @@ internal sealed class BrandBlock : Panel
             g.FillEllipse(bg, 18, 24, 52, 52);
         using (var f = new Font("Microsoft YaHei UI", 24f, FontStyle.Bold))
         {
-            string c = "直";
+            string c = "帮";
             var sz = g.MeasureString(c, f);
             using var b = new SolidBrush(Color.White);
             g.DrawString(c, f, b, 18 + (52 - sz.Width) / 2, 24 + (52 - sz.Height) / 2);
@@ -644,15 +653,7 @@ internal sealed class BrandBlock : Panel
         using (var sub = new SolidBrush(Theme.TextMuted))
         {
             g.DrawString("帮帮", Theme.UI(15f, FontStyle.Bold), name, 84, 30);
-            g.DrawString("LLM 聊天 · 防录屏助手", Theme.UI(9.5f), sub, 84, 56);
-        }
-        // 版本、版权、作者 居中显示
-        string info = MainForm.AppVersion + "  ·  © 2026 Tinger";
-        using (var ifont = Theme.UI(9f))
-        using (var infoBrush = new SolidBrush(Theme.TextMuted))
-        {
-            var iw = g.MeasureString(info, ifont);
-            g.DrawString(info, ifont, infoBrush, (Width - iw.Width) / 2, 104);
+            g.DrawString("© 2026 Tinger  ·  " + MainForm.AppVersion, Theme.UI(9.5f), sub, 84, 56);
         }
         using var line = new Pen(Theme.Border);
         g.DrawLine(line, 12, Height - 1, Width - 12, Height - 1);

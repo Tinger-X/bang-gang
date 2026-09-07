@@ -30,6 +30,7 @@ public class ScreenshotOverlayForm : Form
         KeyPreview = true;
         _ = Handle;                                     // 立即创建句柄以便设置防录屏
         TryExclude();
+        Ui.EnforceArrowCursor(this);                    // 选区遮罩也保持箭头指针
     }
 
     private void TryExclude()
