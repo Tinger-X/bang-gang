@@ -184,7 +184,8 @@ internal sealed class ToolTipForm : Form
         using var fmt = TightFormat();
         var size = g.MeasureString(text, font, int.MaxValue, fmt);
         float x = rect.X + (rect.Width - size.Width) / 2f;
-        float y = rect.Y + (rect.Height - size.Height) / 2f;
+        // 背景框相对文字上移 2 个单位（等价于文字在框内下移 2px）
+        float y = rect.Y + (rect.Height - size.Height) / 2f + 2f;
         g.DrawString(text, font, brush, x, y, fmt);
     }
 

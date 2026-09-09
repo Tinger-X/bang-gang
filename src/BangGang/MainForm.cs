@@ -12,7 +12,7 @@ namespace BangGang;
 public class MainForm : Form
 {
     public const string WindowTitle = "帮帮";
-    public const string AppVersion = "v0.7.7";
+    public const string AppVersion = "v0.7.8";
 
     private const uint Affinity = Native.WDA_EXCLUDEFROMCAPTURE;
     private const int SideW = 304;
