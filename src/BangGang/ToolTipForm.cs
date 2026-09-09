@@ -87,7 +87,7 @@ internal sealed class ToolTipForm : Form
         if (owner is null || owner.IsDisposed || !owner.Visible) { Visible = false; return; }
 
         var textSize = MeasureText(_text, Font);
-        Size = new Size((int)Math.Ceiling(textSize.Width) + 12, (int)Math.Ceiling(textSize.Height) + 6);
+        Size = new Size((int)Math.Ceiling(textSize.Width) + 10, (int)Math.Ceiling(textSize.Height) + 6);
 
         var screen = Screen.FromControl(anchor);
         var wa = screen.WorkingArea;
