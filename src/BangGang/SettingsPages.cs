@@ -224,34 +224,6 @@ internal abstract class SettingsPage : Panel, IThemed
         LayoutStack();
         UpdateSaveUi();
     }
-
-    /// <summary>把“拖动浮窗”的鼠标事件接到本页的空白区域上。</summary>
-    public virtual void AttachDrag(MouseEventHandler down, MouseEventHandler move, MouseEventHandler up)
-    {
-        void Hook(Control c)
-        {
-            c.MouseDown += down;
-            c.MouseMove += move;
-            c.MouseUp += up;
-        }
-        Hook(this);
-        Hook(_title);
-        Hook(_desc);
-        Hook(_body);
-        Hook(Stack);
-        MakeDraggable(down, move, up);
-    }
-
-    /// <summary>页面内容的空白处（分组卡片）也允许作为拖动把手。</summary>
-    protected void MakeDraggable(MouseEventHandler down, MouseEventHandler move, MouseEventHandler up)
-    {
-        foreach (Control c in Stack.Controls)
-        {
-            c.MouseDown += down;
-            c.MouseMove += move;
-            c.MouseUp += up;
-        }
-    }
 }
 
 /// <summary>快捷键设置页。</summary>

@@ -1,4 +1,4 @@
-﻿# Appearance verification: draggable popup, dark mode, window border toggle (local UI review).
+# Appearance verification: draggable popup, dark mode, window border toggle (local UI review).
 # Uses a Debug build because the Release build is never capturable.
 param(
     [string]$Config = 'Debug',
@@ -39,7 +39,7 @@ $script:hwnd=[IntPtr]::Zero
 function Raise-App(){
   if($script:hwnd -eq [IntPtr]::Zero){ return }
   [void][AP]::BringWindowToTop($script:hwnd); [void][AP]::SetForegroundWindow($script:hwnd)
-  [void][AP]::SetWindowPos($script:hwnd,[IntPtr](-1),0,0,0,0,0x0003)
+  [void][AP]::SetWindowPos($script:hwnd,[IntPtr]::Zero,0,0,0,0,0x0003)
   Pump 400
 }
 function Click([int]$x,[int]$y){
@@ -86,16 +86,15 @@ Write-Output ("window {0},{1} {2}x{3}" -f $script:L,$script:T,$script:W,$script:
 $cw=880; $ch=640
 $cx=[int](($script:W-$cw)/2); $cy=[int](($script:H-$ch)/2)
 $cardX=$script:L+$cx; $cardY=$script:T+$cy
-$dx=-80; $dy=60
 
 Click ($script:L+232) ($script:T+203)          # gear -> open settings
 Pump 800
 Shot 'appearance-0-open'
 
-Drag ($cardX+100) ($cardY+560) ($cardX+100+$dx) ($cardY+560+$dy)   # drag by the sidebar blank area
-Shot 'appearance-1-dragged'
+# 浮窗现在固定居中、不可拖动：试着点/拖菜单栏空白处也应保持原位
+Drag ($cardX+100) ($cardY+560) ($cardX+180) ($cardY+620)
+Shot 'appearance-1-drag-attempt'
 
-$cardX+=$dx; $cardY+=$dy
 Click ($cardX+104) ($cardY+96+96+21)           # nav: 界面外观
 Pump 500
 Shot 'appearance-2-page'

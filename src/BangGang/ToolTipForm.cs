@@ -76,7 +76,8 @@ internal sealed class ToolTipForm : Form
     protected override void OnHandleCreated(EventArgs e)
     {
         base.OnHandleCreated(e);
-        Native.SetWindowDisplayAffinity(Handle, Native.WDA_EXCLUDEFROMCAPTURE);
+        if (!CaptureGuard.Disabled)
+            Native.SetWindowDisplayAffinity(Handle, Native.WDA_EXCLUDEFROMCAPTURE);
     }
 
     private void ShowNow()
@@ -107,8 +108,11 @@ internal sealed class ToolTipForm : Form
 
         // 每次显示后重建“排除”表面（与主窗口 Alt+X 后的处理一致），
         // 防止显示后 WDA_EXCLUDEFROMCAPTURE 的排除表面失效。
-        Native.SetWindowDisplayAffinity(Handle, Native.WDA_NONE);
-        Native.SetWindowDisplayAffinity(Handle, Native.WDA_EXCLUDEFROMCAPTURE);
+        if (!CaptureGuard.Disabled)
+        {
+            Native.SetWindowDisplayAffinity(Handle, Native.WDA_NONE);
+            Native.SetWindowDisplayAffinity(Handle, Native.WDA_EXCLUDEFROMCAPTURE);
+        }
     }
 
     private void Render()

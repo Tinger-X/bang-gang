@@ -41,26 +41,19 @@ internal sealed class SettingsOverlay : Panel, IPopupHost
     private readonly PillButton _confirmQuit = new("放弃并关闭", PillButton.Look.Danger, 116, 34);
 
     private Point _cardPos;
-    private bool _dragging;
-    private Point _dragStart;
-    private Point _dragOrigin;
     private int _sel;
 
     public SettingsOverlay()
     {
         BackColor = SC.Scrim;
         Dock = DockStyle.Fill;
-        // 注意：这里**不能**开 OptimizedDoubleBuffer —— 浮窗只保留“卡片 + 投影”区域，
-        // 必须直接把半透明投影画到窗口表面，才能和底下原有的界面像素真正混合
-        // （双缓冲会把未绘制的区域画成黑色）。
+        // 注意：这里**不能**开 OptimizedDoubleBuffer —— 浮窗只保留卡片区域，
+        // 双缓冲会把未绘制的区域画成黑色。
         SetStyle(ControlStyles.UserPaint | ControlStyles.ResizeRedraw, true);
 
-        // ---- 浮窗主体（可拖动：菜单栏空白处 / 页头 / 卡片空白处都能拖） ----
+        // ---- 浮窗主体（固定居中，不可拖动；背后浅色遮罩由主窗口负责） ----
         _card.Radius = 16;
         _card.Resize += (_, _) => LayoutCard();
-        _card.MouseDown += BeginDrag;
-        _card.MouseMove += DragMove;
-        _card.MouseUp += EndDrag;
         Controls.Add(_card);
 
         // ---- 左侧菜单栏 ----
@@ -88,22 +81,11 @@ internal sealed class SettingsOverlay : Panel, IPopupHost
         _version.TextAlign = ContentAlignment.MiddleCenter;   // 底部版本信息居中
         _rail.Controls.Add(_version);
 
-        // 菜单栏空白处也能拖动
-        foreach (Control c in new Control[] { _rail, _brandMark, _railTitle, _version })
-        {
-            c.MouseDown += BeginDrag;
-            c.MouseMove += DragMove;
-            c.MouseUp += EndDrag;
-        }
-
         _divider.BackColor = SC.Mix(SC.CardBg, Theme.Border, 0.85f);
         _card.Controls.Add(_divider);
 
         // ---- 右侧详情页 ----
         _host.BackColor = SC.CardBg;
-        _host.MouseDown += BeginDrag;
-        _host.MouseMove += DragMove;
-        _host.MouseUp += EndDrag;
         _card.Controls.Add(_host);
 
         AddPage(new ShortcutsPage(), "快捷键", Glyph.Sliders);
@@ -138,7 +120,6 @@ internal sealed class SettingsOverlay : Panel, IPopupHost
 
         page.SaveRequested += OnPageSave;
         page.DirtyChanged += RefreshDots;
-        page.AttachDrag(BeginDrag, DragMove, EndDrag);
         page.Visible = false;
         _pages.Add(page);
         _host.Controls.Add(page);
@@ -209,7 +190,7 @@ internal sealed class SettingsOverlay : Panel, IPopupHost
         foreach (Control c in root.Controls) RestyleTree(c);
     }
 
-    // ---------------- 布局 / 拖动 ----------------
+    // ---------------- 布局 ----------------
 
     protected override void OnResize(EventArgs e)
     {
@@ -218,9 +199,8 @@ internal sealed class SettingsOverlay : Panel, IPopupHost
     }
 
     /// <summary>
-    /// 把浮窗放到合适的位置：首次在主窗口内居中，之后沿用用户拖动到的位置（并夹在窗口内）。
-    /// 同时把本控件的 Region 收窄到“浮窗 + 投影”的范围，
-    /// 这样浮窗以外的区域既不会被重绘、也不会拦截鼠标，原界面保持可见可用。
+    /// 浮窗固定尺寸、始终在主窗口内上下左右居中（不可拖动）。
+    /// 本控件的 Region 只保留卡片区域，卡片以外的“变暗与拦截点击”由主窗口的浅色遮罩窗口负责。
     /// </summary>
     private void LayoutOverlay()
     {
@@ -228,30 +208,19 @@ internal sealed class SettingsOverlay : Panel, IPopupHost
 
         int cw = Math.Min(CardW, Math.Max(520, Width - 96));
         int ch = Math.Min(CardH, Math.Max(380, Height - 96));
-        if (_card.Width != cw || _card.Height != ch)
-        {
-            _card.Size = new Size(cw, ch);
-            _cardPos = new Point((Width - cw) / 2, (Height - ch) / 2);
-        }
-        _cardPos = Clamp(_cardPos, cw, ch);
+        if (_card.Width != cw || _card.Height != ch) _card.Size = new Size(cw, ch);
+
+        _cardPos = new Point((Width - cw) / 2, (Height - ch) / 2);
         _card.Location = _cardPos;
 
         ApplyRegion();
         Invalidate();
-    }
-
-    /// <summary>把浮窗夹在主窗口内（留一点边距）。</summary>
-    private Point Clamp(Point p, int cw, int ch)
-    {
-        const int m = 6;
-        int maxX = Math.Max(m, Width - cw - m);
-        int maxY = Math.Max(m, Height - ch - m);
-        return new Point(Math.Clamp(p.X, m, maxX), Math.Clamp(p.Y, m, maxY));
+        CardBoundsChanged?.Invoke();
     }
 
     /// <summary>
-    /// 只保留浮窗本体所在的区域（圆角卡片），区域外不绘制、也不接收鼠标：
-    /// 原界面完整可见可用，而且不会留下“陈旧像素”。
+    /// 只保留浮窗本体所在的区域（圆角卡片），区域外不绘制、也不接收鼠标，
+    /// 因此不会在原界面上留下“陈旧像素”；同时避免把卡片的圆角切掉。
     /// </summary>
     private void ApplyRegion()
     {
@@ -263,30 +232,18 @@ internal sealed class SettingsOverlay : Panel, IPopupHost
         old?.Dispose();
     }
 
-    private void BeginDrag(object? sender, MouseEventArgs e)
+    /// <summary>浮窗卡片在屏幕坐标下的矩形（供遮罩窗口挖洞用）。</summary>
+    public Rectangle CardScreenRect()
     {
-        if (e.Button != MouseButtons.Left) return;
-        _dragging = true;
-        _dragStart = new Point(Width > 0 ? Cursor.Position.X : 0, Cursor.Position.Y);
-        _dragOrigin = _cardPos;
+        if (!IsHandleCreated || _card.Width <= 0) return Rectangle.Empty;
+        return _card.RectangleToScreen(_card.ClientRectangle);
     }
 
-    private void DragMove(object? sender, MouseEventArgs e)
-    {
-        if (!_dragging) return;
-        var now = Cursor.Position;
-        var target = new Point(_dragOrigin.X + (now.X - _dragStart.X), _dragOrigin.Y + (now.Y - _dragStart.Y));
-        var clamped = Clamp(target, _card.Width, _card.Height);
-        if (clamped == _cardPos) return;
-        _cardPos = clamped;
-        _card.Location = _cardPos;
-        ApplyRegion();
-        Invalidate();
-        // 浮窗挪走后，原位置的底界面需要重画
-        FindForm()?.Invalidate(true);
-    }
+    /// <summary>卡片位置或尺寸变化（窗口缩放）时通知主窗口刷新遮罩。</summary>
+    public event Action? CardBoundsChanged;
 
-    private void EndDrag(object? sender, MouseEventArgs e) => _dragging = false;
+    /// <summary>点击浮窗之外的遮罩区域：收起设置（有未保存改动时先弹确认）。</summary>
+    public void ScrimClicked() => RequestClose();
 
     private void LayoutCard()
     {
@@ -408,10 +365,9 @@ internal sealed class SettingsOverlay : Panel, IPopupHost
 
     protected override void OnVisibleChanged(EventArgs e)
     {
-        base.OnVisibleChanged(e);
         if (Visible)
         {
-            LayoutOverlay();
+            LayoutOverlay();               // 先摆好位置，主窗口随后才能按卡片位置挖遮罩的洞
             if (_navs.Count > 0) _navs[_sel].Focus();
         }
         else
@@ -419,6 +375,7 @@ internal sealed class SettingsOverlay : Panel, IPopupHost
             HideConfirm();
             Ui.HideToolTip();
         }
+        base.OnVisibleChanged(e);
     }
 
     protected override bool ProcessCmdKey(ref Message msg, Keys keyData)
@@ -429,7 +386,34 @@ internal sealed class SettingsOverlay : Panel, IPopupHost
             else RequestClose();
             return true;
         }
+        // 设置打开时 Tab 只在浮窗内部循环，避免焦点跑到被遮罩盖住的主界面上
+        if (Visible && (keyData == Keys.Tab || keyData == (Keys.Tab | Keys.Shift)))
+        {
+            CycleFocus(keyData == (Keys.Tab | Keys.Shift));
+            return true;
+        }
         return base.ProcessCmdKey(ref msg, keyData);
+    }
+
+    /// <summary>在浮窗内部切换焦点（按可见、可用、可选中的顺序）。</summary>
+    private void CycleFocus(bool backwards)
+    {
+        var list = new List<Control>();
+        CollectFocusable(_card, list);
+        if (list.Count == 0) return;
+        int idx = list.FindIndex(c => c.Focused || c.ContainsFocus);
+        int next = idx < 0 ? 0 : (idx + (backwards ? -1 : 1) + list.Count) % list.Count;
+        list[next].Focus();
+    }
+
+    private static void CollectFocusable(Control root, List<Control> into)
+    {
+        foreach (Control c in root.Controls)
+        {
+            if (!c.Visible || !c.Enabled) continue;
+            if (c.TabStop && c.CanSelect) into.Add(c);
+            CollectFocusable(c, into);
+        }
     }
 
     /// <summary>供主窗口调用：无论焦点在不在浮窗里，Esc 都能收起设置。</summary>

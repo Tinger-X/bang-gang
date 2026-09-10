@@ -28,6 +28,8 @@ public static class AB {
   [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr h);
   [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr h, out RECT r);
   [DllImport("user32.dll")] public static extern bool GetWindowDisplayAffinity(IntPtr h, out uint a);
+  [DllImport("user32.dll")] public static extern bool SetCursorPos(int x, int y);
+  [DllImport("user32.dll")] public static extern void mouse_event(uint f, uint dx, uint dy, uint d, UIntPtr e);
   public struct RECT{ public int L,T,R,B; }
 }
 "@
@@ -83,6 +85,12 @@ function Run-Case([string]$name,[string]$exe,[bool]$useSwitch){
   [AB]::EnumWindows($cb,[IntPtr]::Zero)|Out-Null
   if($script:m -eq [IntPtr]::Zero){ Write-Host "$name : no window"; return $null }
   $aff=0; [void][AB]::GetWindowDisplayAffinity($script:m,[ref]$aff)
+  # 打开设置浮窗（同时会挂上浅色遮罩），保证“浮窗 + 遮罩”也在被验证的范围里
+  $wr=New-Object AB+RECT; [void][AB]::GetWindowRect($script:m,[ref]$wr)
+  [void][AB]::SetCursorPos($wr.L+232, $wr.T+203); Start-Sleep -Milliseconds 200
+  [AB]::mouse_event(2,0,0,0,[UIntPtr]::Zero); Start-Sleep -Milliseconds 90
+  [AB]::mouse_event(4,0,0,0,[UIntPtr]::Zero); Start-Sleep -Milliseconds 900
+  [void][AB]::SetCursorPos(20,1060); Start-Sleep -Milliseconds 400
   $w=$Magenta; $h=$MagH
   $bmp = Grab $MagX $MagY $w $h
   $st = Count $bmp $w $h

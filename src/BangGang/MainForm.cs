@@ -39,6 +39,7 @@ public class MainForm : Form
     private readonly InputPanel _input;
     private readonly SettingsOverlay _settingsOverlay;
     private readonly WindowFrame _frame = new();
+    private ScrimForm? _scrim;
 
     // 定时器
     private readonly System.Windows.Forms.Timer _guardTimer;
@@ -118,9 +119,11 @@ public class MainForm : Form
 
         _chatUI.Visible = false;
 
-        // ---- 内部设置层（覆盖整个窗口，无需单独窗口/托盘） ----
+        // ---- 内部设置浮窗（固定居中；背后由 ScrimForm 提供浅色遮罩，无需独立设置窗口） ----
         _settingsOverlay = new SettingsOverlay();
         _settingsOverlay.Applied += OnSettingsApplied;
+        _settingsOverlay.CardBoundsChanged += OnScrimBounds;
+        _settingsOverlay.VisibleChanged += (_, _) => ShowScrim(_settingsOverlay.Visible);
         _settingsOverlay.Visible = false;
         Controls.Add(_settingsOverlay);
 
@@ -140,6 +143,8 @@ public class MainForm : Form
         AllowDrop = true;
         DragEnter += Main_DragEnter;
         DragDrop += Main_DragDrop;
+        LocationChanged += (_, _) => OnScrimBounds();    // 窗口被拖动时遮罩跟着走
+        Activated += (_, _) => { if (_settingsOverlay.Visible) _scrim?.Raise(); };
         _welcome.BringToFront();
 
         // ---- 可选的主题色窗口边框（画在所有内容之上） ----
@@ -315,14 +320,51 @@ public class MainForm : Form
         _chrome.SetStatus("已添加到输入框");
     }
 
-    // ---------------- 设置（内部覆盖层） ----------------
+    // ---------------- 设置（居中浮窗 + 浅色遮罩） ----------------
 
     private void OpenSettings()
     {
         _settingsOverlay.ReloadFrom(_settings);
         _settingsOverlay.BringToFront();
-        _settingsOverlay.Visible = true;
+        _settingsOverlay.Visible = true;   // 显示后由 VisibleChanged 挂上浅色遮罩
         _settingsOverlay.Focus();
+    }
+
+    /// <summary>
+    /// 显示 / 隐藏设置浮窗背后的浅色遮罩：主界面仍然可见，只是被轻微压暗，
+    /// 同时挡住鼠标让主界面不可操作（浮窗所在位置挖洞，浮窗照常可用）。
+    /// </summary>
+    private void ShowScrim(bool show)
+    {
+        if (!show)
+        {
+            _scrim?.Hide();
+            // 设置关闭后主窗口恢复置顶
+            TopMost = true;
+            Native.SetWindowPos(Handle, Native.HWND_TOPMOST, 0, 0, 0, 0,
+                Native.SWP_NOMOVE | Native.SWP_NOSIZE | Native.SWP_NOACTIVATE);
+            return;
+        }
+
+        if (_scrim == null || _scrim.IsDisposed)
+        {
+            _scrim = new ScrimForm();
+            _scrim.ScrimClicked += () => _settingsOverlay.ScrimClicked();
+        }
+        _scrim.FitTo(this, _settingsOverlay.CardScreenRect());
+        if (!_scrim.Visible) _scrim.Show();
+        _scrim.Raise();
+        // 主窗口也是 TopMost，会盖住遮罩：设置打开期间先让出置顶，遮罩才能稳定压在上面
+        TopMost = false;
+    }
+
+    private void OnScrimBounds()
+    {
+        if (_settingsOverlay.Visible && _scrim is { IsDisposed: false })
+        {
+            _scrim.FitTo(this, _settingsOverlay.CardScreenRect());
+            _scrim.Raise();
+        }
     }
 
     private void OnSettingsApplied(AppSettings s)
@@ -428,8 +470,10 @@ public class MainForm : Form
             // TOPMOST 层级中挤下来（虽然 WS_EX_TOPMOST 样式还在）。Activate()
             // 只会把窗口提升到“当前层级”的顶部，无法恢复被移出的层级。
             // 因此每次显示后都显式钉回最上层，避免被其它应用覆盖。
-            Native.SetWindowPos(Handle, Native.HWND_TOPMOST, 0, 0, 0, 0,
-                Native.SWP_NOMOVE | Native.SWP_NOSIZE | Native.SWP_NOACTIVATE);
+            // （设置打开期间主窗口主动让出置顶，好让浅色遮罩稳定压在上面。）
+            if (!_settingsOverlay.Visible)
+                Native.SetWindowPos(Handle, Native.HWND_TOPMOST, 0, 0, 0, 0,
+                    Native.SWP_NOMOVE | Native.SWP_NOSIZE | Native.SWP_NOACTIVATE);
         }
         else if (!Visible)
         {

@@ -80,7 +80,7 @@ function Raise-App(){
   if($script:hwnd -eq [IntPtr]::Zero){ return }
   [void][SD]::BringWindowToTop($script:hwnd)
   [void][SD]::SetForegroundWindow($script:hwnd)
-  [void][SD]::SetWindowPos($script:hwnd,[IntPtr](-1),0,0,0,0,0x0003)   # HWND_TOPMOST, keep position/size
+  [void][SD]::SetWindowPos($script:hwnd,[IntPtr]::Zero,0,0,0,0,0x0003)   # HWND_TOPMOST, keep position/size
   Start-Sleep -Milliseconds 450
 }
 function Shot([string]$name){

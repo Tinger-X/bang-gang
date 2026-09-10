@@ -1,4 +1,4 @@
-# Focused checks: provider dropdown, slim scrollbar, shortcuts page with 录音方式.
+﻿# Focused checks: provider dropdown, slim scrollbar, shortcuts page with 录音方式.
 param(
     [string]$Config = 'Debug',
     [string]$OutDir = 'D:\project\bang-bang\dist\ui-preview'
@@ -35,7 +35,7 @@ public static class FX {
 "@
 function Pump([int]$ms){ $n=[int]($ms/25); for($i=0;$i -lt $n;$i++){ [System.Windows.Forms.Application]::DoEvents(); Start-Sleep -Milliseconds 25 } }
 $script:hwnd=[IntPtr]::Zero
-function Raise-App(){ if($script:hwnd -ne [IntPtr]::Zero){ [void][FX]::BringWindowToTop($script:hwnd); [void][FX]::SetForegroundWindow($script:hwnd); [void][FX]::SetWindowPos($script:hwnd,[IntPtr](-1),0,0,0,0,0x0003); Pump 350 } }
+function Raise-App(){ if($script:hwnd -ne [IntPtr]::Zero){ [void][FX]::BringWindowToTop($script:hwnd); [void][FX]::SetForegroundWindow($script:hwnd); [void][FX]::SetWindowPos($script:hwnd,[IntPtr]::Zero,0,0,0,0,0x0003); Pump 350 } }
 function Click([int]$x,[int]$y){ Raise-App; [void][FX]::SetCursorPos($x,$y); Pump 180; [FX]::mouse_event(2,0,0,0,[UIntPtr]::Zero); Pump 90; [FX]::mouse_event(4,0,0,0,[UIntPtr]::Zero); Pump 420 }
 function Hover([int]$x,[int]$y){ Raise-App; [void][FX]::SetCursorPos($x,$y); Pump 300 }
 function Wheel([int]$down,[int]$x,[int]$y){ Raise-App; [void][FX]::SetCursorPos($x,$y); Pump 150
