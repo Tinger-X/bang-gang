@@ -1,8 +1,9 @@
 using System.Text.Json;
+using Microsoft.Win32;
 
 namespace BangGang;
 
-/// <summary>全局主题色（运行时由设置刷新）。</summary>
+/// <summary>全局主题色（运行时由设置刷新，支持亮色 / 暗色两套调色板）。</summary>
 public static class Theme
 {
     public static Color ChatBg = Color.White;
@@ -19,8 +20,24 @@ public static class Theme
     public static Color Danger = Color.FromArgb(214, 60, 54);
     public static double WindowOpacity = 1.0;
 
+    /// <summary>当前是否暗色主题（部分推导颜色需要区分）。</summary>
+    public static bool Dark;
+
+    /// <summary>是否绘制主题色窗口边框。</summary>
+    public static bool WindowBorder = true;
+
     public static Font UI(float size, FontStyle st = FontStyle.Regular) => new("Microsoft YaHei UI", size, st);
     public static Font Mono(float size) => new("Consolas", size);
+
+    /// <summary>把 a 按权重 k 混向 b。</summary>
+    public static Color Mix(Color a, Color b, float k)
+    {
+        k = Math.Clamp(k, 0f, 1f);
+        return Color.FromArgb(
+            (int)Math.Round(a.R + (b.R - a.R) * k),
+            (int)Math.Round(a.G + (b.G - a.G) * k),
+            (int)Math.Round(a.B + (b.B - a.B) * k));
+    }
 }
 
 /// <summary>单个快捷键绑定。</summary>
@@ -76,19 +93,37 @@ public class ShortcutSetting
 public class AppSettings
 {
     public List<ShortcutSetting> Shortcuts { get; set; } = DefaultShortcuts();
+
+    // ---------- 对话模型（OpenAI 兼容 / 多模态） ----------
     public string ChatApiUrl { get; set; } = "";
     public string ChatApiKey { get; set; } = "";
     public string ChatModel { get; set; } = "";
+    /// <summary>模型是否支持图片等多媒体输入（多模态）。</summary>
+    public bool ChatVision { get; set; } = true;
+
+    // ---------- 实时语音转写（通用流式 STT） ----------
     public string SttApiUrl { get; set; } = "";
+    public string SttAppId { get; set; } = "";
     public string SttApiKey { get; set; } = "";
     public string SttModel { get; set; } = "";
+
+    /// <summary>录音方式："hold" 按住录音 / "toggle" 按一下开始、再按一下停止。</summary>
+    public string RecordMode { get; set; } = "hold";
+
+    // ---------- 外观 ----------
+    /// <summary>"system" | "light" | "dark"</summary>
+    public string ThemeMode { get; set; } = "system";
+    /// <summary>是否显示主题色窗口边框。</summary>
+    public bool WindowBorder { get; set; } = true;
+    public int Accent { get; set; } = Color.FromArgb(47, 112, 224).ToArgb();
+    public double Opacity { get; set; } = 1.0;
+
+    // 旧版字段：仅作为“解析后调色板”的快照保留，界面不再单独编辑
     public int ChatBg { get; set; } = Color.White.ToArgb();
     public int SideBg { get; set; } = Color.FromArgb(246, 248, 251).ToArgb();
     public int PanelBg { get; set; } = Color.FromArgb(252, 253, 255).ToArgb();
     public int TextColor { get; set; } = Color.FromArgb(30, 34, 40).ToArgb();
     public int TextMutedColor { get; set; } = Color.FromArgb(120, 128, 138).ToArgb();
-    public int Accent { get; set; } = Color.FromArgb(47, 112, 224).ToArgb();
-    public double Opacity { get; set; } = 1.0;
 
     public static List<ShortcutSetting> DefaultShortcuts() => new()
     {
@@ -97,23 +132,79 @@ public class AppSettings
         new ShortcutSetting { Action = "record", Alt = true, Vk = 0x56 },
     };
 
-    public void ApplyTheme()
+    /// <summary>系统是否使用亮色应用主题（“跟随系统”时读取）。</summary>
+    public static bool SystemUsesLightTheme()
     {
-        Theme.ChatBg = Color.FromArgb(ChatBg);
-        Theme.SideBg = Color.FromArgb(SideBg);
-        Theme.PanelBg = Color.FromArgb(PanelBg);
-        Theme.TextMain = Color.FromArgb(TextColor);
-        Theme.TextMuted = Color.FromArgb(TextMutedColor);
-        Theme.Accent = Color.FromArgb(Accent);
-        Theme.UserBubble = Blend(Theme.Accent, Color.White, 0.88f);
-        Theme.AsstBubble = Color.FromArgb(240, 242, 246);
-        Theme.InputBg = Theme.PanelBg;
-        Theme.Border = Color.FromArgb(224, 229, 236);
-        Theme.WindowOpacity = Math.Clamp(Opacity, 0.5, 1.0);
+        try
+        {
+            using var key = Registry.CurrentUser.OpenSubKey(
+                @"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize");
+            if (key?.GetValue("AppsUseLightTheme") is int v) return v != 0;
+        }
+        catch { /* 读不到按亮色处理 */ }
+        return true;
     }
 
-    private static Color Blend(Color a, Color b, float k) =>
-        Color.FromArgb((int)(a.R * k + b.R * (1 - k)), (int)(a.G * k + b.G * (1 - k)), (int)(a.B * k + b.B * (1 - k)));
+    public bool ResolveDark() => ThemeMode switch
+    {
+        "dark" => true,
+        "light" => false,
+        _ => !SystemUsesLightTheme(),
+    };
+
+    /// <summary>按主题模式刷新整套调色板。</summary>
+    public void ApplyTheme()
+    {
+        bool dark = ResolveDark();
+        Theme.Dark = dark;
+
+        Color chat, side, panel, text, muted, border, input, asst, user;
+        if (dark)
+        {
+            chat = Color.FromArgb(23, 25, 29);
+            side = Color.FromArgb(29, 32, 37);
+            panel = Color.FromArgb(34, 37, 43);
+            text = Color.FromArgb(232, 235, 239);
+            muted = Color.FromArgb(150, 158, 168);
+            border = Color.FromArgb(52, 58, 66);
+            input = Color.FromArgb(43, 47, 54);
+            asst = Color.FromArgb(40, 44, 50);
+            user = Theme.Mix(chat, Theme.Accent, 0.34f);
+        }
+        else
+        {
+            chat = Color.White;
+            side = Color.FromArgb(246, 248, 251);
+            panel = Color.FromArgb(252, 253, 255);
+            text = Color.FromArgb(30, 34, 40);
+            muted = Color.FromArgb(120, 128, 138);
+            border = Color.FromArgb(224, 229, 236);
+            input = panel;
+            asst = Color.FromArgb(240, 242, 246);
+            user = Theme.Mix(Color.White, Theme.Accent, 0.16f);
+        }
+
+        Theme.ChatBg = chat;
+        Theme.SideBg = side;
+        Theme.PanelBg = panel;
+        Theme.HeaderBg = Theme.Mix(panel, Theme.Accent, dark ? 0.08f : 0.05f);
+        Theme.TextMain = text;
+        Theme.TextMuted = muted;
+        Theme.Border = border;
+        Theme.InputBg = input;
+        Theme.AsstBubble = asst;
+        Theme.Accent = Color.FromArgb(Accent);
+        Theme.UserBubble = user;
+        Theme.WindowOpacity = Math.Clamp(Opacity, 0.5, 1.0);
+        Theme.WindowBorder = WindowBorder;
+
+        // 调色板快照（写入 settings.json 便于排查；界面不再单独编辑）
+        ChatBg = chat.ToArgb();
+        SideBg = side.ToArgb();
+        PanelBg = panel.ToArgb();
+        TextColor = text.ToArgb();
+        TextMutedColor = muted.ToArgb();
+    }
 
     public static string SettingsPath =>
         Path.Combine(AppContext.BaseDirectory, "settings.json");
@@ -128,6 +219,7 @@ public class AppSettings
                 if (s != null)
                 {
                     if (s.Shortcuts == null || s.Shortcuts.Count == 0) s.Shortcuts = DefaultShortcuts();
+                    if (string.IsNullOrEmpty(s.ThemeMode)) s.ThemeMode = "system";
                     s.ApplyTheme();
                     return s;
                 }
@@ -148,9 +240,12 @@ public class AppSettings
     public void CopyFrom(AppSettings o)
     {
         Shortcuts = o.Shortcuts.Select(x => new ShortcutSetting { Action = x.Action, Ctrl = x.Ctrl, Alt = x.Alt, Shift = x.Shift, Vk = x.Vk }).ToList();
-        ChatApiUrl = o.ChatApiUrl; ChatApiKey = o.ChatApiKey; ChatModel = o.ChatModel;
-        SttApiUrl = o.SttApiUrl; SttApiKey = o.SttApiKey; SttModel = o.SttModel;
+        ChatApiUrl = o.ChatApiUrl; ChatApiKey = o.ChatApiKey; ChatModel = o.ChatModel; ChatVision = o.ChatVision;
+        SttApiUrl = o.SttApiUrl; SttAppId = o.SttAppId; SttApiKey = o.SttApiKey; SttModel = o.SttModel;
+        RecordMode = o.RecordMode;
+        ThemeMode = o.ThemeMode; WindowBorder = o.WindowBorder;
+        Accent = o.Accent; Opacity = o.Opacity;
         ChatBg = o.ChatBg; SideBg = o.SideBg; PanelBg = o.PanelBg;
-        TextColor = o.TextColor; TextMutedColor = o.TextMutedColor; Accent = o.Accent; Opacity = o.Opacity;
+        TextColor = o.TextColor; TextMutedColor = o.TextMutedColor;
     }
 }

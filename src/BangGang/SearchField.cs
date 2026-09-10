@@ -142,9 +142,9 @@ internal sealed class SearchField : Control
         if (_tb.Text.Length > 0)
         {
             var cr = ClearRect();
-            using (var cb = new SolidBrush(_overClear ? Color.FromArgb(205, 210, 218) : Color.FromArgb(228, 232, 238)))
+            using (var cb = new SolidBrush(Theme.Mix(Theme.InputBg, Theme.TextMuted, _overClear ? 0.34f : 0.18f)))
                 g.FillEllipse(cb, cr);
-            using (var xp = new Pen(Color.FromArgb(110, 118, 128), 1.5f) { StartCap = LineCap.Round, EndCap = LineCap.Round })
+            using (var xp = new Pen(Theme.TextMuted, 1.5f) { StartCap = LineCap.Round, EndCap = LineCap.Round })
             {
                 g.DrawLine(xp, cr.Left + 5, cr.Top + 5, cr.Right - 5, cr.Bottom - 5);
                 g.DrawLine(xp, cr.Right - 5, cr.Top + 5, cr.Left + 5, cr.Bottom - 5);

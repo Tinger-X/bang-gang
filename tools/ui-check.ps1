@@ -1,7 +1,13 @@
-# Drive the new chat UI: create a conversation, type+send, open settings, screenshot the window.
+﻿# Drive the chat UI: create a conversation, type+send, open settings popup, screenshot the window.
+# NOTE: the Release build is never capturable (WDA_EXCLUDEFROMCAPTURE, no runtime backdoor),
+# so screenshots use a Debug build whose BANGGANG_SHOW_IN_CAPTURE=1 switch allows capture.
 $ErrorActionPreference = 'Stop'
-$exe = 'D:\project\bang-bang\dist\BangGang.exe'
-$dist = Split-Path $exe
+$proj = 'D:\project\bang-bang\src\BangGang\BangGang.csproj'
+$dist = 'D:\project\bang-bang\dist\ui-preview'
+New-Item -ItemType Directory -Force -Path $dist | Out-Null
+dotnet publish $proj -c Debug -o $dist --nologo | Out-Null
+$exe = Join-Path $dist 'BangGang.exe'
+if (-not (Test-Path $exe)) { Write-Output "publish failed: $exe"; exit 1 }
 
 Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
@@ -54,7 +60,9 @@ function TypeText([string]$s){
 
 Get-Process BangGang -ErrorAction SilentlyContinue | Stop-Process -Force
 Start-Sleep -Milliseconds 600
+$env:BANGGANG_SHOW_IN_CAPTURE='1'    # 仅 Debug 构建生效：让窗口可被截图核对
 $proc=Start-Process -FilePath $exe -WorkingDirectory $dist -PassThru
+Remove-Item Env:\BANGGANG_SHOW_IN_CAPTURE
 Start-Sleep -Milliseconds 2200
 $hwnd=Find-Main $proc.Id
 if($hwnd -eq [IntPtr]::Zero){ Write-Output 'no main window'; exit 1 }
@@ -73,10 +81,11 @@ TypeText "hello"
 [D]::keybd_event(0x0D,0,0,[UIntPtr]::Zero); Start-Sleep -Milliseconds 30; [D]::keybd_event(0x0D,0,2,[UIntPtr]::Zero)
 Start-Sleep -Milliseconds 1500
 
-# 3) open settings overlay (gear ~ L+232,T+203), then close it via its own × (L+W-30,T+27)
+# 3) open settings popup (gear ~ L+232,T+203), then close it via its own ×
+#    popup is 880x640, centred in the 1200x800 window: card origin = L+160, T+80, close btn = +843,+40
 Click ($L+232) ($T+203)
 Start-Sleep -Milliseconds 900
-Click ($L+$W-30) ($T+27)
+Click ($L+160+850) ($T+80+26)
 Start-Sleep -Milliseconds 400
 
 # 4) screenshot main window to file

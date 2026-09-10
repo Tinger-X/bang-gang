@@ -1,7 +1,7 @@
 namespace BangGang;
 
 /// <summary>聊天消息区：垂直排布气泡，支持滚动。</summary>
-internal sealed class ChatView : Panel
+internal sealed class ChatView : Panel, IThemed
 {
     private readonly List<MessageBubble> _rows = new();
     public Conversation? Conv { get; private set; }
@@ -11,6 +11,12 @@ internal sealed class ChatView : Panel
         BackColor = Theme.ChatBg;
         AutoScroll = true;
         SetStyle(ControlStyles.OptimizedDoubleBuffer | ControlStyles.AllPaintingInWmPaint | ControlStyles.ResizeRedraw, true);
+    }
+
+    public void Restyle()
+    {
+        BackColor = Theme.ChatBg;
+        Invalidate();
     }
 
     public void Load(Conversation c)

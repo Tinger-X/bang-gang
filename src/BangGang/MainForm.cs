@@ -12,7 +12,7 @@ namespace BangGang;
 public class MainForm : Form
 {
     public const string WindowTitle = "帮帮";
-    public const string AppVersion = "v0.7.10";
+    public const string AppVersion = "v0.7.12";
 
     private const uint Affinity = Native.WDA_EXCLUDEFROMCAPTURE;
     private const int SideW = 304;
@@ -38,6 +38,7 @@ public class MainForm : Form
     private readonly ChatView _chatView;
     private readonly InputPanel _input;
     private readonly SettingsOverlay _settingsOverlay;
+    private readonly WindowFrame _frame = new();
 
     // 定时器
     private readonly System.Windows.Forms.Timer _guardTimer;
@@ -127,7 +128,7 @@ public class MainForm : Form
         ApplyLayout();
 
         _guardTimer = new System.Windows.Forms.Timer { Interval = 3000 };
-        _guardTimer.Tick += (_, _) => EnsureAffinity();
+        _guardTimer.Tick += (_, _) => { EnsureAffinity(); WatchSystemTheme(); };
         _guardTimer.Start();
 
         _pttTimer = new System.Windows.Forms.Timer { Interval = 80 };
@@ -140,6 +141,11 @@ public class MainForm : Form
         DragEnter += Main_DragEnter;
         DragDrop += Main_DragDrop;
         _welcome.BringToFront();
+
+        // ---- 可选的主题色窗口边框（画在所有内容之上） ----
+        _frame.Visible = Theme.WindowBorder;
+        Controls.Add(_frame);
+        _frame.BringToFront();
 
         // 应用内鼠标一律为箭头指针，且对后续新增控件同样生效。
         Ui.EnforceArrowCursor(this);
@@ -166,6 +172,7 @@ public class MainForm : Form
         _chatUI.Bounds = new Rectangle(0, 0, W - SideW, bodyH);
 
         _settingsOverlay.Bounds = new Rectangle(0, 0, W, H);
+        _frame.Bounds = new Rectangle(0, 0, W, H);
 
         int mw = W - SideW;
         _convTitle.Bounds = new Rectangle(0, 0, mw, 48);
@@ -184,16 +191,10 @@ public class MainForm : Form
         }
     }
 
+    /// <summary>窗口改为全直角（不做圆角裁剪）。</summary>
     private void ApplyRoundRegion()
     {
-        const int r = 8;
-        using var path = new GraphicsPath();
-        path.AddArc(0, 0, r * 2, r * 2, 180, 90);
-        path.AddArc(Width - r * 2, 0, r * 2, r * 2, 270, 90);
-        path.AddArc(Width - r * 2, Height - r * 2, r * 2, r * 2, 0, 90);
-        path.AddArc(0, Height - r * 2, r * 2, r * 2, 90, 90);
-        path.CloseFigure();
-        Region = new Region(path);
+        Region = null;
     }
 
     // ---------------- 拖动 ----------------
@@ -352,12 +353,25 @@ public class MainForm : Form
         _search.ApplyTheme();
         _settingsOverlay.ApplyTheme();
         _input.RefreshTheme();
+        Ui.RestyleTree(this);          // 顶栏、图标按钮等缓存过颜色的控件统一刷新
         if (_active != null) _chatView.Load(_active);
         RebindConversations();
         _convList.Invalidate();
         _welcome.Invalidate();
         _chrome.Invalidate();
-        Invalidate();
+        _frame.Visible = Theme.WindowBorder;
+        _frame.Invalidate();
+        Invalidate(true);
+    }
+
+    /// <summary>“跟随系统”时定期检查系统亮暗色是否变化，变了就整体换肤。</summary>
+    private void WatchSystemTheme()
+    {
+        if (_settings.ThemeMode != "system") return;
+        bool wantDark = _settings.ResolveDark();
+        if (wantDark == Theme.Dark) return;
+        _settings.ApplyTheme();
+        ApplyThemeUi();
     }
 
     // ---------------- 防录屏 ----------------
@@ -382,12 +396,14 @@ public class MainForm : Form
 
     private void ApplyAffinity()
     {
+        if (CaptureGuard.Disabled) return;   // 本地界面调试：允许被截图
         if (!Native.SetWindowDisplayAffinity(Handle, Affinity))
             _chrome.SetStatus("防录屏设置失败（需 Win10 2004+）");
     }
 
     private void EnsureAffinity()
     {
+        if (CaptureGuard.Disabled) return;
         if (Native.GetWindowDisplayAffinity(Handle, out uint cur) && cur != Affinity)
             Native.SetWindowDisplayAffinity(Handle, Affinity);
     }
@@ -403,8 +419,11 @@ public class MainForm : Form
         base.OnVisibleChanged(e);
         if (Visible && IsHandleCreated)
         {
-            Native.SetWindowDisplayAffinity(Handle, Native.WDA_NONE);
-            ApplyAffinity();
+            if (!CaptureGuard.Disabled)
+            {
+                Native.SetWindowDisplayAffinity(Handle, Native.WDA_NONE);
+                ApplyAffinity();
+            }
             // 重设显示亲和性会触发 DWM 重建该窗口的合成表面，可能把它从
             // TOPMOST 层级中挤下来（虽然 WS_EX_TOPMOST 样式还在）。Activate()
             // 只会把窗口提升到“当前层级”的顶部，无法恢复被移出的层级。
@@ -451,7 +470,7 @@ public class MainForm : Form
                 {
                     case "hide": if (!settingsOpen) ToggleVisible(); break;
                     case "shot": if (!settingsOpen) StartScreenshot(); break;
-                    case "record": if (!settingsOpen) BeginPttRecording(); break;
+                    case "record": if (!settingsOpen) ToggleOrHoldRecording(); break;
                 }
             }
             return;
@@ -463,6 +482,17 @@ public class MainForm : Form
     {
         if (Visible) Hide();
         else { Show(); Activate(); }
+    }
+
+    /// <summary>设置浮窗打开时，Esc 在任何位置都能收起它（浮窗非模态，焦点可能不在浮窗内）。</summary>
+    protected override bool ProcessCmdKey(ref Message msg, Keys keyData)
+    {
+        if (keyData == Keys.Escape && _settingsOverlay.Visible)
+        {
+            _settingsOverlay.CloseByEscape();
+            return true;
+        }
+        return base.ProcessCmdKey(ref msg, keyData);
     }
 
     // ---------------- Alt+截图 / 录音（联动输入框） ----------------
@@ -499,12 +529,26 @@ public class MainForm : Form
         return p;
     }
 
-    private void BeginPttRecording()
+    /// <summary>热键触发录音：按住模式需检测按键是否仍按下；按下模式只切换开始/停止。</summary>
+    private void ToggleOrHoldRecording()
+    {
+        if (_settings.RecordMode == "toggle")
+        {
+            if (_recorder?.IsRecording == true) StopRecording();
+            else StartRecording();
+            return;
+        }
+
+        var sc = _settings.Shortcuts.FirstOrDefault(s => s.Action == "record");
+        if (sc == null || !ComboDown(sc)) return;
+        StartRecording();
+    }
+
+    private void StartRecording()
     {
         if (_recorder?.IsRecording == true) return;
         var sc = _settings.Shortcuts.FirstOrDefault(s => s.Action == "record");
         if (sc == null) return;
-        if (!ComboDown(sc)) return;
 
         try
         {
@@ -512,8 +556,9 @@ public class MainForm : Form
             var rec = new AudioMixRecorder();
             rec.Start(path);
             _recorder = rec;
-            _chrome.SetStatus(rec.SystemOnlyMic ? "● 录音中（仅系统声音）…松开结束" : "● 正在录音（系统+麦克风）…松开结束");
-            _pttTimer.Start();
+            string tail = _settings.RecordMode == "toggle" ? "再按一次结束" : "松开结束";
+            _chrome.SetStatus((rec.SystemOnlyMic ? "● 录音中（仅系统声音）…" : "● 正在录音（系统+麦克风）…") + tail);
+            if (_settings.RecordMode != "toggle") _pttTimer.Start();
         }
         catch (Exception ex)
         {
@@ -572,13 +617,52 @@ public class MainForm : Form
     }
 }
 
+/// <summary>
+/// 可选的主题色窗口边框：只保留窗口最外圈 2px 的直角环形区域，
+/// 因此既画在全部内容之上，又不会遮挡任何界面。
+/// </summary>
+internal sealed class WindowFrame : Control
+{
+    public WindowFrame()
+    {
+        Enabled = false;          // 不拦截鼠标
+        TabStop = false;
+        SetStyle(ControlStyles.UserPaint | ControlStyles.AllPaintingInWmPaint
+               | ControlStyles.OptimizedDoubleBuffer | ControlStyles.ResizeRedraw, true);
+    }
+
+    protected override void OnResize(EventArgs e)
+    {
+        base.OnResize(e);
+        if (Width <= 4 || Height <= 4) return;
+        const int t = 2;
+        using var outer = new GraphicsPath();
+        outer.AddRectangle(new Rectangle(0, 0, Width, Height));
+        using var inner = new GraphicsPath();
+        inner.AddRectangle(new Rectangle(t, t, Width - t * 2, Height - t * 2));
+        using var region = new Region(outer);
+        region.Exclude(inner);
+        var old = Region;
+        Region = region.Clone();
+        old?.Dispose();
+    }
+
+    protected override void OnPaint(PaintEventArgs e)
+    {
+        using var b = new SolidBrush(Theme.Mix(Theme.Accent, Theme.PanelBg, 0.3f));
+        e.Graphics.FillRectangle(b, ClientRectangle);
+        base.OnPaint(e);
+    }
+}
+
 /// <summary>顶部工具条：品牌 + 状态 + 关闭；整条可拖动。</summary>
-internal sealed class ChromeBar : Panel
+internal sealed class ChromeBar : Panel, IThemed
 {
     public event Action? DragRequested;
     public event Action? CloseRequested;
     public string StatusText { get; private set; } = "";
     private readonly Label _status;
+    private readonly Label _brand;
     private IconButton _close = null!;
 
     public ChromeBar()
@@ -587,21 +671,23 @@ internal sealed class ChromeBar : Panel
         BackColor = Theme.PanelBg;
         SetStyle(ControlStyles.OptimizedDoubleBuffer | ControlStyles.UserPaint | ControlStyles.AllPaintingInWmPaint, true);
 
-        var brand = new Label
+        _brand = new Label
         {
             Text = "● 帮帮",
             AutoSize = true,
             Font = Theme.UI(10.5f, FontStyle.Bold),
             ForeColor = Theme.Accent,
+            BackColor = Theme.PanelBg,
             Location = new Point(16, 9),
         };
-        Controls.Add(brand);
+        Controls.Add(_brand);
 
         _status = new Label
         {
             AutoSize = true,
             Font = Theme.UI(9.5f),
             ForeColor = Theme.TextMuted,
+            BackColor = Theme.PanelBg,
             Location = new Point(180, 11),
         };
         Controls.Add(_status);
@@ -612,9 +698,21 @@ internal sealed class ChromeBar : Panel
         Controls.Add(_close);
 
         MouseDown += (_, e) => { if (e.Button == MouseButtons.Left) DragRequested?.Invoke(); };
-        brand.MouseDown += (_, e) => { if (e.Button == MouseButtons.Left) DragRequested?.Invoke(); };
+        _brand.MouseDown += (_, e) => { if (e.Button == MouseButtons.Left) DragRequested?.Invoke(); };
         Resize += (_, _) => _close.Location = new Point(Width - 40, 5);
         _close.Location = new Point(Width - 40, 5);
+    }
+
+    /// <summary>主题切换后重新着色（顶栏也要跟随暗色）。</summary>
+    public void Restyle()
+    {
+        BackColor = Theme.PanelBg;
+        _brand.BackColor = Theme.PanelBg;
+        _brand.ForeColor = Theme.Accent;
+        _status.BackColor = Theme.PanelBg;
+        SetStatus(StatusText);
+        _close.Restyle();
+        Invalidate();
     }
 
     public void SetStatus(string s)

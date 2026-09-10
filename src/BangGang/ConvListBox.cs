@@ -3,7 +3,7 @@ using System.Drawing.Drawing2D;
 namespace BangGang;
 
 /// <summary>会话列表（owner-draw）。点击选中；悬浮在右侧显示删除按钮。</summary>
-internal sealed class ConvListBox : ListBox
+internal sealed class ConvListBox : ListBox, IThemed
 {
     public List<Conversation> Source { get; private set; } = new();
     public event Action<Conversation>? ConversationActivated;
@@ -21,6 +21,13 @@ internal sealed class ConvListBox : ListBox
         Font = Theme.UI(12f);
         _ = SystemInformation.VirtualScreen;
         SetStyle(ControlStyles.OptimizedDoubleBuffer | ControlStyles.AllPaintingInWmPaint, true);
+    }
+
+    public void Restyle()
+    {
+        BackColor = Theme.SideBg;
+        ForeColor = Theme.TextMain;
+        Invalidate();
     }
 
     public void Rebind(List<Conversation> list, string? activeId)
@@ -45,18 +52,18 @@ internal sealed class ConvListBox : ListBox
         bool sel = (e.State & DrawItemState.Selected) == DrawItemState.Selected;
         bool hover = e.Index == _hover;
 
-        Color bg = sel ? Theme.Accent : hover ? Blend(Theme.SideBg, Color.White, .6f) : Theme.SideBg;
+        Color bg = sel ? Theme.Accent : hover ? Theme.Mix(Theme.SideBg, Theme.TextMain, .06f) : Theme.SideBg;
         using (var b = new SolidBrush(bg)) g.FillRectangle(b, rc);
         // 选中左侧小竖条
         if (sel)
         {
-            using var accent = new SolidBrush(Color.FromArgb(80, 120, 200));
+            using var accent = new SolidBrush(Theme.Mix(Theme.Accent, Theme.TextMain, 0.25f));
             g.FillRectangle(accent, rc.X, rc.Y, 3, rc.Height);
         }
 
         float tx = rc.X + 16;
         using (var title = new SolidBrush(sel ? Color.White : Theme.TextMain))
-        using (var sub = new SolidBrush(sel ? Color.FromArgb(220, 235, 250) : Theme.TextMuted))
+        using (var sub = new SolidBrush(sel ? Theme.Mix(Theme.Accent, Color.White, 0.75f) : Theme.TextMuted))
         {
             string t = c.Title.Length > 0 ? c.Title : "新对话";
             g.DrawString(t, Theme.UI(12f, sel ? FontStyle.Bold : FontStyle.Regular), title, tx, rc.Y + 8);

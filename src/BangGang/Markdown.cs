@@ -331,7 +331,7 @@ internal static class Markdown
             if (pl.CodeBlock)
             {
                 var rc = new RectangleF(x, cursor, capWidth, pl.LineHeight);
-                using var bg = new SolidBrush(Color.FromArgb(245, 247, 250));
+                using var bg = new SolidBrush(Theme.Mix(Theme.ChatBg, Theme.TextMain, Theme.Dark ? 0.10f : 0.04f));
                 using var path = Rounded(rc, 6);
                 g.FillPath(bg, path);
             }

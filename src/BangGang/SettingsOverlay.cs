@@ -3,413 +3,440 @@ using System.Drawing.Drawing2D;
 namespace BangGang;
 
 /// <summary>
-/// “设置”内部覆盖层：占据主窗口内容，不再弹出独立窗口 / 托盘图标。
-/// 分段式顶部导航（快捷键 / LLM 接入 / 界面设置），底部 保存/取消。
+/// 应用内设置浮窗：点击设置按钮后弹出，固定尺寸（比主窗口小）、上下左右居中，
+/// 左侧为纵向设置菜单，右侧为对应菜单项的详情页，详情页底部各有保存按钮
+/// （仅在内容变化后可点击），右上角为关闭按钮。
+///
+/// 整个浮窗由主窗口内的子控件构成（不是独立顶层窗口），因此主窗口上的
+/// WDA_EXCLUDEFROMCAPTURE 自动覆盖它：对录屏 / 截屏完全不可见。
 /// </summary>
-internal sealed class SettingsOverlay : Panel
+internal sealed class SettingsOverlay : Panel, IPopupHost
 {
     public event Action<AppSettings>? Applied;
+    public event Action<string>? Status;
 
-    private readonly AppSettings _current = new();
+    private const int RailW = 208;
+    private const int CardW = 880;
+    private const int CardH = 640;
 
-    private readonly List<(string action, KeyCap cap)> _rows = new();
-    private TextBox _chatUrl = null!, _chatKey = null!, _chatModel = null!;
-    private TextBox _sttUrl = null!, _sttKey = null!, _sttModel = null!;
-    private ColorSwatch _chatBg = null!, _sideBg = null!, _text = null!, _muted = null!, _accent = null!;
-    private TrackBar _opacity = null!;
-    private Label _opacityVal = null!;
+    private readonly AppSettings _applied = new();
 
-    private Panel _pageHost = null!;
-    private readonly Button _segShortcut, _segLlm, _segUi;
+    private readonly RoundPanel _card = new();
+    private readonly CardBorderRing _cardBorder = new();
+    private readonly Panel _rail = new();
+    private readonly Panel _divider = new();
+    private readonly Panel _host = new();
+    private readonly Label _brandMark = new();
+    private readonly Label _railTitle = new();
+    private readonly Label _version = new();
+    private readonly CloseButton _close = new();
+
+    private readonly List<NavItem> _navs = new();
+    private readonly List<SettingsPage> _pages = new();
+
+    private readonly FloatingCard _confirm = new();
+    private readonly Label _confirmTitle = new();
+    private readonly Label _confirmDesc = new();
+    private readonly PillButton _confirmStay = new("继续编辑", PillButton.Look.Ghost, 104, 34);
+    private readonly PillButton _confirmQuit = new("放弃并关闭", PillButton.Look.Danger, 116, 34);
+
+    private Point _cardPos;
+    private bool _dragging;
+    private Point _dragStart;
+    private Point _dragOrigin;
+    private int _sel;
 
     public SettingsOverlay()
     {
-        BackColor = Theme.SideBg;
+        BackColor = SC.Scrim;
         Dock = DockStyle.Fill;
-        SetStyle(ControlStyles.OptimizedDoubleBuffer | ControlStyles.UserPaint | ControlStyles.AllPaintingInWmPaint, true);
+        // 注意：这里**不能**开 OptimizedDoubleBuffer —— 浮窗只保留“卡片 + 投影”区域，
+        // 必须直接把半透明投影画到窗口表面，才能和底下原有的界面像素真正混合
+        // （双缓冲会把未绘制的区域画成黑色）。
+        SetStyle(ControlStyles.UserPaint | ControlStyles.ResizeRedraw, true);
 
-        // 顶部条：标题 + 关闭
-        var head = new Panel { Dock = DockStyle.Top, Height = 56, BackColor = Theme.PanelBg };
-        var logo = new Label { Text = "帮", BackColor = Theme.Accent, ForeColor = Color.White, Font = Theme.UI(13f, FontStyle.Bold), TextAlign = ContentAlignment.MiddleCenter, Size = new Size(30, 30), Location = new Point(20, 13) };
-        var title = new Label { Text = "设置", Font = Theme.UI(15f, FontStyle.Bold), ForeColor = Theme.TextMain, AutoSize = true, Location = new Point(58, 17) };
-        var close = new IconButton(IconButton.Kind.Close, Theme.PanelBg) { Location = new Point(Width - 44, 13), Anchor = AnchorStyles.Top | AnchorStyles.Right };
-        Ui.SetToolTip(close, "关闭");
-        close.Click += (_, _) => Visible = false;
-        head.Controls.Add(logo);
-        head.Controls.Add(title);
-        head.Controls.Add(close);
-        Controls.Add(head);
-        head.Resize += (_, _) => close.Location = new Point(head.Width - 44, 13);
-        close.Location = new Point(head.Width - 44, 13);
+        // ---- 浮窗主体（可拖动：菜单栏空白处 / 页头 / 卡片空白处都能拖） ----
+        _card.Radius = 16;
+        _card.Resize += (_, _) => LayoutCard();
+        _card.MouseDown += BeginDrag;
+        _card.MouseMove += DragMove;
+        _card.MouseUp += EndDrag;
+        Controls.Add(_card);
 
-        // 顶部导航（分段按钮）
-        var seg = new Panel { Dock = DockStyle.Top, Height = 60, BackColor = Theme.SideBg, Padding = new Padding(26, 12, 26, 0) };
-        _segShortcut = SegButton(seg, "快捷键");
-        _segLlm = SegButton(seg, "LLM 接入");
-        _segUi = SegButton(seg, "界面设置");
-        seg.Controls.Add(_segShortcut);
-        seg.Controls.Add(_segLlm);
-        seg.Controls.Add(_segUi);
-        seg.Resize += (_, _) => LayoutSegs(seg);
-        LayoutSegs(seg);
-        Controls.Add(seg);
+        // ---- 左侧菜单栏 ----
+        _rail.BackColor = SC.RailBg;
+        _card.Controls.Add(_rail);
 
-        _pageHost = new Panel { Dock = DockStyle.Fill, BackColor = Theme.SideBg };
-        Controls.Add(_pageHost);
-        BuildPages(_pageHost);
+        _brandMark.Text = "帮";
+        _brandMark.Font = Theme.UI(11f, FontStyle.Bold);
+        _brandMark.ForeColor = Color.White;
+        _brandMark.BackColor = Theme.Accent;
+        _brandMark.TextAlign = ContentAlignment.MiddleCenter;
+        _rail.Controls.Add(_brandMark);
 
-        // 底部：保存 / 取消
-        var foot = new Panel { Dock = DockStyle.Bottom, Height = 66, BackColor = Theme.SideBg };
-        var cancel = Flat("取消", secondary: true);
-        var save = Flat("保存", secondary: false);
-        save.Click += (_, _) => { Collect(out var r); Applied?.Invoke(r); Visible = false; };
-        cancel.Click += (_, _) => Visible = false;
-        foot.Controls.Add(cancel);
-        foot.Controls.Add(save);
-        foot.Resize += (_, _) => { cancel.Location = new Point(foot.Width - 250, 16); save.Location = new Point(foot.Width - 146, 16); };
-        cancel.Location = new Point(foot.Width - 250, 16);
-        save.Location = new Point(foot.Width - 146, 16);
-        Controls.Add(foot);
+        _railTitle.Text = "设置";
+        _railTitle.Font = Theme.UI(13f, FontStyle.Bold);
+        _railTitle.ForeColor = SC.Ink;
+        _railTitle.BackColor = SC.RailBg;
+        _railTitle.TextAlign = ContentAlignment.MiddleLeft;
+        _rail.Controls.Add(_railTitle);
 
-        _segShortcut.Focus();
+        _version.Text = MainForm.WindowTitle + " " + MainForm.AppVersion;
+        _version.Font = Theme.UI(8.5f);
+        _version.ForeColor = SC.InkFaint;
+        _version.BackColor = SC.RailBg;
+        _version.TextAlign = ContentAlignment.MiddleCenter;   // 底部版本信息居中
+        _rail.Controls.Add(_version);
+
+        // 菜单栏空白处也能拖动
+        foreach (Control c in new Control[] { _rail, _brandMark, _railTitle, _version })
+        {
+            c.MouseDown += BeginDrag;
+            c.MouseMove += DragMove;
+            c.MouseUp += EndDrag;
+        }
+
+        _divider.BackColor = SC.Mix(SC.CardBg, Theme.Border, 0.85f);
+        _card.Controls.Add(_divider);
+
+        // ---- 右侧详情页 ----
+        _host.BackColor = SC.CardBg;
+        _host.MouseDown += BeginDrag;
+        _host.MouseMove += DragMove;
+        _host.MouseUp += EndDrag;
+        _card.Controls.Add(_host);
+
+        AddPage(new ShortcutsPage(), "快捷键", Glyph.Sliders);
+        AddPage(new LlmPage(), "模型接入", Glyph.Spark);
+        AddPage(new UiPage(), "界面外观", Glyph.Palette);
+
+        // ---- 右上角关闭 ----
+        _close.Click += (_, _) => RequestClose();
+        Ui.SetToolTip(_close, "关闭设置");
+        _card.Controls.Add(_close);
+        _close.BringToFront();
+
+        // ---- 未保存改动的确认条 ----
+        BuildConfirm();
+        _card.Controls.Add(_confirm);
+        _confirm.BringToFront();
+
+        // ---- 浮窗描边（画在所有子控件之上，圆角处也不缺边） ----
+        _card.DrawBorder = false;
+        _card.Controls.Add(_cardBorder);
+        _cardBorder.BringToFront();
+
+        SelectPage(0);
     }
 
+    private void AddPage(SettingsPage page, string navLabel, Glyph icon)
+    {
+        var nav = new NavItem(navLabel, icon);
+        nav.Click += (_, _) => SelectPage(_navs.IndexOf(nav));
+        _navs.Add(nav);
+        _rail.Controls.Add(nav);
+
+        page.SaveRequested += OnPageSave;
+        page.DirtyChanged += RefreshDots;
+        page.AttachDrag(BeginDrag, DragMove, EndDrag);
+        page.Visible = false;
+        _pages.Add(page);
+        _host.Controls.Add(page);
+    }
+
+    private void BuildConfirm()
+    {
+        _confirm.Radius = 14;
+        _confirm.Visible = false;
+
+        _confirmTitle.Text = "放弃未保存的修改？";
+        _confirmTitle.Font = Theme.UI(12.5f, FontStyle.Bold);
+        _confirmTitle.ForeColor = SC.Ink;
+        _confirmTitle.BackColor = SC.CardBg;
+        _confirmTitle.TextAlign = ContentAlignment.MiddleCenter;
+
+        _confirmDesc.Font = Theme.UI(9.5f);
+        _confirmDesc.ForeColor = SC.InkMuted;
+        _confirmDesc.BackColor = SC.CardBg;
+        _confirmDesc.TextAlign = ContentAlignment.MiddleCenter;
+
+        _confirmStay.Click += (_, _) => HideConfirm();
+        _confirmQuit.Click += (_, _) => CloseNow();
+        Ui.SetToolTip(_confirmStay, "返回继续编辑");
+        Ui.SetToolTip(_confirmQuit, "放弃修改并关闭设置");
+
+        _confirm.Controls.Add(_confirmTitle);
+        _confirm.Controls.Add(_confirmDesc);
+        _confirm.Controls.Add(_confirmStay);
+        _confirm.Controls.Add(_confirmQuit);
+    }
+
+    // ---------------- 对外接口 ----------------
+
+    /// <summary>打开设置前载入当前设置，并清空所有未保存状态。</summary>
     public void ReloadFrom(AppSettings s)
     {
-        _current.CopyFrom(s);
-        // 快捷键
-        foreach (var (action, cap) in _rows)
-        {
-            var sc = _current.Shortcuts.FirstOrDefault(x => x.Action == action);
-            if (sc != null) cap.Set(sc);
-        }
-        _chatUrl.Text = _current.ChatApiUrl;
-        _chatKey.Text = _current.ChatApiKey;
-        _chatModel.Text = _current.ChatModel;
-        _sttUrl.Text = _current.SttApiUrl;
-        _sttKey.Text = _current.SttApiKey;
-        _sttModel.Text = _current.SttModel;
-        _chatBg.SetColor(Color.FromArgb(_current.ChatBg));
-        _sideBg.SetColor(Color.FromArgb(_current.SideBg));
-        _text.SetColor(Color.FromArgb(_current.TextColor));
-        _muted.SetColor(Color.FromArgb(_current.TextMutedColor));
-        _accent.SetColor(Color.FromArgb(_current.Accent));
-        _opacity.Value = (int)Math.Round(_current.Opacity * 100);
-    }
-
-    private void LayoutSegs(Panel seg)
-    {
-        int[] widths = { 92, 108, 108 };
-        int x = 26, gap = 8;
-        foreach (var (b, w) in new[] { (_segShortcut, widths[0]), (_segLlm, widths[1]), (_segUi, widths[2]) })
-        {
-            b.Bounds = new Rectangle(x, 12, w, 36);
-            x += w + gap;
-        }
-    }
-
-    private Button SegButton(Panel parent, string text)
-    {
-        var b = new Button
-        {
-            Text = text,
-            FlatStyle = FlatStyle.Flat,
-            Cursor = Cursors.Default,
-            Font = Theme.UI(12f),
-            BackColor = Theme.PanelBg,
-            ForeColor = Theme.TextMain,
-        };
-        b.FlatAppearance.BorderSize = 0;
-        b.Click += (_, _) => SelectPage(text);
-        parent.Controls.Add(b);
-        return b;
-    }
-
-    private void SelectPage(string which)
-    {
-        foreach (Control p in _pageHost.Controls) p.Visible = p.Name == which;
-        foreach (var (name, btn) in new[] { ("快捷键", _segShortcut), ("LLM 接入", _segLlm), ("界面设置", _segUi) })
-        {
-            bool sel = name == which;
-            btn.BackColor = sel ? Theme.Accent : Theme.PanelBg;
-            btn.ForeColor = sel ? Color.White : Theme.TextMain;
-        }
-    }
-
-    private static Button Flat(string text, bool secondary)
-    {
-        return new Button
-        {
-            Text = text,
-            Size = new Size(96, 34),
-            FlatStyle = FlatStyle.Flat,
-            BackColor = secondary ? Color.White : Theme.Accent,
-            ForeColor = secondary ? Theme.TextMain : Color.White,
-            Font = Theme.UI(12f),
-            Cursor = Cursors.Default,
-        };
-    }
-
-    // ---------- 三个页面 ----------
-
-    private void BuildPages(Panel host)
-    {
-        host.Controls.Add(BuildShortcutsPage());
-        host.Controls.Add(BuildLlmPage());
-        host.Controls.Add(BuildUiPage());
-        SelectPage("快捷键");
-    }
-
-    private Control BuildShortcutsPage()
-    {
-        var page = new Panel { Name = "快捷键", Dock = DockStyle.Fill, Padding = new Padding(30, 8, 30, 8), BackColor = Theme.SideBg };
-        var hint = new Label { Text = "点击输入框后按下新的组合键即可更换；至少含一个修饰键（Ctrl / Alt / Shift）。", Dock = DockStyle.Bottom, Height = 30, Font = Theme.UI(9.5f), ForeColor = Theme.TextMuted, TextAlign = ContentAlignment.MiddleLeft };
-        page.Controls.Add(hint);
-
-        var tbl = new TableLayoutPanel { Dock = DockStyle.Top, ColumnCount = 2, RowCount = 3 };
-        tbl.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 40));
-        tbl.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 60));
-
-        string[,] items = { { "hide", "显示 / 隐藏窗口" }, { "shot", "选区截屏" }, { "record", "按住录音" } };
-        for (int i = 0; i < items.GetLength(0); i++)
-        {
-            tbl.RowStyles.Add(new RowStyle(SizeType.Absolute, 52));
-            var cap = new KeyCap(items[i, 0]) { Dock = DockStyle.Fill };
-            _rows.Add((items[i, 0], cap));
-            tbl.Controls.Add(new Label { Text = items[i, 1], Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleLeft, Font = Theme.UI(12f), ForeColor = Theme.TextMain }, 0, i);
-            tbl.Controls.Add(cap, 1, i);
-        }
-        page.Controls.Add(tbl);
-
-        var reset = Flat("一键恢复默认快捷键", secondary: true);
-        reset.Click += (_, _) =>
-        {
-            var defs = AppSettings.DefaultShortcuts();
-            foreach (var (action, cap) in _rows)
-            {
-                var d = defs.First(x => x.Action == action);
-                cap.Set(d);
-            }
-        };
-        page.Controls.Add(reset);
-        return page;
-    }
-
-    private Control BuildLlmPage()
-    {
-        var page = new Panel { Name = "LLM 接入", Dock = DockStyle.Fill, Padding = new Padding(30, 8, 30, 8), BackColor = Theme.SideBg };
-        var note = new Label { Text = "接口默认按 OpenAI 兼容协议填写（Base URL / API Key / 模型名）。", Dock = DockStyle.Bottom, Height = 30, Font = Theme.UI(9.5f), ForeColor = Theme.TextMuted };
-        page.Controls.Add(note);
-
-        var scroll = new Panel { Dock = DockStyle.Fill, BackColor = Theme.SideBg };
-        page.Controls.Add(scroll);
-        var box = new Panel { Dock = DockStyle.Top, Height = 430, BackColor = Theme.SideBg, Padding = new Padding(0, 6, 0, 6) };
-        scroll.Controls.Add(box);
-
-        var tbl = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 3 };
-        tbl.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 130));
-        tbl.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-        tbl.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 74));
-
-        void Section(string title)
-        {
-            int r = tbl.RowCount++;
-            tbl.RowStyles.Add(new RowStyle(SizeType.Absolute, 46));
-            var l = new Label { Text = title, Dock = DockStyle.Fill, Font = Theme.UI(12f, FontStyle.Bold), ForeColor = Theme.Accent, TextAlign = ContentAlignment.MiddleLeft };
-            tbl.Controls.Add(l, 0, r);
-            tbl.SetColumnSpan(l, 3);
-        }
-        TextBox Field(string label, int row, bool secret)
-        {
-            tbl.RowStyles.Add(new RowStyle(SizeType.Absolute, 46));
-            tbl.Controls.Add(new Label { Text = label, Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleLeft, Font = Theme.UI(11.5f), ForeColor = Theme.TextMain }, 0, row);
-            var tb = new TextBox { Dock = DockStyle.Fill, Font = Theme.UI(11.5f), UseSystemPasswordChar = secret, BorderStyle = BorderStyle.FixedSingle };
-            tbl.Controls.Add(tb, 1, row);
-            if (secret)
-            {
-                var show = new Button { Text = "显示", Dock = DockStyle.Fill, FlatStyle = FlatStyle.Flat, BackColor = Theme.PanelBg, ForeColor = Theme.TextMain, Cursor = Cursors.Default };
-                show.Click += (_, _) => tb.UseSystemPasswordChar = !tb.UseSystemPasswordChar;
-                tbl.Controls.Add(show, 2, row);
-            }
-            else
-            {
-                tbl.Controls.Add(new Label { Dock = DockStyle.Fill }, 2, row);
-            }
-            return tb;
-        }
-
-        Section("对话 LLM");
-        _chatUrl = Field("接口地址", 1, false);
-        _chatKey = Field("API Key", 2, true);
-        _chatModel = Field("模型名", 3, false);
-        Section("语音转文字 (STT)");
-        _sttUrl = Field("接口地址", 5, false);
-        _sttKey = Field("API Key", 6, true);
-        _sttModel = Field("模型名", 7, false);
-        box.Controls.Add(tbl);
-        return page;
-    }
-
-    private Control BuildUiPage()
-    {
-        var page = new Panel { Name = "界面设置", Dock = DockStyle.Fill, Padding = new Padding(30, 8, 30, 8), BackColor = Theme.SideBg };
-        var tbl = new TableLayoutPanel { Dock = DockStyle.Top, ColumnCount = 2 };
-        tbl.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 32));
-        tbl.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 68));
-
-        _chatBg = AddColor(tbl, "聊天背景");
-        _sideBg = AddColor(tbl, "侧栏背景");
-        _text = AddColor(tbl, "文字颜色");
-        _muted = AddColor(tbl, "次要文字");
-        _accent = AddColor(tbl, "强调色");
-
-        tbl.RowStyles.Add(new RowStyle(SizeType.Absolute, 56));
-        tbl.Controls.Add(new Label { Text = "应用透明度", Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleLeft, Font = Theme.UI(11.5f), ForeColor = Theme.TextMain }, 0, 5);
-        var sp = new Panel { Dock = DockStyle.Fill };
-        _opacity = new TrackBar { Minimum = 50, Maximum = 100, Width = 280, Height = 30, TickStyle = TickStyle.None };
-        _opacityVal = new Label { Text = "100%", Width = 70, TextAlign = ContentAlignment.MiddleLeft, Font = Theme.UI(11f), ForeColor = Theme.TextMain };
-        _opacity.ValueChanged += (_, _) => _opacityVal.Text = (_opacity.Value / 100.0).ToString("0%");
-        sp.Controls.Add(_opacity);
-        sp.Controls.Add(_opacityVal);
-        _opacity.Location = new Point(0, 10);
-        _opacityVal.Location = new Point(292, 10);
-        tbl.Controls.Add(sp, 1, 5);
-
-        page.Controls.Add(tbl);
-        return page;
-    }
-
-    private ColorSwatch AddColor(TableLayoutPanel tbl, string label)
-    {
-        int r = tbl.RowCount++;
-        tbl.RowStyles.Add(new RowStyle(SizeType.Absolute, 52));
-        tbl.Controls.Add(new Label { Text = label, Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleLeft, Font = Theme.UI(11.5f), ForeColor = Theme.TextMain }, 0, r);
-        var sw = new ColorSwatch();
-        tbl.Controls.Add(sw, 1, r);
-        return sw;
-    }
-
-    private void Collect(out AppSettings r)
-    {
-        var s = new AppSettings();
-        s.Shortcuts = _rows.Select(x => x.cap.Build()).ToList();
-        s.ChatApiUrl = _chatUrl.Text.Trim();
-        s.ChatApiKey = _chatKey.Text;
-        s.ChatModel = _chatModel.Text.Trim();
-        s.SttApiUrl = _sttUrl.Text.Trim();
-        s.SttApiKey = _sttKey.Text;
-        s.SttModel = _sttModel.Text.Trim();
-        s.ChatBg = _chatBg.Color.ToArgb();
-        s.SideBg = _sideBg.Color.ToArgb();
-        s.TextColor = _text.Color.ToArgb();
-        s.TextMutedColor = _muted.Color.ToArgb();
-        s.Accent = _accent.Color.ToArgb();
-        s.Opacity = _opacity.Value / 100.0;
-        r = s;
+        _applied.CopyFrom(s);
+        HideConfirm();
+        foreach (var p in _pages) p.Rebind(_applied);
+        SelectPage(_sel);
+        RefreshDots();
     }
 
     public void ApplyTheme()
     {
-        BackColor = Theme.SideBg;
-        foreach (Control c in Controls)
-        {
-            if (c is Panel p) p.BackColor = c == _pageHost ? Theme.SideBg : Theme.PanelBg;
-        }
-        foreach (Control p in _pageHost.Controls) p.BackColor = Theme.SideBg;
+        BackColor = SC.Scrim;
+        _divider.BackColor = SC.Mix(SC.CardBg, Theme.Border, 0.85f);
+        _brandMark.BackColor = Theme.Accent;
+        _rail.BackColor = SC.RailBg;
+        _railTitle.ForeColor = SC.Ink;
+        _railTitle.BackColor = SC.RailBg;
+        _version.ForeColor = SC.InkFaint;
+        _version.BackColor = SC.RailBg;
+        _host.BackColor = SC.CardBg;
+        _confirmTitle.ForeColor = SC.Ink;
+        _confirmTitle.BackColor = SC.CardBg;
+        _confirmDesc.ForeColor = SC.InkMuted;
+        _confirmDesc.BackColor = SC.CardBg;
+        RestyleTree(this);
         Invalidate(true);
     }
 
-    // ---------- 内部小控件 ----------
-
-    private sealed class KeyCap : TextBox
+    private static void RestyleTree(Control root)
     {
-        private readonly string _action;
-        private ShortcutSetting _sc = new();
-        public KeyCap(string action)
-        {
-            _action = action;
-            ReadOnly = true;
-            Font = Theme.UI(11.5f);
-            Height = 32;
-            Text = _sc.Label;
-            Cursor = Cursors.Default;
-            Width = 200;
-        }
-        public void Set(ShortcutSetting s)
-        {
-            _sc.Ctrl = s.Ctrl; _sc.Alt = s.Alt; _sc.Shift = s.Shift; _sc.Vk = s.Vk;
-            Text = s.Label;
-        }
-        public ShortcutSetting Build() =>
-            new ShortcutSetting { Action = _action, Ctrl = _sc.Ctrl, Alt = _sc.Alt, Shift = _sc.Shift, Vk = _sc.Vk };
+        if (root is IThemed t) t.Restyle();
+        root.Invalidate();
+        foreach (Control c in root.Controls) RestyleTree(c);
+    }
 
-        protected override void OnEnter(EventArgs e)
+    // ---------------- 布局 / 拖动 ----------------
+
+    protected override void OnResize(EventArgs e)
+    {
+        base.OnResize(e);
+        LayoutOverlay();
+    }
+
+    /// <summary>
+    /// 把浮窗放到合适的位置：首次在主窗口内居中，之后沿用用户拖动到的位置（并夹在窗口内）。
+    /// 同时把本控件的 Region 收窄到“浮窗 + 投影”的范围，
+    /// 这样浮窗以外的区域既不会被重绘、也不会拦截鼠标，原界面保持可见可用。
+    /// </summary>
+    private void LayoutOverlay()
+    {
+        if (Width <= 0 || Height <= 0) return;
+
+        int cw = Math.Min(CardW, Math.Max(520, Width - 96));
+        int ch = Math.Min(CardH, Math.Max(380, Height - 96));
+        if (_card.Width != cw || _card.Height != ch)
         {
-            Text = "请按下新的组合键…";
-            base.OnEnter(e);
+            _card.Size = new Size(cw, ch);
+            _cardPos = new Point((Width - cw) / 2, (Height - ch) / 2);
         }
-        protected override void OnKeyDown(KeyEventArgs e)
+        _cardPos = Clamp(_cardPos, cw, ch);
+        _card.Location = _cardPos;
+
+        ApplyRegion();
+        Invalidate();
+    }
+
+    /// <summary>把浮窗夹在主窗口内（留一点边距）。</summary>
+    private Point Clamp(Point p, int cw, int ch)
+    {
+        const int m = 6;
+        int maxX = Math.Max(m, Width - cw - m);
+        int maxY = Math.Max(m, Height - ch - m);
+        return new Point(Math.Clamp(p.X, m, maxX), Math.Clamp(p.Y, m, maxY));
+    }
+
+    /// <summary>
+    /// 只保留浮窗本体所在的区域（圆角卡片），区域外不绘制、也不接收鼠标：
+    /// 原界面完整可见可用，而且不会留下“陈旧像素”。
+    /// </summary>
+    private void ApplyRegion()
+    {
+        var rect = new Rectangle(_cardPos.X, _cardPos.Y, Math.Max(1, _card.Width), Math.Max(1, _card.Height));
+        using var path = RP.Path(rect, 16);
+        var region = new Region(path);
+        var old = Region;
+        Region = region;
+        old?.Dispose();
+    }
+
+    private void BeginDrag(object? sender, MouseEventArgs e)
+    {
+        if (e.Button != MouseButtons.Left) return;
+        _dragging = true;
+        _dragStart = new Point(Width > 0 ? Cursor.Position.X : 0, Cursor.Position.Y);
+        _dragOrigin = _cardPos;
+    }
+
+    private void DragMove(object? sender, MouseEventArgs e)
+    {
+        if (!_dragging) return;
+        var now = Cursor.Position;
+        var target = new Point(_dragOrigin.X + (now.X - _dragStart.X), _dragOrigin.Y + (now.Y - _dragStart.Y));
+        var clamped = Clamp(target, _card.Width, _card.Height);
+        if (clamped == _cardPos) return;
+        _cardPos = clamped;
+        _card.Location = _cardPos;
+        ApplyRegion();
+        Invalidate();
+        // 浮窗挪走后，原位置的底界面需要重画
+        FindForm()?.Invalidate(true);
+    }
+
+    private void EndDrag(object? sender, MouseEventArgs e) => _dragging = false;
+
+    private void LayoutCard()
+    {
+        int w = _card.Width, h = _card.Height;
+        if (w <= 0 || h <= 0) return;
+
+        // 子控件从 3px 处开始：给浮窗自己的 1px 边框留出位置，否则边框会被盖住
+        const int inset = 3;
+        _rail.SetBounds(inset, inset, RailW - 1, h - inset * 2);
+        _divider.SetBounds(RailW + 1, inset, 1, h - inset * 2);
+        _host.SetBounds(RailW + 2, inset, Math.Max(10, w - RailW - inset - 2), h - inset * 2);
+        _close.SetBounds(w - 44, 12, 28, 28);     // 尽量贴近右上角
+        _cardBorder.SetBounds(0, 0, w, h);
+        _cardBorder.BringToFront();
+
+        _brandMark.SetBounds(18, 24, 28, 28);
+        _railTitle.SetBounds(54, 24, RailW - 70, 28);
+
+        int y = 96;
+        foreach (var n in _navs)
         {
-            bool mod = e.Control || e.Alt || e.Shift;
-            bool usable = ShortcutSetting.IsUsable((int)e.KeyCode, mod);
-            if (e.KeyCode == Keys.Escape)
-            {
-                Text = _sc.Label;
-                e.SuppressKeyPress = true;
-                base.OnKeyDown(e);
-                return;
-            }
-            if (usable)
-            {
-                _sc.Ctrl = e.Control; _sc.Alt = e.Alt; _sc.Shift = e.Shift; _sc.Vk = (int)e.KeyCode;
-                Text = _sc.Label;
-                e.SuppressKeyPress = true;
-                Parent?.Focus();
-            }
-            else if (!mod) e.SuppressKeyPress = true;
-            base.OnKeyDown(e);
+            n.SetBounds(14, y, RailW - 28, 42);
+            y += 48;
         }
-        protected override void OnLeave(EventArgs e)
+        // 底部版本信息整行居中
+        _version.SetBounds(14, Math.Max(y + 10, h - 38), RailW - 28, 20);
+        _version.TextAlign = ContentAlignment.MiddleCenter;
+
+        foreach (var p in _pages) p.SetBounds(0, 0, _host.ClientSize.Width, _host.ClientSize.Height);
+
+        // 确认浮层：420x180 居中，四周 12px 用于绘制投影
+        const int cw2 = 420, ch2 = 180, pad = 12;
+        _confirm.Shadow = pad;
+        _confirm.SetBounds((w - cw2) / 2, (h - ch2) / 2, cw2, ch2);
+        int ix = pad + (cw2 - pad * 2 - 232) / 2;   // 两个按钮整体居中
+        _confirmTitle.SetBounds(pad + 20, pad + 20, cw2 - pad * 2 - 40, 24);
+        _confirmDesc.SetBounds(pad + 20, pad + 48, cw2 - pad * 2 - 40, 20);
+        _confirmStay.SetBounds(ix, pad + 100, 104, 34);
+        _confirmQuit.SetBounds(ix + 104 + 12, pad + 100, 116, 34);
+    }
+
+    /// <summary>
+    /// 浮窗之外不绘制任何东西：本控件只保留卡片所在的区域，
+    /// 该区域外的像素仍属于原界面，从而做到“不遮挡、不影响原有 UI”。
+    /// </summary>
+    protected override void OnPaintBackground(PaintEventArgs e)
+    {
+        // 故意留空：不填充背景，避免盖住底下原有的界面内容
+    }
+
+    // ---------------- 菜单 / 保存 ----------------
+
+    private void SelectPage(int idx)
+    {
+        if (_pages.Count == 0) return;
+        _sel = Math.Clamp(idx, 0, _pages.Count - 1);
+        for (int i = 0; i < _pages.Count; i++)
         {
-            if (Text.Contains("…")) Text = _sc.Label;
-            base.OnLeave(e);
+            _pages[i].Visible = i == _sel;
+            _navs[i].Selected = i == _sel;
+            _navs[i].Invalidate();
+        }
+        HideConfirm();
+    }
+
+    private void RefreshDots()
+    {
+        for (int i = 0; i < _pages.Count && i < _navs.Count; i++)
+        {
+            _navs[i].Dot = _pages[i].IsDirty;
+            _navs[i].Invalidate();
         }
     }
 
-    private sealed class ColorSwatch : Control
+    private void OnPageSave(SettingsPage page)
     {
-        public Color Color { get; private set; } = Color.White;
-        public ColorSwatch() { Size = new Size(170, 30); Cursor = Cursors.Default; }
-        public void SetColor(Color c) { Color = c; Invalidate(); }
-        protected override void OnPaint(PaintEventArgs e)
+        var merged = new AppSettings();
+        merged.CopyFrom(_applied);
+        page.ApplyTo(merged);
+
+        Applied?.Invoke(merged);        // 主窗口负责落盘、刷新主题与热键
+        _applied.CopyFrom(merged);
+
+        // 保存后必须重设基线：否则“改回某个值”会被误判为“未修改”，
+        // 导致保存按钮该亮的时候反而不可点。
+        page.Rebind(_applied);
+        page.MarkSaved();
+        RefreshDots();
+        Status?.Invoke("设置已保存");
+    }
+
+    // ---------------- 关闭 ----------------
+
+    private void RequestClose()
+    {
+        int dirty = _pages.Count(p => p.IsDirty);
+        if (dirty > 0)
         {
-            var g = e.Graphics;
-            var rc = new Rectangle(0, 0, Width - 1, Height - 1);
-            using (var path = Rounded(rc, 8))
-            using (var b = new SolidBrush(Color))
-                g.FillPath(b, path);
-            using (var p = new Pen(Theme.Border)) using (var p2 = Rounded(rc, 8))
-                g.DrawPath(p, p2);
-            g.DrawString("点击选择颜色", Theme.UI(9.5f), Brushes.Gray, 12, 7);
-            base.OnPaint(e);
+            _confirmDesc.Text = dirty == 1 ? "当前页面还有未保存的修改。" : $"有 {dirty} 个页面存在未保存的修改。";
+            _confirm.Visible = true;
+            _confirm.BringToFront();
+            _confirmStay.Focus();
+            return;
         }
-        protected override void OnMouseClick(MouseEventArgs e)
+        CloseNow();
+    }
+
+    private void HideConfirm()
+    {
+        if (_confirm.Visible) _confirm.Visible = false;
+    }
+
+    private void CloseNow()
+    {
+        _confirm.Visible = false;
+        Visible = false;
+        Status?.Invoke("已关闭设置（未保存的修改已放弃）");
+    }
+
+    protected override void OnVisibleChanged(EventArgs e)
+    {
+        base.OnVisibleChanged(e);
+        if (Visible)
         {
-            if (e.Button != MouseButtons.Left) return;
-            using var dlg = new ColorDialog { Color = Color, FullOpen = true };
-            if (dlg.ShowDialog(FindForm()) == DialogResult.OK) { Color = dlg.Color; Invalidate(); }
-            base.OnMouseClick(e);
+            LayoutOverlay();
+            if (_navs.Count > 0) _navs[_sel].Focus();
         }
-        private static GraphicsPath Rounded(Rectangle r, int rad)
+        else
         {
-            var p = new GraphicsPath();
-            int d = rad * 2;
-            p.AddArc(r.X, r.Y, d, d, 180, 90);
-            p.AddArc(r.Right - d, r.Y, d, d, 270, 90);
-            p.AddArc(r.Right - d, r.Bottom - d, d, d, 0, 90);
-            p.AddArc(r.X, r.Bottom - d, d, d, 90, 90);
-            p.CloseFigure();
-            return p;
+            HideConfirm();
+            Ui.HideToolTip();
         }
+    }
+
+    protected override bool ProcessCmdKey(ref Message msg, Keys keyData)
+    {
+        if (Visible && keyData == Keys.Escape)
+        {
+            if (_confirm.Visible) HideConfirm();
+            else RequestClose();
+            return true;
+        }
+        return base.ProcessCmdKey(ref msg, keyData);
+    }
+
+    /// <summary>供主窗口调用：无论焦点在不在浮窗里，Esc 都能收起设置。</summary>
+    public void CloseByEscape()
+    {
+        if (!Visible) return;
+        if (_confirm.Visible) HideConfirm();
+        else RequestClose();
     }
 }

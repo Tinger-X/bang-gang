@@ -3,19 +3,28 @@ using System.Drawing.Drawing2D;
 namespace BangGang;
 
 /// <summary>小型图标按钮（放大镜 / 齿轮 / 加号 / 发送 / 关闭 / 回形针等），不改变鼠标指针。</summary>
-internal sealed class IconButton : Control
+internal sealed class IconButton : Control, IThemed
 {
     public enum Kind { Search, Gear, Plus, Send, Record, Close, Paperclip }
 
     public Kind Icon { get; set; }
+    private readonly Color? _backdrop;
     private bool _hover;
 
     public IconButton(Kind kind, Color? backdrop = null)
     {
         Icon = kind;
+        _backdrop = backdrop;
         Size = new Size(28, 28);
         BackColor = backdrop ?? Theme.SideBg;   // 不透明：与所在面板同色即可无痕
         SetStyle(ControlStyles.OptimizedDoubleBuffer | ControlStyles.UserPaint | ControlStyles.AllPaintingInWmPaint, true);
+    }
+
+    /// <summary>主题切换后重新贴合所在面板的底色（否则暗色模式下会留一圈白底）。</summary>
+    public void Restyle()
+    {
+        BackColor = _backdrop ?? Parent?.BackColor ?? Theme.SideBg;
+        Invalidate();
     }
 
     protected override void OnMouseEnter(EventArgs e) { _hover = true; Invalidate(); base.OnMouseEnter(e); }
@@ -25,11 +34,13 @@ internal sealed class IconButton : Control
     {
         var g = e.Graphics;
         g.SmoothingMode = SmoothingMode.AntiAlias;
-        // 常驻浅底圆钮，让图标清晰可见
-        using (var bg = new SolidBrush(_hover ? Color.FromArgb(226, 230, 238) : Color.FromArgb(239, 242, 248)))
+        // 常驻浅底圆钮，让图标清晰可见（随主题亮暗自动变化）
+        Color rest = Theme.Mix(Theme.SideBg, Theme.TextMuted, 0.14f);
+        Color over = Theme.Mix(Theme.SideBg, Theme.TextMuted, 0.26f);
+        using (var bg = new SolidBrush(_hover ? over : rest))
             g.FillEllipse(bg, 1, 1, Width - 2, Width - 2);
 
-        Color ink = _hover ? Theme.Accent : Color.FromArgb(96, 105, 120);
+        Color ink = _hover ? Theme.Accent : Theme.Mix(Theme.TextMuted, Theme.TextMain, 0.35f);
         using var pen = new Pen(ink, 1.8f) { StartCap = LineCap.Round, EndCap = LineCap.Round };
         float c = Width / 2f;
         switch (Icon)
@@ -54,7 +65,7 @@ internal sealed class IconButton : Control
                 using (var rb = new SolidBrush(Color.Crimson)) g.FillEllipse(rb, c - 4, c - 4, 8, 8);
                 break;
             case Kind.Close:
-                using (var xb = new SolidBrush(_hover ? Color.FromArgb(230, 214, 60, 54) : Color.FromArgb(239, 242, 248)))
+                using (var xb = new SolidBrush(_hover ? Theme.Mix(Theme.SideBg, Theme.Danger, 0.85f) : rest))
                     g.FillEllipse(xb, 1, 1, Width - 2, Width - 2);
                 using (var xp = new Pen(_hover ? Color.White : ink, 2f) { StartCap = LineCap.Round, EndCap = LineCap.Round })
                 {
@@ -81,7 +92,9 @@ internal sealed class IconButton : Control
             g.DrawLine(pen, cx - 7, y, cx + 7, y);
             using var kb = new SolidBrush(ink);
             g.FillEllipse(kb, cx + xs[i] - 2.5f, y - 2.5f, 5, 5);
-            using var kw = new SolidBrush(BackColor);
+            using var kw = new SolidBrush(_hover
+                ? Theme.Mix(Theme.SideBg, Theme.TextMuted, 0.26f)
+                : Theme.Mix(Theme.SideBg, Theme.TextMuted, 0.14f));
             g.FillEllipse(kw, cx + xs[i] - 1.1f, y - 1.1f, 2.2f, 2.2f);
         }
     }

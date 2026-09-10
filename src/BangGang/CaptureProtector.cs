@@ -3,6 +3,25 @@ using System.Runtime.InteropServices;
 namespace BangGang;
 
 /// <summary>
+/// 防录屏总开关。
+///
+/// <para><b>Release 构建恒为 false</b>：正式版本不存在任何运行期后门，
+/// 无论环境变量如何设置，主窗口与设置浮窗都强制保持“对录屏 / 截图完全不可见”
+/// （WDA_EXCLUDEFROMCAPTURE：捕获画面里直接看不到该窗口，而不是显示成黑框）。</para>
+///
+/// <para>只有 Debug 构建才认 BANGGANG_SHOW_IN_CAPTURE=1，用于本地截图核对界面细节。</para>
+/// </summary>
+internal static class CaptureGuard
+{
+    public static bool Disabled { get; } =
+#if DEBUG
+        Environment.GetEnvironmentVariable("BANGGANG_SHOW_IN_CAPTURE") == "1";
+#else
+        false;
+#endif
+}
+
+/// <summary>
 /// 进程级防录屏：拦截本线程创建的每个顶层窗口，立即为其应用
 /// WDA_EXCLUDEFROMCAPTURE，确保颜色/文件对话框等由本线程弹出的顶层窗口
 /// 都不会被录屏 / 截图捕获。应用内 ToolTip 使用带每像素 Alpha 的独立置顶窗口
@@ -24,6 +43,7 @@ internal static class CaptureProtector
     public static void Install()
     {
         if (_hook != IntPtr.Zero) return;
+        if (CaptureGuard.Disabled) return;   // 本地界面调试：不拦截后续顶层窗口
         _proc = OnCbt;
         _hook = SetWindowsHookEx(WH_CBT, _proc, IntPtr.Zero, GetCurrentThreadId());
     }
