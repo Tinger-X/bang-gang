@@ -232,18 +232,8 @@ internal sealed class SettingsOverlay : Panel, IPopupHost
         old?.Dispose();
     }
 
-    /// <summary>浮窗卡片在屏幕坐标下的矩形（供遮罩窗口挖洞用）。</summary>
-    public Rectangle CardScreenRect()
-    {
-        if (!IsHandleCreated || _card.Width <= 0) return Rectangle.Empty;
-        return _card.RectangleToScreen(_card.ClientRectangle);
-    }
-
-    /// <summary>卡片位置或尺寸变化（窗口缩放）时通知主窗口刷新遮罩。</summary>
+    /// <summary>卡片位置或尺寸变化（窗口缩放）时通知主窗口。</summary>
     public event Action? CardBoundsChanged;
-
-    /// <summary>点击浮窗之外的遮罩区域：收起设置（有未保存改动时先弹确认）。</summary>
-    public void ScrimClicked() => RequestClose();
 
     private void LayoutCard()
     {

@@ -400,6 +400,14 @@ internal sealed class GroupCard : Panel, IThemed, IArranged
         Controls.Add(row);
     }
 
+    /// <summary>移除一行（切换服务商时重建参数行用）。</summary>
+    public void RemoveRow(Control row)
+    {
+        if (!_rows.Remove(row)) return;
+        Controls.Remove(row);
+        row.Dispose();
+    }
+
     public int MeasureHeight() => RowTop + _rows.Count * RowH + 12;
 
     public void Arrange()
@@ -1481,9 +1489,18 @@ internal sealed class DropdownSelect : Control, IThemed
         _popup = new DropdownList(Items, SelectedIndex, Math.Max(Width, 160));
         _popup.ItemChosen += i => { Select(i, true); ClosePopup(); };
         _popup.Closed += ClosePopup;
-        var topLeft = host.PointToClient(PointToScreen(new Point(0, Height)));
-        topLeft.Offset(-8, 2);          // 对齐列表本体（控件本身含 8px 投影留白）
-        _popup.Location = topLeft;
+
+        // 列表本体与输入框左对齐（控件自身含 ProjectionPad 的投影留白）
+        var below = host.PointToClient(PointToScreen(new Point(0, Height)));
+        below.Offset(-DropdownList.ProjectionPad, 2);
+        // 下方空间不够时向上弹出，避免被浮窗裁剪
+        if (below.Y + _popup.Height > host.ClientSize.Height)
+        {
+            var above = host.PointToClient(PointToScreen(new Point(0, 0)));
+            above.Offset(-DropdownList.ProjectionPad, -_popup.Height - 2);
+            if (above.Y >= 0) below = above;
+        }
+        _popup.Location = below;
         host.Controls.Add(_popup);
         _popup.BringToFront();
         _popup.Focus();
@@ -1518,9 +1535,10 @@ internal sealed class DropdownSelect : Control, IThemed
         var rc = new Rectangle(0, 0, Width - 1, Height - 1);
         RP.Fill(g, rc, 9, SC.FieldBg);
         RP.Stroke(g, rc, 9, _hover || _popup != null ? SC.Accent : SC.FieldBorder, _hover ? 1.3f : 1f);
-        var tr = new Rectangle(12, 0, Math.Max(10, Width - 44), Height);
+        // 选项文字居中显示（下拉框与输入框同宽）
+        var tr = new Rectangle(34, 0, Math.Max(10, Width - 68), Height);
         TextRenderer.DrawText(g, SelectedItem, SF.Get(10.5f), tr, SC.Ink,
-            TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPadding);
+            TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPadding);
 
         // 右侧箭头
         float cx = Width - 18, cy = Height / 2f;
@@ -1538,7 +1556,9 @@ internal interface IPopupHost { }
 internal sealed class DropdownList : Control, IThemed
 {
     private const int RowH = 30;
-    private const int Pad = 8;          // 四周留白：用于画投影
+    private const int Pad = 6;          // 四周留白：仅够画一圈很淡的投影
+    /// <summary>投影留白（供下拉框对齐列表本体用）。</summary>
+    public const int ProjectionPad = Pad;
     private int _hover = -1;
     private readonly int _selected;
 
@@ -1596,11 +1616,11 @@ internal sealed class DropdownList : Control, IThemed
         g.SmoothingMode = SmoothingMode.AntiAlias;
         var body = BodyRect();
 
-        // 投影（在本控件自身的留白里叠加，不需要透明窗口）
+        // 很淡的一圈投影：只用来把菜单和背景轻轻分开，不做厚重阴影
         for (int i = Pad; i >= 1; i--)
         {
             using var sp = RP.Path(Rectangle.Inflate(body, i, i), 10 + i);
-            using var sb = new SolidBrush(Color.FromArgb(8, 12, 16, 28));
+            using var sb = new SolidBrush(Color.FromArgb(3, 12, 16, 28));
             g.FillPath(sb, sp);
         }
 

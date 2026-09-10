@@ -95,20 +95,70 @@ public class AppSettings
     public List<ShortcutSetting> Shortcuts { get; set; } = DefaultShortcuts();
 
     // ---------- 对话模型（OpenAI 兼容 / 多模态） ----------
-    public string ChatApiUrl { get; set; } = "";
-    public string ChatApiKey { get; set; } = "";
-    public string ChatModel { get; set; } = "";
+    /// <summary>当前选中的服务商（对应 <see cref="Providers.Chat"/> 中的名称）。</summary>
+    public string ChatProvider { get; set; } = "自定义";
+    /// <summary>每个服务商各自的参数档位（providerName -> { key -> value }），切换服务商不会丢配置。</summary>
+    public Dictionary<string, Dictionary<string, string>> ChatProfiles { get; set; } = new();
     /// <summary>模型是否支持图片等多媒体输入（多模态）。</summary>
     public bool ChatVision { get; set; } = true;
 
     // ---------- 实时语音转写（通用流式 STT） ----------
+    public string SttProvider { get; set; } = "自定义";
+    public Dictionary<string, Dictionary<string, string>> SttProfiles { get; set; } = new();
+
+    /// <summary>录音方式："hold" 按住录音 / "toggle" 按一下开始、再按一下停止。</summary>
+    public string RecordMode { get; set; } = "hold";
+
+    // 旧版扁平字段：仅用于兼容旧 settings.json，加载时会迁移到“自定义”档位
+    public string ChatApiUrl { get; set; } = "";
+    public string ChatApiKey { get; set; } = "";
+    public string ChatModel { get; set; } = "";
     public string SttApiUrl { get; set; } = "";
     public string SttAppId { get; set; } = "";
     public string SttApiKey { get; set; } = "";
     public string SttModel { get; set; } = "";
 
-    /// <summary>录音方式："hold" 按住录音 / "toggle" 按一下开始、再按一下停止。</summary>
-    public string RecordMode { get; set; } = "hold";
+    /// <summary>取某个服务商的参数档位（不存在则创建）。</summary>
+    public Dictionary<string, string> ProfileOf(bool chat, string provider)
+    {
+        var map = chat ? ChatProfiles : SttProfiles;
+        if (!map.TryGetValue(provider, out var p) || p == null)
+        {
+            p = new Dictionary<string, string>();
+            map[provider] = p;
+        }
+        return p;
+    }
+
+    /// <summary>把旧版扁平字段迁移为“自定义”档位。</summary>
+    private void MigrateLegacyProfiles()
+    {
+        ChatProfiles ??= new();
+        SttProfiles ??= new();
+        if (ChatProfiles.Count == 0 &&
+            (ChatApiUrl.Length > 0 || ChatApiKey.Length > 0 || ChatModel.Length > 0))
+        {
+            ChatProfiles["自定义"] = new Dictionary<string, string>
+            {
+                ["url"] = ChatApiUrl,
+                ["key"] = ChatApiKey,
+                ["model"] = ChatModel,
+            };
+        }
+        if (SttProfiles.Count == 0 &&
+            (SttApiUrl.Length > 0 || SttAppId.Length > 0 || SttApiKey.Length > 0 || SttModel.Length > 0))
+        {
+            SttProfiles["自定义"] = new Dictionary<string, string>
+            {
+                ["url"] = SttApiUrl,
+                ["appid"] = SttAppId,
+                ["key"] = SttApiKey,
+                ["model"] = SttModel,
+            };
+        }
+        if (string.IsNullOrWhiteSpace(ChatProvider)) ChatProvider = "自定义";
+        if (string.IsNullOrWhiteSpace(SttProvider)) SttProvider = "自定义";
+    }
 
     // ---------- 外观 ----------
     /// <summary>"system" | "light" | "dark"</summary>
@@ -220,6 +270,7 @@ public class AppSettings
                 {
                     if (s.Shortcuts == null || s.Shortcuts.Count == 0) s.Shortcuts = DefaultShortcuts();
                     if (string.IsNullOrEmpty(s.ThemeMode)) s.ThemeMode = "system";
+                    s.MigrateLegacyProfiles();
                     s.ApplyTheme();
                     return s;
                 }
@@ -240,7 +291,11 @@ public class AppSettings
     public void CopyFrom(AppSettings o)
     {
         Shortcuts = o.Shortcuts.Select(x => new ShortcutSetting { Action = x.Action, Ctrl = x.Ctrl, Alt = x.Alt, Shift = x.Shift, Vk = x.Vk }).ToList();
-        ChatApiUrl = o.ChatApiUrl; ChatApiKey = o.ChatApiKey; ChatModel = o.ChatModel; ChatVision = o.ChatVision;
+        ChatProvider = o.ChatProvider; ChatVision = o.ChatVision;
+        ChatProfiles = o.ChatProfiles.ToDictionary(kv => kv.Key, kv => new Dictionary<string, string>(kv.Value));
+        SttProvider = o.SttProvider;
+        SttProfiles = o.SttProfiles.ToDictionary(kv => kv.Key, kv => new Dictionary<string, string>(kv.Value));
+        ChatApiUrl = o.ChatApiUrl; ChatApiKey = o.ChatApiKey; ChatModel = o.ChatModel;
         SttApiUrl = o.SttApiUrl; SttAppId = o.SttAppId; SttApiKey = o.SttApiKey; SttModel = o.SttModel;
         RecordMode = o.RecordMode;
         ThemeMode = o.ThemeMode; WindowBorder = o.WindowBorder;

@@ -224,6 +224,13 @@ internal abstract class SettingsPage : Panel, IThemed
         LayoutStack();
         UpdateSaveUi();
     }
+
+    /// <summary>内容高度变化后重新排布（切换服务商导致行数变化时调用）。</summary>
+    protected void RelayoutContent()
+    {
+        LayoutStack();
+        UpdateSaveUi();
+    }
 }
 
 /// <summary>快捷键设置页。</summary>
@@ -315,121 +322,183 @@ internal sealed class ShortcutsPage : SettingsPage
         a.Ctrl == b.Ctrl && a.Alt == b.Alt && a.Shift == b.Shift && a.Vk == b.Vk;
 }
 
-/// <summary>模型接入设置页：对话模型（OpenAI 兼容 / 多模态）+ 实时语音转写。</summary>
+/// <summary>
+/// 模型接入设置页：对话模型（OpenAI 兼容 / 多模态）+ 实时语音转写。
+/// 服务商用下拉框选择，不同服务商需要的参数不同，因此输入框的**数量与标题都是动态生成**的。
+/// </summary>
 internal sealed class LlmPage : SettingsPage
 {
-    private static readonly (string label, string url, string model, bool vision)[] ChatPresets =
+    private const int FieldW = 330;          // 输入框与下拉框同宽
+
+    private sealed class Block
     {
-        ("DeepSeek", "https://api.deepseek.com/v1", "deepseek-chat", false),
-        ("通义千问", "https://dashscope.aliyuncs.com/compatible-mode/v1", "qwen-vl-max", true),
-        ("OpenAI", "https://api.openai.com/v1", "gpt-4o", true),
-        ("Kimi", "https://api.moonshot.cn/v1", "kimi-latest", true),
-        ("自定义", "", "", true),
-    };
+        public required GroupCard Card;
+        public required DropdownSelect Provider;
+        public readonly List<SettingRow> Rows = new();
+        public readonly Dictionary<string, InputField> Inputs = new();
+        public ToggleSwitch? Vision;
+    }
 
-    private static readonly (string label, string url, string model)[] SttPresets =
-    {
-        ("火山引擎", "wss://openspeech.bytedance.com/api/v3/sauc/bigmodel", "volc.bigasr.sauc.duration"),
-        ("OpenAI", "https://api.openai.com/v1", "whisper-1"),
-        ("阿里云", "wss://nls-gateway-cn-shanghai.aliyuncs.com/ws/v1", "paraformer-realtime-v2"),
-        ("自定义", "", ""),
-    };
+    private readonly Block _chat = new() { Card = null!, Provider = null! };
+    private readonly Block _stt = new() { Card = null!, Provider = null! };
 
-    private readonly DropdownSelect _chatPreset = new(ChatPresets.Select(p => p.label).ToArray(), 190, ChatPresets.Length - 1);
-    private readonly DropdownSelect _sttPreset = new(SttPresets.Select(p => p.label).ToArray(), 190, SttPresets.Length - 1);
+    private string _baseProviderChat = "自定义", _baseProviderStt = "自定义";
+    private Dictionary<string, Dictionary<string, string>> _baseChatProfiles = new();
+    private Dictionary<string, Dictionary<string, string>> _baseSttProfiles = new();
+    private bool _baseVision = true;
 
-    private readonly InputField _chatUrl = new(330, false, "https://api.deepseek.com/v1");
-    private readonly InputField _chatKey = new(330, true, "sk-…");
-    private readonly InputField _chatModel = new(330, false, "deepseek-chat");
-    private readonly ToggleSwitch _chatVision = new();
-
-    private readonly InputField _sttUrl = new(330, false, "wss://…（实时流式接口）");
-    private readonly InputField _sttAppId = new(330, false, "App ID / 账号（火山引擎等需要）");
-    private readonly InputField _sttKey = new(330, true, "Access Token / API Key");
-    private readonly InputField _sttModel = new(330, false, "模型 / 资源 ID");
-
-    private string _bChatUrl = "", _bChatKey = "", _bChatModel = "";
-    private bool _bChatVision = true;
-    private string _bSttUrl = "", _bSttAppId = "", _bSttKey = "", _bSttModel = "";
-
-    public LlmPage() : base("模型接入", "通用配置：任何 OpenAI 兼容接口与流式语音转写服务都可接入，密钥只保存在本机")
+    public LlmPage() : base("模型接入", "选择服务商后会自动带出需要的参数项，密钥只保存在本机")
     {
         ResetContent();
 
-        // ---- 对话模型 ----
-        var chat = new GroupCard("对话模型", "OpenAI 兼容协议（Base URL + API Key + 模型名），支持多模态输入");
-        foreach (var f in new[] { _chatUrl, _chatKey, _chatModel }) f.Changed += MarkChanged;
-        _chatVision.Changed += MarkChanged;
-        _chatPreset.Chosen += i => { FillChat(i); MarkChanged(); };
-        chat.Add(new SettingRow("常用服务商", "选择后自动填好接口地址与模型名", _chatPreset));
-        chat.Add(new SettingRow("接口地址", "Base URL，通常以 /v1 结尾", _chatUrl));
-        chat.Add(new SettingRow("API Key", "仅存本机，可点右侧图标查看", _chatKey));
-        chat.Add(new SettingRow("模型名", "服务商提供的模型名", _chatModel));
-        chat.Add(new SettingRow("多模态", "支持图片 / 文件的模型请开启", _chatVision));
-        chat.Height = chat.MeasureHeight();
-        Stack.Controls.Add(chat);
+        _chat.Card = new GroupCard("对话模型", "任何 OpenAI 兼容接口都可接入，支持多模态输入");
+        _stt.Card = new GroupCard("语音转文字", "通用实时（流式）语音转写：按住说话，松开即转写");
+        Stack.Controls.Add(_chat.Card);
+        Stack.Controls.Add(_stt.Card);
 
-        // ---- 语音转写 ----
-        var stt = new GroupCard("语音转文字", "通用实时（流式）语音转写：按住说话，松开即转写");
-        foreach (var f in new[] { _sttUrl, _sttAppId, _sttKey, _sttModel }) f.Changed += MarkChanged;
-        _sttPreset.Chosen += i => { FillStt(i); MarkChanged(); };
-        stt.Add(new SettingRow("常用服务商", "选择后自动填好实时流式接口", _sttPreset));
-        stt.Add(new SettingRow("接口地址", "实时流式地址（wss://…）", _sttUrl));
-        stt.Add(new SettingRow("App ID / 账号", "火山引擎等服务商需要", _sttAppId));
-        stt.Add(new SettingRow("Access Token", "密钥 / Token，仅存本机", _sttKey));
-        stt.Add(new SettingRow("模型 / 资源 ID", "服务商的模型或资源 ID", _sttModel));
-        stt.Height = stt.MeasureHeight();
-        Stack.Controls.Add(stt);
+        BuildBlock(_chat, Providers.Chat, chat: true);
+        BuildBlock(_stt, Providers.Stt, chat: false);
 
         FinishContent();
     }
 
-    private void FillChat(int i)
+    /// <summary>生成一个分区：服务商下拉框 + 多模态开关（仅对话）+ 该服务商的参数输入框。</summary>
+    private void BuildBlock(Block b, ProviderPreset[] presets, bool chat)
     {
-        var (_, url, model, vision) = ChatPresets[i];
-        if (url.Length == 0) return;          // “自定义”只切换名称，不动用户填写的内容
-        _chatUrl.Text = url;
-        _chatModel.Text = model;
-        _chatVision.On = vision;
+        b.Provider = new DropdownSelect(presets.Select(p => p.Name).ToArray(), FieldW, 0);
+        b.Provider.Chosen += i => OnProviderChanged(b, presets, chat, i);
+
+        if (chat)
+        {
+            b.Vision = new ToggleSwitch();
+            b.Vision.Changed += MarkChanged;
+        }
+
+        RebuildRows(b, presets, chat, presets[0].Name);
     }
 
-    private void FillStt(int i)
+    /// <summary>切换服务商：先把当前输入保存进旧档位，再按新服务商重建输入框（数量/标题/默认值都跟着变）。</summary>
+    private void OnProviderChanged(Block b, ProviderPreset[] presets, bool chat, int index)
     {
-        var (_, url, model) = SttPresets[i];
-        if (url.Length == 0) return;
-        _sttUrl.Text = url;
-        _sttModel.Text = model;
+        var name = presets[Math.Clamp(index, 0, presets.Length - 1)].Name;
+        RebuildRows(b, presets, chat, name);
+        MarkChanged();
     }
+
+    private void RebuildRows(Block b, ProviderPreset[] presets, bool chat, string providerName)
+    {
+        var preset = presets.FirstOrDefault(p => p.Name == providerName) ?? presets[0];
+
+        b.Card.SuspendLayout();
+        foreach (var row in b.Rows)
+        {
+            // 先摘掉复用的控件（下拉框 / 多模态开关），否则会随行一起被 Dispose
+            if (ReferenceEquals(b.Provider.Parent, row)) row.Controls.Remove(b.Provider);
+            if (b.Vision != null && ReferenceEquals(b.Vision.Parent, row)) row.Controls.Remove(b.Vision);
+            b.Card.RemoveRow(row);
+        }
+        b.Rows.Clear();
+        b.Inputs.Clear();
+
+        var providerRow = new SettingRow("服务商", "选择后自动带出需要的参数", b.Provider);
+        b.Rows.Add(providerRow);      // 必须记录，否则下次重建时会留下一行没有控件的空行
+        b.Card.Add(providerRow);
+
+        // 该服务商此前保存过的值；第一次使用时用预设默认值
+        var stored = _working.ProfileOf(chat, preset.Name);
+        foreach (var f in preset.Fields)
+        {
+            if (!stored.TryGetValue(f.Key, out var val) || (val.Length == 0 && preset.Defaults.TryGetValue(f.Key, out var d)))
+            {
+                val = preset.Defaults.TryGetValue(f.Key, out var dv) ? dv : "";
+                stored[f.Key] = val;
+            }
+            var input = new InputField(FieldW, f.Secret, f.Placeholder) { Text = val };
+            input.Changed += () => { stored[f.Key] = input.Text.Trim(); MarkChanged(); };
+            b.Inputs[f.Key] = input;
+            var row = new SettingRow(f.Label, f.Desc, input);
+            b.Rows.Add(row);
+            b.Card.Add(row);
+        }
+
+        if (chat && b.Vision != null)
+        {
+            // 多模态开关放在参数之后
+            var row = new SettingRow("多模态", "支持图片 / 文件的模型请开启", b.Vision);
+            b.Rows.Add(row);
+            b.Card.Add(row);
+        }
+
+        b.Card.ResumeLayout();
+        b.Card.Height = b.Card.MeasureHeight();
+        b.Card.Arrange();
+        RelayoutContent();
+    }
+
+    private AppSettings _working = new();
+
+    private static string Get(Block b, string key) => b.Inputs.TryGetValue(key, out var f) ? f.Text.Trim() : "";
 
     public override void Rebind(AppSettings s)
     {
-        // 先落基线，再写控件值，避免 Rebind 过程中被判定为“有改动”
-        _bChatUrl = s.ChatApiUrl; _bChatKey = s.ChatApiKey; _bChatModel = s.ChatModel; _bChatVision = s.ChatVision;
-        _bSttUrl = s.SttApiUrl; _bSttAppId = s.SttAppId; _bSttKey = s.SttApiKey; _bSttModel = s.SttModel;
+        _working = new AppSettings();
+        _working.CopyFrom(s);
+        _baseProviderChat = s.ChatProvider;
+        _baseProviderStt = s.SttProvider;
+        _baseChatProfiles = s.ChatProfiles.ToDictionary(kv => kv.Key, kv => new Dictionary<string, string>(kv.Value));
+        _baseSttProfiles = s.SttProfiles.ToDictionary(kv => kv.Key, kv => new Dictionary<string, string>(kv.Value));
+        _baseVision = s.ChatVision;
 
-        _chatUrl.Text = s.ChatApiUrl; _chatKey.Text = s.ChatApiKey; _chatModel.Text = s.ChatModel;
-        _chatVision.On = s.ChatVision;
-        _sttUrl.Text = s.SttApiUrl; _sttAppId.Text = s.SttAppId; _sttKey.Text = s.SttApiKey; _sttModel.Text = s.SttModel;
+        _chat.Provider.Select(IndexOf(Providers.Chat, s.ChatProvider), false);
+        _stt.Provider.Select(IndexOf(Providers.Stt, s.SttProvider), false);
+        if (_chat.Vision != null) _chat.Vision.On = s.ChatVision;
+        RebuildRows(_chat, Providers.Chat, true, s.ChatProvider);
+        RebuildRows(_stt, Providers.Stt, false, s.SttProvider);
         MarkClean();
+    }
+
+    private static int IndexOf(ProviderPreset[] presets, string name)
+    {
+        int i = Array.FindIndex(presets, p => p.Name == name);
+        return i < 0 ? 0 : i;
     }
 
     public override void ApplyTo(AppSettings target)
     {
-        target.ChatApiUrl = _chatUrl.Text.Trim();
-        target.ChatApiKey = _chatKey.Text;
-        target.ChatModel = _chatModel.Text.Trim();
-        target.ChatVision = _chatVision.On;
-        target.SttApiUrl = _sttUrl.Text.Trim();
-        target.SttAppId = _sttAppId.Text.Trim();
-        target.SttApiKey = _sttKey.Text;
-        target.SttModel = _sttModel.Text.Trim();
+        target.ChatProvider = _chat.Provider.SelectedItem;
+        target.ChatProfiles = _working.ChatProfiles.ToDictionary(kv => kv.Key, kv => new Dictionary<string, string>(kv.Value));
+        target.ChatVision = _chat.Vision?.On ?? true;
+        target.SttProvider = _stt.Provider.SelectedItem;
+        target.SttProfiles = _working.SttProfiles.ToDictionary(kv => kv.Key, kv => new Dictionary<string, string>(kv.Value));
+
+        // 同步旧版扁平字段，保证向下兼容
+        target.ChatApiUrl = Get(_chat, "url");
+        target.ChatApiKey = Get(_chat, "key");
+        target.ChatModel = Get(_chat, "model");
+        target.SttApiUrl = Get(_stt, "url");
+        target.SttAppId = Get(_stt, "appid");
+        target.SttApiKey = Get(_stt, "key");
+        target.SttModel = Get(_stt, "model");
     }
 
-    protected override bool ComputeDirty() =>
-        _chatUrl.Text.Trim() != _bChatUrl || _chatKey.Text != _bChatKey || _chatModel.Text.Trim() != _bChatModel ||
-        _chatVision.On != _bChatVision ||
-        _sttUrl.Text.Trim() != _bSttUrl || _sttAppId.Text.Trim() != _bSttAppId ||
-        _sttKey.Text != _bSttKey || _sttModel.Text.Trim() != _bSttModel;
+    protected override bool ComputeDirty()
+    {
+        if (_chat.Provider.SelectedItem != _baseProviderChat) return true;
+        if (_stt.Provider.SelectedItem != _baseProviderStt) return true;
+        if ((_chat.Vision?.On ?? true) != _baseVision) return true;
+        return !SameProfiles(_working.ChatProfiles, _baseChatProfiles) ||
+               !SameProfiles(_working.SttProfiles, _baseSttProfiles);
+    }
+
+    private static bool SameProfiles(
+        Dictionary<string, Dictionary<string, string>> a,
+        Dictionary<string, Dictionary<string, string>> b)
+    {
+        static string Key(Dictionary<string, Dictionary<string, string>> m) =>
+            string.Join("\n", m.OrderBy(kv => kv.Key).Select(kv =>
+                kv.Key + "=" + string.Join(",", kv.Value.OrderBy(x => x.Key).Select(x => x.Key + ":" + x.Value))));
+        return Key(a) == Key(b);
+    }
 }
 
 /// <summary>界面外观设置页：应用主题（亮色 / 暗色 / 跟随系统）、主色、窗口选项。</summary>

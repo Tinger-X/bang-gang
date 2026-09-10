@@ -8,22 +8,25 @@ internal sealed class IconButton : Control, IThemed
     public enum Kind { Search, Gear, Plus, Send, Record, Close, Paperclip }
 
     public Kind Icon { get; set; }
-    private readonly Color? _backdrop;
+    private readonly Color? _backdropHint;
     private bool _hover;
 
     public IconButton(Kind kind, Color? backdrop = null)
     {
         Icon = kind;
-        _backdrop = backdrop;
+        _backdropHint = backdrop;
         Size = new Size(28, 28);
         BackColor = backdrop ?? Theme.SideBg;   // 不透明：与所在面板同色即可无痕
         SetStyle(ControlStyles.OptimizedDoubleBuffer | ControlStyles.UserPaint | ControlStyles.AllPaintingInWmPaint, true);
     }
 
-    /// <summary>主题切换后重新贴合所在面板的底色（否则暗色模式下会留一圈白底）。</summary>
+    /// <summary>
+    /// 主题切换后重新贴合所在面板的底色。
+    /// 必须取“当前”父面板底色：构造时传进来的颜色属于旧主题，继续沿用就会在按钮四周留一圈旧色。
+    /// </summary>
     public void Restyle()
     {
-        BackColor = _backdrop ?? Parent?.BackColor ?? Theme.SideBg;
+        BackColor = Parent?.BackColor ?? _backdropHint ?? Theme.SideBg;
         Invalidate();
     }
 
