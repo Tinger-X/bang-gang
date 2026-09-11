@@ -247,7 +247,7 @@ internal sealed class ShortcutsPage : SettingsPage
 
     private readonly Dictionary<string, KeyCapBox> _caps = new();
     private readonly Dictionary<string, ShortcutSetting> _base = new();
-    private readonly SegmentedControl _recMode = new(RecordModes, 200, 34);
+    private readonly SegmentedControl _recMode = new(RecordModes, 34);
     private string _baseRecMode = "hold";
 
     public ShortcutsPage() : base("快捷键", "全局热键，至少需要一个修饰键（Ctrl / Alt / Shift）")
@@ -324,11 +324,16 @@ internal sealed class ShortcutsPage : SettingsPage
 
 /// <summary>
 /// 模型接入设置页：对话模型（OpenAI 兼容 / 多模态）+ 实时语音转写。
-/// 服务商用下拉框选择，不同服务商需要的参数不同，因此输入框的**数量与标题都是动态生成**的。
+/// 服务商决定需要哪些参数，因此参数行是**预先创建、按服务商显示/隐藏**的，
+/// 切换时只改可见性、标题与取值，不销毁重建控件 —— 切换过程不会闪烁。
 /// </summary>
 internal sealed class LlmPage : SettingsPage
 {
     private const int FieldW = 330;          // 输入框与下拉框同宽
+    private const int RowH = 56;             // 输入框加高后，行也要相应加高
+
+    /// <summary>所有服务商可能用到的参数键，以及展示顺序。</summary>
+    private static readonly string[] AllKeys = { "url", "appid", "key", "secret2", "model" };
 
     private sealed class Block
     {
@@ -336,7 +341,10 @@ internal sealed class LlmPage : SettingsPage
         public required DropdownSelect Provider;
         public readonly List<SettingRow> Rows = new();
         public readonly Dictionary<string, InputField> Inputs = new();
+        public SettingRow? VisionRow;
         public ToggleSwitch? Vision;
+        public bool Chat;
+        public ProviderPreset[] Presets = Array.Empty<ProviderPreset>();
     }
 
     private readonly Block _chat = new() { Card = null!, Provider = null! };
@@ -351,8 +359,8 @@ internal sealed class LlmPage : SettingsPage
     {
         ResetContent();
 
-        _chat.Card = new GroupCard("对话模型", "任何 OpenAI 兼容接口都可接入，支持多模态输入");
-        _stt.Card = new GroupCard("语音转文字", "通用实时（流式）语音转写：按住说话，松开即转写");
+        _chat.Card = new GroupCard("对话模型", "任何 OpenAI 兼容接口都可接入，支持多模态输入") { RowH = RowH };
+        _stt.Card = new GroupCard("语音转文字", "通用实时（流式）语音转写：按住说话，松开即转写") { RowH = RowH };
         Stack.Controls.Add(_chat.Card);
         Stack.Controls.Add(_stt.Card);
 
@@ -362,72 +370,74 @@ internal sealed class LlmPage : SettingsPage
         FinishContent();
     }
 
-    /// <summary>生成一个分区：服务商下拉框 + 多模态开关（仅对话）+ 该服务商的参数输入框。</summary>
+    /// <summary>一次性建好某个分区的全部行（服务商行 + 所有参数行 + 多模态行）。</summary>
     private void BuildBlock(Block b, ProviderPreset[] presets, bool chat)
     {
+        b.Chat = chat;
+        b.Presets = presets;
         b.Provider = new DropdownSelect(presets.Select(p => p.Name).ToArray(), FieldW, 0);
-        b.Provider.Chosen += i => OnProviderChanged(b, presets, chat, i);
+        b.Provider.Chosen += i => SwitchProvider(b, i);
+
+        AddRow(b, providerRow: true, new SettingRow("服务商", "选择后自动带出需要的参数", b.Provider));
+
+        foreach (var key in AllKeys)
+        {
+            var input = new InputField(FieldW, key is "key" or "secret2", "");
+            input.Changed += () =>
+            {
+                var prov = b.Provider.SelectedItem;
+                _working.ProfileOf(chat, prov)[key] = input.Text.Trim();
+                MarkChanged();
+            };
+            b.Inputs[key] = input;
+            AddRow(b, providerRow: false, new SettingRow(key, "", input));
+        }
 
         if (chat)
         {
             b.Vision = new ToggleSwitch();
             b.Vision.Changed += MarkChanged;
+            b.VisionRow = new SettingRow("多模态", "支持图片 / 文件的模型请开启", b.Vision);
+            AddRow(b, providerRow: false, b.VisionRow);
         }
 
-        RebuildRows(b, presets, chat, presets[0].Name);
+        ApplyPreset(b, presets[0]);
     }
 
-    /// <summary>切换服务商：先把当前输入保存进旧档位，再按新服务商重建输入框（数量/标题/默认值都跟着变）。</summary>
-    private void OnProviderChanged(Block b, ProviderPreset[] presets, bool chat, int index)
+    private static void AddRow(Block b, bool providerRow, SettingRow row)
     {
-        var name = presets[Math.Clamp(index, 0, presets.Length - 1)].Name;
-        RebuildRows(b, presets, chat, name);
-        MarkChanged();
+        b.Rows.Add(row);
+        b.Card.Add(row);
     }
 
-    private void RebuildRows(Block b, ProviderPreset[] presets, bool chat, string providerName)
+    /// <summary>让某个分区按服务商显示/隐藏参数行，并更新标题、说明、示例与取值。</summary>
+    private void ApplyPreset(Block b, ProviderPreset preset)
     {
-        var preset = presets.FirstOrDefault(p => p.Name == providerName) ?? presets[0];
-
         b.Card.SuspendLayout();
-        foreach (var row in b.Rows)
-        {
-            // 先摘掉复用的控件（下拉框 / 多模态开关），否则会随行一起被 Dispose
-            if (ReferenceEquals(b.Provider.Parent, row)) row.Controls.Remove(b.Provider);
-            if (b.Vision != null && ReferenceEquals(b.Vision.Parent, row)) row.Controls.Remove(b.Vision);
-            b.Card.RemoveRow(row);
-        }
-        b.Rows.Clear();
-        b.Inputs.Clear();
 
-        var providerRow = new SettingRow("服务商", "选择后自动带出需要的参数", b.Provider);
-        b.Rows.Add(providerRow);      // 必须记录，否则下次重建时会留下一行没有控件的空行
-        b.Card.Add(providerRow);
+        var keys = preset.Fields.Select(f => f.Key).ToList();
+        var stored = _working.ProfileOf(b.Chat, preset.Name);
 
-        // 该服务商此前保存过的值；第一次使用时用预设默认值
-        var stored = _working.ProfileOf(chat, preset.Name);
-        foreach (var f in preset.Fields)
+        // 服务商行标题保持固定；参数行按需显示
+        foreach (var key in AllKeys)
         {
-            if (!stored.TryGetValue(f.Key, out var val) || (val.Length == 0 && preset.Defaults.TryGetValue(f.Key, out var d)))
+            var spec = preset.Fields.FirstOrDefault(f => f.Key == key);
+            var row = b.Rows.First(r => ReferenceEquals(r.RightControl, b.Inputs[key]));
+            if (spec == null) { row.SetShown(false); continue; }
+
+            if (!stored.TryGetValue(key, out var val) || (val.Length == 0 && preset.Defaults.TryGetValue(key, out _)))
             {
-                val = preset.Defaults.TryGetValue(f.Key, out var dv) ? dv : "";
-                stored[f.Key] = val;
+                val = preset.Defaults.TryGetValue(key, out var dv) ? dv : "";
+                stored[key] = val;
             }
-            var input = new InputField(FieldW, f.Secret, f.Placeholder) { Text = val };
-            input.Changed += () => { stored[f.Key] = input.Text.Trim(); MarkChanged(); };
-            b.Inputs[f.Key] = input;
-            var row = new SettingRow(f.Label, f.Desc, input);
-            b.Rows.Add(row);
-            b.Card.Add(row);
+            row.SetText(spec.Label, spec.Desc);
+            row.SetShown(true);
+            var input = b.Inputs[key];
+            input.SetPlaceholder(spec.Placeholder);
+            if (input.Text != val) input.Text = val;      // 切回该服务商时恢复它自己的值
         }
 
-        if (chat && b.Vision != null)
-        {
-            // 多模态开关放在参数之后
-            var row = new SettingRow("多模态", "支持图片 / 文件的模型请开启", b.Vision);
-            b.Rows.Add(row);
-            b.Card.Add(row);
-        }
+        b.VisionRow?.SetShown(true);
 
         b.Card.ResumeLayout();
         b.Card.Height = b.Card.MeasureHeight();
@@ -435,9 +445,18 @@ internal sealed class LlmPage : SettingsPage
         RelayoutContent();
     }
 
+    private void SwitchProvider(Block b, int index)
+    {
+        index = Math.Clamp(index, 0, b.Presets.Length - 1);
+        Trace.Log($"switch provider index={index} name={b.Presets[index].Name}");
+        ApplyPreset(b, b.Presets[index]);
+        MarkChanged();
+    }
+
     private AppSettings _working = new();
 
-    private static string Get(Block b, string key) => b.Inputs.TryGetValue(key, out var f) ? f.Text.Trim() : "";
+    private static string Get(Block b, string key) =>
+        b.Inputs.TryGetValue(key, out var f) && f.Visible ? f.Text.Trim() : "";
 
     public override void Rebind(AppSettings s)
     {
@@ -452,8 +471,8 @@ internal sealed class LlmPage : SettingsPage
         _chat.Provider.Select(IndexOf(Providers.Chat, s.ChatProvider), false);
         _stt.Provider.Select(IndexOf(Providers.Stt, s.SttProvider), false);
         if (_chat.Vision != null) _chat.Vision.On = s.ChatVision;
-        RebuildRows(_chat, Providers.Chat, true, s.ChatProvider);
-        RebuildRows(_stt, Providers.Stt, false, s.SttProvider);
+        ApplyPreset(_chat, Providers.Chat[IndexOf(Providers.Chat, s.ChatProvider)]);
+        ApplyPreset(_stt, Providers.Stt[IndexOf(Providers.Stt, s.SttProvider)]);
         MarkClean();
     }
 
@@ -515,11 +534,11 @@ internal sealed class UiPage : SettingsPage
 
     private static readonly string[] Modes = { "亮色", "暗色", "跟随系统" };
 
-    private readonly SegmentedControl _mode = new(Modes, 320, 38);
+    private readonly SegmentedControl _mode = new(Modes, 34);
     private readonly SwatchChip _accent = new(112);
     private readonly SliderBar _opacity = new(300);
     private readonly ToggleSwitch _border = new();
-    private readonly List<ColorDot> _dots = new();
+    private readonly ColorDotPicker _dots = new(AccentPresets);
 
     private string _bMode = "system";
     private int _bAccent;
@@ -535,20 +554,25 @@ internal sealed class UiPage : SettingsPage
         // ---- 主题配色 ----
         var theme = new GroupCard("主题配色", "选择应用主题与主色");
         _mode.Changed += MarkChanged;
-        _accent.Changed += MarkChanged;
 
-        var accents = new Panel { Size = new Size(156 + 112, 32), BackColor = SC.GroupBg };
-        int x = 0;
-        foreach (var c in AccentPresets)
+        // 预设色球：选中用一块会滑动的背景表示；自定义颜色时选中背景自动隐藏
+        _dots.Changed += () =>
         {
-            var dot = new ColorDot(c) { Location = new Point(x, 3) };
-            dot.Changed += () => { _accent.Value = dot.Value; SyncDots(); MarkChanged(); };
-            _dots.Add(dot);
-            accents.Controls.Add(dot);
-            x += 30;
-        }
+            _accent.Value = _dots.Value;
+            MarkChanged();
+        };
+        _accent.Changed += () =>
+        {
+            // 用户用取色器选了自定义颜色：只有刚好等于某个预设时才点亮对应色球
+            _dots.SetValue(_accent.Value, raise: false);
+            MarkChanged();
+        };
+
+        var accents = new Panel { Size = new Size(_dots.Width + 6 + 112, 32), BackColor = SC.GroupBg };
+        accents.Controls.Add(_dots);
+        _dots.Location = new Point(0, 0);
         accents.Controls.Add(_accent);
-        _accent.Location = new Point(x + 6, 0);
+        _accent.Location = new Point(_dots.Width + 6, 0);
 
         theme.Add(new SettingRow("应用主题", "跟随系统随 Windows 自动切换", _mode));
         theme.Add(new SettingRow("主色", "按钮、选中态与强调文字", accents));
@@ -567,11 +591,6 @@ internal sealed class UiPage : SettingsPage
         FinishContent();
     }
 
-    private void SyncDots()
-    {
-        foreach (var d in _dots) d.Selected = d.Value.ToArgb() == _accent.Value.ToArgb();
-    }
-
     private static int ModeIndex(string mode) => mode switch { "light" => 0, "dark" => 1, _ => 2 };
     private static string ModeValue(int idx) => idx switch { 0 => "light", 1 => "dark", _ => "system" };
 
@@ -582,9 +601,9 @@ internal sealed class UiPage : SettingsPage
 
         _mode.Select(ModeIndex(s.ThemeMode), false);
         _accent.Value = Color.FromArgb(s.Accent);
+        _dots.SetValue(Color.FromArgb(s.Accent), raise: false);
         _opacity.Value = _bOpacityPct;
         _border.On = s.WindowBorder;
-        SyncDots();
         MarkClean();
     }
 

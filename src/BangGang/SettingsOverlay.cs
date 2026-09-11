@@ -52,7 +52,7 @@ internal sealed class SettingsOverlay : Panel, IPopupHost
         SetStyle(ControlStyles.UserPaint | ControlStyles.ResizeRedraw, true);
 
         // ---- 浮窗主体（固定居中，不可拖动；背后浅色遮罩由主窗口负责） ----
-        _card.Radius = 16;
+        _card.Radius = 10;
         _card.Resize += (_, _) => LayoutCard();
         Controls.Add(_card);
 
@@ -127,7 +127,7 @@ internal sealed class SettingsOverlay : Panel, IPopupHost
 
     private void BuildConfirm()
     {
-        _confirm.Radius = 14;
+        _confirm.Radius = 10;
         _confirm.Visible = false;
 
         _confirmTitle.Text = "放弃未保存的修改？";
@@ -225,7 +225,7 @@ internal sealed class SettingsOverlay : Panel, IPopupHost
     private void ApplyRegion()
     {
         var rect = new Rectangle(_cardPos.X, _cardPos.Y, Math.Max(1, _card.Width), Math.Max(1, _card.Height));
-        using var path = RP.Path(rect, 16);
+        using var path = RP.Path(rect, 10);
         var region = new Region(path);
         var old = Region;
         Region = region;
@@ -264,15 +264,15 @@ internal sealed class SettingsOverlay : Panel, IPopupHost
 
         foreach (var p in _pages) p.SetBounds(0, 0, _host.ClientSize.Width, _host.ClientSize.Height);
 
-        // 确认浮层：420x180 居中，四周 12px 用于绘制投影
-        const int cw2 = 420, ch2 = 180, pad = 12;
-        _confirm.Shadow = pad;
+        // 确认浮层：400x180 居中；不画阴影，边框直接贴在外缘（不留投影边距）
+        const int cw2 = 400, ch2 = 180;
+        _confirm.Shadow = 0;   // 不画阴影，仅保留边框
         _confirm.SetBounds((w - cw2) / 2, (h - ch2) / 2, cw2, ch2);
-        int ix = pad + (cw2 - pad * 2 - 232) / 2;   // 两个按钮整体居中
-        _confirmTitle.SetBounds(pad + 20, pad + 20, cw2 - pad * 2 - 40, 24);
-        _confirmDesc.SetBounds(pad + 20, pad + 48, cw2 - pad * 2 - 40, 20);
-        _confirmStay.SetBounds(ix, pad + 100, 104, 34);
-        _confirmQuit.SetBounds(ix + 104 + 12, pad + 100, 116, 34);
+        _confirmTitle.SetBounds(24, 30, cw2 - 48, 26);
+        _confirmDesc.SetBounds(24, 62, cw2 - 48, 20);
+        int ix = (cw2 - 232) / 2;   // 两个按钮整体居中
+        _confirmStay.SetBounds(ix, 118, 104, 34);
+        _confirmQuit.SetBounds(ix + 104 + 12, 118, 116, 34);
     }
 
     /// <summary>

@@ -16,6 +16,7 @@ internal static class Program
         }
 
         ApplicationConfiguration.Initialize();
+        Trace.Reset();          // Debug 构建才会写入交互日志（Release 编译后此调用消失）
         Application.ThreadException += (_, e) => LogCrash(e.Exception);
         AppDomain.CurrentDomain.UnhandledException += (_, e) => LogCrash(e.ExceptionObject as Exception);
         try

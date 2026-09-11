@@ -309,7 +309,8 @@ internal sealed class NavItem : Control, IThemed
         Color ink = Selected ? SC.Accent : SC.Ink;
         Gfx.DrawGlyph(g, Icon, new RectangleF(14, (Height - 18) / 2f, 18, 18), Selected ? SC.Accent : SC.InkMuted, 1.5f);
         var textRc = new Rectangle(42, 0, Width - 42 - (Dot ? 24 : 12), Height);
-        TextRenderer.DrawText(g, Label, SF.Get(11.5f, Selected ? FontStyle.Bold : FontStyle.Regular), textRc, ink,
+        // 选中只改颜色，不改字号/粗细
+        TextRenderer.DrawText(g, Label, SF.Get(11.5f), textRc, ink,
             TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPadding);
 
         if (Dot)
@@ -378,7 +379,7 @@ internal sealed class StackPanel : Panel, IThemed, IArranged
 /// <summary>分组卡片：圆角浅底 + 标题 + 可选副标题 + 若干行设置项。</summary>
 internal sealed class GroupCard : Panel, IThemed, IArranged
 {
-    private readonly List<Control> _rows = new();
+    private readonly List<SettingRow> _rows = new();
     public string Title { get; }
     public string Subtitle { get; }
     public int RowH { get; set; } = 52;
@@ -394,27 +395,32 @@ internal sealed class GroupCard : Panel, IThemed, IArranged
                | ControlStyles.OptimizedDoubleBuffer | ControlStyles.ResizeRedraw, true);
     }
 
-    public void Add(Control row)
+    public void Add(SettingRow row)
     {
         _rows.Add(row);
         Controls.Add(row);
     }
 
     /// <summary>移除一行（切换服务商时重建参数行用）。</summary>
-    public void RemoveRow(Control row)
+    public void RemoveRow(SettingRow row)
     {
         if (!_rows.Remove(row)) return;
         Controls.Remove(row);
         row.Dispose();
     }
 
-    public int MeasureHeight() => RowTop + _rows.Count * RowH + 12;
+    public int MeasureHeight()
+    {
+        int n = _rows.Count(r => r.Shown);
+        return RowTop + n * RowH + 12;
+    }
 
     public void Arrange()
     {
         int y = RowTop;
         foreach (var r in _rows)
         {
+            if (!r.Shown) continue;        // 隐藏的行不占位置（服务商切换时用）
             r.SetBounds(18, y, Math.Max(20, Width - 36), RowH - 2);
             y += RowH;
             if (r is IArranged a) a.Arrange();
@@ -513,6 +519,30 @@ internal sealed class SettingRow : Panel, IThemed, IArranged
         _desc.Visible = two;
     }
 
+    /// <summary>行右侧的控件（切换服务商时用来定位这一行）。</summary>
+    public Control RightControl => _right;
+
+    /// <summary>
+    /// 是否参与排布。注意不能用 Control.Visible 判断：父级不可见时它也会返回 false。
+    /// </summary>
+    public bool Shown { get; set; } = true;
+
+    /// <summary>显示/隐藏这一行（同时同步 Control.Visible）。</summary>
+    public void SetShown(bool on)
+    {
+        Shown = on;
+        Visible = on;
+    }
+
+    /// <summary>更换标题与说明（切换服务商时用）。</summary>
+    public void SetText(string title, string desc)
+    {
+        _title.Text = title;
+        _desc.Text = desc ?? "";
+        Arrange();
+        Invalidate();
+    }
+
     protected override void OnLayout(LayoutEventArgs levent)
     {
         base.OnLayout(levent);
@@ -520,7 +550,11 @@ internal sealed class SettingRow : Panel, IThemed, IArranged
     }
 }
 
-/// <summary>圆角文本输入框（可带占位符与密码模式 + 显示/隐藏切换）。</summary>
+/// <summary>
+/// 圆角文本输入框（可带占位符与密码模式 + 显示/隐藏切换）。
+/// 内部文本框与外部边框同底色（看起来就是“一个框”），并按字体高度自适应，
+/// 因此高 DPI 下也不会出现文字被遮挡。
+/// </summary>
 internal sealed class InputField : Control, IThemed, IArranged
 {
     private readonly TextBox _tb;
@@ -528,14 +562,17 @@ internal sealed class InputField : Control, IThemed, IArranged
     private bool _focus, _hover, _revealed;
 
     public bool Secret { get; set; }
-    public string Placeholder { get; set; } = "";
+    public string Placeholder { get; private set; } = "";
     public event Action? Changed;
+
+    /// <summary>输入框的最小高度（随字体自动加高，保证文字不被裁切）。</summary>
+    public const int MinHeight = 42;
 
     public InputField(int width = 300, bool secret = false, string placeholder = "")
     {
         Secret = secret;
         Placeholder = placeholder;
-        Size = new Size(width, 38);
+        Size = new Size(width, MinHeight);
         BackColor = SC.CardBg;
         SetStyle(ControlStyles.UserPaint | ControlStyles.AllPaintingInWmPaint
                | ControlStyles.OptimizedDoubleBuffer | ControlStyles.ResizeRedraw, true);
@@ -544,7 +581,7 @@ internal sealed class InputField : Control, IThemed, IArranged
         {
             BorderStyle = BorderStyle.None,
             Font = Theme.UI(10.5f),
-            BackColor = SC.FieldBg,
+            BackColor = SC.FieldBg,       // 与外部边框同色，视觉上只有一个框
             ForeColor = SC.Ink,
             UseSystemPasswordChar = secret,
         };
@@ -566,6 +603,19 @@ internal sealed class InputField : Control, IThemed, IArranged
         Controls.Add(_ph);
         _ph.BringToFront();
         Arrange();
+        Height = NeededHeight;
+    }
+
+    /// <summary>按字体需要的行高自动加高（高 DPI 下也不会遮挡文字）。</summary>
+    private int NeededHeight => Math.Max(MinHeight, _tb.PreferredHeight + 20);
+
+    /// <summary>更换占位示例（切换服务商时用）。</summary>
+    public void SetPlaceholder(string text)
+    {
+        Placeholder = text ?? "";
+        _ph.Text = Placeholder;
+        UpdatePlaceholder();
+        Invalidate();
     }
 
     /// <summary>把内部文本框与占位文字按当前尺寸摆好（构造与尺寸变化时都要调用）。</summary>
@@ -574,7 +624,8 @@ internal sealed class InputField : Control, IThemed, IArranged
         if (_tb == null) return;
         int right = 12 + (ShowEye ? 26 : 0);
         int h = _tb.PreferredHeight;
-        _tb.SetBounds(12, Math.Max(0, (Height - h) / 2), Math.Max(10, Width - 12 - right), h);
+        int y = Math.Max(0, (Height - h) / 2);
+        _tb.SetBounds(12, y, Math.Max(10, Width - 12 - right), h);
         UpdatePlaceholder();
     }
 
@@ -653,11 +704,18 @@ internal sealed class InputField : Control, IThemed, IArranged
     }
 }
 
-/// <summary>快捷键录入框：聚焦后按下组合键即完成录入，内部以键帽形式展示。</summary>
+/// <summary>
+/// 快捷键录入框：点击进入录入后，**实时显示当前按下的按键**，
+/// 等所有按键都抬起时才算录入完成。
+/// </summary>
 internal sealed class KeyCapBox : Control, IThemed
 {
     private bool _focus;
     private ShortcutSetting _sc = new();
+    private readonly ShortcutSetting _pending = new();   // 录入中显示的组合
+    private readonly ShortcutSetting _commit = new();    // 全部松开后真正提交的组合
+    private readonly HashSet<Keys> _down = new();
+    private bool _usable;
 
     public event Action? Changed;
 
@@ -680,27 +738,60 @@ internal sealed class KeyCapBox : Control, IThemed
 
     public void Restyle() { BackColor = SC.GroupBg; Invalidate(); }
 
-    protected override void OnEnter(EventArgs e) { _focus = true; Invalidate(); base.OnEnter(e); }
-    protected override void OnLeave(EventArgs e) { _focus = false; Invalidate(); base.OnLeave(e); }
+    private void BeginCapture()
+    {
+        _focus = true;
+        _down.Clear();
+        _usable = false;
+        _pending.Action = _sc.Action;
+        _pending.Ctrl = _pending.Alt = _pending.Shift = false;
+        _pending.Vk = 0;
+        _commit.Ctrl = _commit.Alt = _commit.Shift = false;
+        _commit.Vk = 0;
+        Invalidate();
+    }
+
+    private void EndCapture(bool commit)
+    {
+        _focus = false;
+        _down.Clear();
+        Invalidate();
+    }
+
+    /// <summary>当前按住的修饰键 → 录入中显示的组合；提交值来自按下可用键的那一刻。</summary>
+    private void RefreshLive()
+    {
+        _pending.Ctrl = _down.Contains(Keys.ControlKey);
+        _pending.Alt = _down.Contains(Keys.Menu);
+        _pending.Shift = _down.Contains(Keys.ShiftKey);
+        _pending.Vk = _usable ? _commit.Vk : 0;
+    }
+
+    protected override void OnEnter(EventArgs e) { if (!_focus) BeginCapture(); base.OnEnter(e); }
+
+    protected override void OnLeave(EventArgs e)
+    {
+        // 录入途中失去焦点：放弃本次录入，沿用原来的组合键
+        if (_focus) EndCapture(false);
+        base.OnLeave(e);
+    }
 
     /// <summary>点击即进入录入状态（录入完成后仍保持焦点，再次点击可重新录入）。</summary>
     protected override void OnMouseDown(MouseEventArgs e)
     {
-        _focus = true;
+        BeginCapture();
         Focus();
-        Invalidate();
         base.OnMouseDown(e);
     }
 
     protected override bool IsInputKey(Keys keyData) => true;
 
-    /// <summary>录入中的 Esc 只退出录入状态，不会关闭设置浮窗。</summary>
+    /// <summary>录入中的 Esc 只取消本次录入，不会关闭设置浮窗。</summary>
     protected override bool ProcessCmdKey(ref Message msg, Keys keyData)
     {
         if (keyData == Keys.Escape && _focus)
         {
-            _focus = false;
-            Invalidate();
+            EndCapture(false);
             return true;
         }
         return base.ProcessCmdKey(ref msg, keyData);
@@ -708,21 +799,51 @@ internal sealed class KeyCapBox : Control, IThemed
 
     protected override void OnKeyDown(KeyEventArgs e)
     {
-        if (e.KeyCode == Keys.Tab) return;   // 交给系统做焦点切换
+        if (!_focus) return;
+        if (e.KeyCode == Keys.Tab) return;      // 交给系统做焦点切换
+
+        _down.Add(e.KeyCode);
 
         bool mod = e.Control || e.Alt || e.Shift;
         if (ShortcutSetting.IsUsable((int)e.KeyCode, mod))
         {
-            _sc.Ctrl = e.Control; _sc.Alt = e.Alt; _sc.Shift = e.Shift; _sc.Vk = (int)e.KeyCode;
-            e.SuppressKeyPress = true;
-            _focus = false;      // 录入完成：立刻显示新的组合键（不自动跳到下一项）
-            Invalidate();
-            Changed?.Invoke();
+            // 记下这一刻的修饰键：松开全部按键后用它提交
+            _commit.Ctrl = _down.Contains(Keys.ControlKey);
+            _commit.Alt = _down.Contains(Keys.Menu);
+            _commit.Shift = _down.Contains(Keys.ShiftKey);
+            _commit.Vk = (int)e.KeyCode;
+            _usable = true;
         }
-        else if (!mod)
+        RefreshLive();
+        e.SuppressKeyPress = true;
+        Invalidate();                            // 实时显示按下的键
+        Trace.Log($"key down {e.KeyCode} down={_down.Count} live={Parts(_pending)}");
+    }
+
+    private static string Parts(ShortcutSetting s) =>
+        $"{(s.Ctrl ? "Ctrl+" : "")}{(s.Alt ? "Alt+" : "")}{(s.Shift ? "Shift+" : "")}{(s.Vk != 0 ? ShortcutSetting.VkToName(s.Vk) : "-")}";
+
+    protected override void OnKeyUp(KeyEventArgs e)
+    {
+        if (!_focus) return;
+        _down.Remove(e.KeyCode);
+        RefreshLive();
+        e.SuppressKeyPress = true;
+
+        // 所有按键都抬起 -> 录入完成
+        if (_down.Count == 0 && _usable && _commit.Vk != 0)
         {
-            e.SuppressKeyPress = true;
+            _sc.Ctrl = _commit.Ctrl;
+            _sc.Alt = _commit.Alt;
+            _sc.Shift = _commit.Shift;
+            _sc.Vk = _commit.Vk;
+            EndCapture(true);
+            Changed?.Invoke();
+            Trace.Log($"key commit {Parts(_sc)}");
+            return;
         }
+        Trace.Log($"key up {e.KeyCode} down={_down.Count} live={Parts(_pending)}");
+        Invalidate();
     }
 
     protected override void OnPaint(PaintEventArgs e)
@@ -733,7 +854,10 @@ internal sealed class KeyCapBox : Control, IThemed
         RP.Fill(g, rc, 9, SC.FieldBg);
         RP.Stroke(g, rc, 9, _focus ? SC.Accent : SC.FieldBorder, _focus ? 1.4f : 1f);
 
-        if (_focus)
+        // 录入中：实时显示当前按下的组合键；一个键都没按就显示提示
+        var shown = _focus ? _pending : _sc;
+        bool hasAny = _focus && (shown.Ctrl || shown.Alt || shown.Shift || shown.Vk != 0);
+        if (_focus && !hasAny)
         {
             TextRenderer.DrawText(g, "请按下新的组合键…", SF.Get(10f), rc, SC.Accent,
                 TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPadding);
@@ -742,10 +866,10 @@ internal sealed class KeyCapBox : Control, IThemed
         }
 
         var parts = new List<string>();
-        if (_sc.Ctrl) parts.Add("Ctrl");
-        if (_sc.Alt) parts.Add("Alt");
-        if (_sc.Shift) parts.Add("Shift");
-        parts.Add(ShortcutSetting.VkToName(_sc.Vk));
+        if (shown.Ctrl) parts.Add("Ctrl");
+        if (shown.Alt) parts.Add("Alt");
+        if (shown.Shift) parts.Add("Shift");
+        if (shown.Vk != 0) parts.Add(ShortcutSetting.VkToName(shown.Vk));
 
         // 量算每个键帽的宽度（缓存字体只读，切勿 Dispose）
         var keyFont = SF.Get(10f, FontStyle.Bold);
@@ -963,37 +1087,125 @@ internal sealed class ToggleSwitch : Control, IThemed
     }
 }
 
-/// <summary>分段选择器（亮色 / 暗色 / 跟随系统 这类少量互斥选项）。</summary>
+/// <summary>
+/// 分段选择器（按住/按下、亮色/暗色/跟随系统 这类少量互斥选项）。
+/// 宽度按各选项文字自适应；选中态用一块**平滑滑动的背景**表示，且不改变字号/粗细。
+/// </summary>
 internal sealed class SegmentedControl : Control, IThemed
 {
+    private const int PadX = 14;        // 每段文字左右留白
+    private const int MinSegW = 48;
+    private const int OuterPad = 3;
+
     private int _hover = -1;
+    private int[] _widths = Array.Empty<int>();
+    private float _indicatorX;
+    private readonly System.Windows.Forms.Timer _anim;
 
     public string[] Items { get; }
     public event Action? Changed;
 
     public int SelectedIndex { get; private set; }
 
-    public void Select(int idx, bool raise)
-    {
-        idx = Math.Clamp(idx, 0, Items.Length - 1);
-        if (idx == SelectedIndex) return;
-        SelectedIndex = idx;
-        Invalidate();
-        if (raise) Changed?.Invoke();
-    }
-
-    public SegmentedControl(string[] items, int width = 300, int height = 36)
+    public SegmentedControl(string[] items, int height = 34, int unusedWidth = 0)
     {
         Items = items;
-        Size = new Size(width, height);
         BackColor = SC.GroupBg;
         SetStyle(ControlStyles.UserPaint | ControlStyles.AllPaintingInWmPaint
                | ControlStyles.OptimizedDoubleBuffer | ControlStyles.ResizeRedraw, true);
+        _anim = new System.Windows.Forms.Timer { Interval = 15 };
+        _anim.Tick += (_, _) => StepAnimation();
+        Measure();
+        Size = new Size(TotalWidth(), height);
+        _indicatorX = SegX(SelectedIndex);
     }
 
-    public void Restyle() { BackColor = SC.GroupBg; Invalidate(); }
+    /// <summary>按文字量算每一段的宽度（宽度跟着内容走）。</summary>
+    private void Measure()
+    {
+        var widths = new int[Items.Length];
+        using var bmp = new Bitmap(1, 1);
+        using var g = Graphics.FromImage(bmp);
+        for (int i = 0; i < Items.Length; i++)
+        {
+            var sz = g.MeasureString(Items[i], SF.Get(10.5f));
+            widths[i] = Math.Max(MinSegW, (int)Math.Ceiling(sz.Width) + PadX * 2);
+        }
+        _widths = widths;
+    }
 
-    private int IndexAt(int x) => Items.Length == 0 ? -1 : Math.Clamp(x * Items.Length / Math.Max(1, Width), 0, Items.Length - 1);
+    private int TotalWidth()
+    {
+        int w = OuterPad * 2;
+        foreach (var x in _widths) w += x;
+        return w;
+    }
+
+    private int SegX(int idx)
+    {
+        int x = OuterPad;
+        for (int i = 0; i < idx && i < _widths.Length; i++) x += _widths[i];
+        return x;
+    }
+
+    public void Select(int idx, bool raise)
+    {
+        idx = Math.Clamp(idx, 0, Math.Max(0, Items.Length - 1));
+        if (idx == SelectedIndex) return;
+        SelectedIndex = idx;
+        StartAnimation();
+        if (raise) Changed?.Invoke();
+    }
+
+    /// <summary>选中背景平滑滑动到目标段。</summary>
+    private void StartAnimation()
+    {
+        float target = SegX(SelectedIndex);
+        if (Math.Abs(target - _indicatorX) < 0.5f) { _indicatorX = target; Invalidate(); return; }
+        _anim.Start();
+    }
+
+    private void StepAnimation()
+    {
+        float target = SegX(SelectedIndex);
+        float dx = target - _indicatorX;
+        if (Math.Abs(dx) < 1f)
+        {
+            _indicatorX = target;
+            _anim.Stop();
+        }
+        else
+        {
+            _indicatorX += dx * 0.45f;      // 简单缓动
+        }
+        Invalidate();
+    }
+
+    public void Restyle()
+    {
+        Measure();
+        Width = TotalWidth();
+        _indicatorX = SegX(SelectedIndex);
+        BackColor = SC.GroupBg;
+        Invalidate();
+    }
+
+    protected override void Dispose(bool disposing)
+    {
+        if (disposing) _anim.Dispose();
+        base.Dispose(disposing);
+    }
+
+    private int IndexAt(int x)
+    {
+        int acc = OuterPad;
+        for (int i = 0; i < _widths.Length; i++)
+        {
+            if (x >= acc && x < acc + _widths[i]) return i;
+            acc += _widths[i];
+        }
+        return x < OuterPad ? 0 : Math.Max(0, _widths.Length - 1);
+    }
 
     protected override void OnMouseMove(MouseEventArgs e)
     {
@@ -1026,76 +1238,118 @@ internal sealed class SegmentedControl : Control, IThemed
         RP.Fill(g, rc, 9, SC.FieldBg);
         RP.Stroke(g, rc, 9, SC.FieldBorder);
 
-        int segW = Width / Math.Max(1, Items.Length);
+        // 选中背景（平滑滑动）
+        int sw = _widths.Length > 0 ? _widths[Math.Clamp(SelectedIndex, 0, _widths.Length - 1)] : Width;
+        var ind = new Rectangle((int)Math.Round(_indicatorX), OuterPad, sw, Height - OuterPad * 2 - 1);
+        RP.Fill(g, ind, 7, SC.CardBg);
+        RP.Stroke(g, ind, 7, SC.Mix(SC.FieldBorder, Theme.Accent, 0.45f));
+
+        int x = OuterPad;
         for (int i = 0; i < Items.Length; i++)
         {
-            var cell = new Rectangle(i * segW, 3, segW - (i == Items.Length - 1 ? 3 : 0), Height - 7);
-            if (i == SelectedIndex)
-            {
-                RP.Fill(g, cell, 7, SC.CardBg);
-                RP.Stroke(g, cell, 7, SC.Mix(SC.FieldBorder, Theme.Accent, 0.45f));
-            }
-            else if (i == _hover)
-            {
+            var cell = new Rectangle(x, OuterPad, _widths[i], Height - OuterPad * 2 - 1);
+            if (i == _hover && i != SelectedIndex)
                 RP.Fill(g, cell, 7, SC.Mix(SC.FieldBg, Theme.Accent, 0.07f));
-            }
             Color ink = i == SelectedIndex ? SC.Accent : SC.InkMuted;
-            TextRenderer.DrawText(g, Items[i], SF.Get(10.5f, i == SelectedIndex ? FontStyle.Bold : FontStyle.Regular),
-                cell, ink, TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPadding);
+            // 选中不改变字号与粗细
+            TextRenderer.DrawText(g, Items[i], SF.Get(10.5f), cell, ink,
+                TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPadding);
+            x += _widths[i];
         }
         base.OnPaint(e);
     }
 }
 
-/// <summary>小胶囊选项组（服务商预设这类“一键套用”按钮）。</summary>
-internal sealed class ChoiceChips : Control, IThemed
+/// <summary>
+/// 预设主色选择器：一排颜色球 + 一块**平滑滑动**的选中背景。
+/// 只有当前颜色正好等于某个预设时才点亮对应颜色；自定义颜色时选中背景隐藏。
+/// </summary>
+internal sealed class ColorDotPicker : Control, IThemed
 {
-    private int _hover = -1;
+    private const int DotSize = 22;
+    private const int Pitch = 30;
 
-    public string[] Items { get; }
-    public event Action<int>? Chosen;
+    private readonly int[] _centerX;
+    private float _hlX;
+    private bool _hlVisible;
+    private readonly System.Windows.Forms.Timer _anim;
 
-    public ChoiceChips(string[] items, int chipW = 96, int gap = 8)
+    public Color[] Presets { get; }
+    public int SelectedIndex { get; private set; } = -1;
+    public Color Value { get; private set; }
+    public event Action? Changed;
+
+    public ColorDotPicker(Color[] presets)
     {
-        Items = items;
-        Size = new Size(items.Length * chipW + Math.Max(0, items.Length - 1) * gap, 30);
-        ChipWidth = chipW;
-        Gap = gap;
+        Presets = presets;
+        _centerX = new int[presets.Length];
+        for (int i = 0; i < presets.Length; i++) _centerX[i] = Pitch / 2 + i * Pitch;
+        Size = new Size(presets.Length * Pitch + 2, 32);
         BackColor = SC.GroupBg;
         SetStyle(ControlStyles.UserPaint | ControlStyles.AllPaintingInWmPaint
                | ControlStyles.OptimizedDoubleBuffer | ControlStyles.ResizeRedraw, true);
+        _anim = new System.Windows.Forms.Timer { Interval = 15 };
+        _anim.Tick += (_, _) => StepAnimation();
+        Value = presets.Length > 0 ? presets[0] : Color.White;
     }
-
-    public int ChipWidth { get; }
-    public int Gap { get; }
 
     public void Restyle() { BackColor = SC.GroupBg; Invalidate(); }
 
-    private int IndexAt(int x)
+    protected override void Dispose(bool disposing)
     {
-        int i = x / Math.Max(1, ChipWidth + Gap);
-        return i >= 0 && i < Items.Length ? i : -1;
+        if (disposing) _anim.Dispose();
+        base.Dispose(disposing);
     }
 
-    protected override void OnMouseMove(MouseEventArgs e)
+    /// <summary>设置当前颜色：与某个预设相同则选中它并滑动过去，否则隐藏选中背景。</summary>
+    public void SetValue(Color c, bool raise)
     {
-        int h = IndexAt(e.X);
-        if (h != _hover) { _hover = h; Invalidate(); }
-        base.OnMouseMove(e);
+        Value = c;
+        int idx = Array.FindIndex(Presets, p => p.ToArgb() == c.ToArgb());
+        if (idx == SelectedIndex && (idx >= 0) == _hlVisible)
+        {
+            Invalidate();
+            if (raise) Changed?.Invoke();
+            return;
+        }
+        SelectedIndex = idx;
+        if (idx >= 0) StartSlideTo(idx);
+        else _hlVisible = false;
+        if (raise) Changed?.Invoke();
+        Invalidate();
     }
 
-    protected override void OnMouseLeave(EventArgs e)
+    private void StartSlideTo(int idx)
     {
-        if (_hover != -1) { _hover = -1; Invalidate(); }
-        base.OnMouseLeave(e);
+        float target = _centerX[idx];
+        if (!_hlVisible) { _hlVisible = true; _hlX = target; Invalidate(); return; }
+        if (Math.Abs(target - _hlX) < 0.5f) { _hlX = target; Invalidate(); return; }
+        _anim.Start();
+    }
+
+    private void StepAnimation()
+    {
+        float target = _centerX[Math.Clamp(SelectedIndex, 0, _centerX.Length - 1)];
+        float dx = target - _hlX;
+        if (Math.Abs(dx) < 1f) { _hlX = target; _anim.Stop(); }
+        else _hlX += dx * 0.4f;
+        Invalidate();
     }
 
     protected override void OnMouseClick(MouseEventArgs e)
     {
         if (e.Button == MouseButtons.Left)
         {
-            int i = IndexAt(e.X);
-            if (i >= 0) Chosen?.Invoke(i);
+            int idx = e.X / Pitch;
+            if (idx >= 0 && idx < Presets.Length)
+            {
+                if (idx == SelectedIndex) return;
+                SelectedIndex = idx;
+                Value = Presets[idx];
+                StartSlideTo(idx);
+                Invalidate();
+                Changed?.Invoke();
+            }
         }
         base.OnMouseClick(e);
     }
@@ -1104,60 +1358,22 @@ internal sealed class ChoiceChips : Control, IThemed
     {
         var g = e.Graphics;
         g.SmoothingMode = SmoothingMode.AntiAlias;
-        for (int i = 0; i < Items.Length; i++)
+
+        // 选中背景（平滑滑动到目标颜色球，描边用该颜色本身，未保存时也能看出选中的是哪一个）
+        if (_hlVisible && SelectedIndex >= 0)
         {
-            var rc = new Rectangle(i * (ChipWidth + Gap), 0, ChipWidth, Height - 1);
-            bool over = i == _hover;
-            RP.Fill(g, rc, rc.Height / 2, over ? SC.AccentSoft : SC.FieldBg);
-            RP.Stroke(g, rc, rc.Height / 2, over ? SC.Accent : SC.FieldBorder);
-            TextRenderer.DrawText(g, Items[i], SF.Get(9.5f, over ? FontStyle.Bold : FontStyle.Regular), rc,
-                over ? SC.Accent : SC.Ink,
-                TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPadding);
+            var hl = new Rectangle((int)Math.Round(_hlX - 15), 1, 30, 30);
+            RP.Fill(g, hl, 15, SC.CardBg);
+            RP.Stroke(g, hl, 15, Presets[Math.Clamp(SelectedIndex, 0, Presets.Length - 1)], 1.6f);
         }
-        base.OnPaint(e);
-    }
-}
 
-/// <summary>圆形备选色点（用于一键切换主色）。</summary>
-internal sealed class ColorDot : Control, IThemed
-{
-    private bool _hover;
-
-    public Color Value { get; }
-    public bool Selected { get; set; }
-    public event Action? Changed;
-
-    public ColorDot(Color c)
-    {
-        Value = c;
-        Size = new Size(26, 26);
-        BackColor = SC.GroupBg;
-        SetStyle(ControlStyles.UserPaint | ControlStyles.AllPaintingInWmPaint
-               | ControlStyles.OptimizedDoubleBuffer | ControlStyles.ResizeRedraw, true);
-    }
-
-    public void Restyle() { BackColor = SC.GroupBg; Invalidate(); }
-
-    protected override void OnMouseEnter(EventArgs e) { _hover = true; Invalidate(); base.OnMouseEnter(e); }
-    protected override void OnMouseLeave(EventArgs e) { _hover = false; Invalidate(); base.OnMouseLeave(e); }
-    protected override void OnMouseClick(MouseEventArgs e)
-    {
-        if (e.Button == MouseButtons.Left) Changed?.Invoke();
-        base.OnMouseClick(e);
-    }
-
-    protected override void OnPaint(PaintEventArgs e)
-    {
-        var g = e.Graphics;
-        g.SmoothingMode = SmoothingMode.AntiAlias;
-        var dot = new Rectangle(4, 4, Width - 9, Height - 9);
-        using (var b = new SolidBrush(Value)) g.FillEllipse(b, dot);
-        if (Selected)
-            using (var pen = new Pen(SC.Accent, 1.8f))
-                g.DrawEllipse(pen, new Rectangle(1, 1, Width - 3, Height - 3));
-        else if (_hover)
-            using (var pen = new Pen(SC.InkFaint, 1.2f))
-                g.DrawEllipse(pen, new Rectangle(1, 1, Width - 3, Height - 3));
+        for (int i = 0; i < Presets.Length; i++)
+        {
+            var dot = new Rectangle(_centerX[i] - DotSize / 2, 16 - DotSize / 2, DotSize, DotSize);
+            using (var b = new SolidBrush(Presets[i])) g.FillEllipse(b, dot);
+            using var pen = new Pen(SC.Mix(SC.GroupBg, SC.Ink, 0.18f), 1f);
+            g.DrawEllipse(pen, dot);
+        }
         base.OnPaint(e);
     }
 }
@@ -1165,7 +1381,7 @@ internal sealed class ColorDot : Control, IThemed
 /// <summary>圆角卡片容器（设置浮窗主体）。</summary>
 internal class RoundPanel : Panel, IThemed
 {
-    public int Radius { get; set; } = 16;
+    public int Radius { get; set; } = 10;
     public bool DrawBorder { get; set; } = true;
 
     /// <summary>是否按圆角裁剪自身（浮层卡片需要留出投影边距，故不裁剪）。</summary>
@@ -1208,14 +1424,13 @@ internal class RoundPanel : Panel, IThemed
 }
 
 /// <summary>
-/// 悬浮在设置浮窗之上的卡片（用于“未保存改动”确认）：四周预留
-/// <see cref="Shadow"/> 像素，在本控件内部绘制柔和投影，因此无需分层窗口。
+/// 悬浮卡片（用于“未保存改动”确认）：只保留填充与 1px 边框，不画任何投影。
 /// </summary>
 internal sealed class FloatingCard : RoundPanel
 {
-    public int Shadow { get; set; } = 12;
+    /// <summary>四周留白（默认 0：不画阴影，直接按圆角裁剪）。</summary>
+    public int Shadow { get; set; } = 0;
 
-    protected override bool RoundedClip => false;
     protected override Rectangle BorderRect => InnerRect();
 
     public Rectangle InnerRect() =>
@@ -1226,12 +1441,6 @@ internal sealed class FloatingCard : RoundPanel
         var g = e.Graphics;
         g.SmoothingMode = SmoothingMode.AntiAlias;
         var inner = InnerRect();
-        for (int i = Shadow; i >= 1; i--)
-        {
-            using var p = RP.Path(Rectangle.Inflate(inner, i, i), Radius + i);
-            using var b = new SolidBrush(Color.FromArgb(4, 12, 16, 28));
-            g.FillPath(b, p);
-        }
         RP.Fill(g, inner, Radius, SC.CardBg);
         base.OnPaint(e);
     }
@@ -1243,7 +1452,7 @@ internal sealed class FloatingCard : RoundPanel
 /// </summary>
 internal sealed class CardBorderRing : Control, IThemed
 {
-    public int Radius { get; set; } = 16;
+    public int Radius { get; set; } = 10;
     private const float Thickness = 1.4f;
 
     public CardBorderRing()
@@ -1356,12 +1565,16 @@ internal sealed class ScrollArea : Panel, IThemed
         return new Rectangle(Width - BarW - BarGap, y, BarW, h);
     }
 
+    /// <summary>内容滚动后触发（下拉弹窗据此跟随移动）。</summary>
+    public event Action? Scrolled;
+
     private void Apply()
     {
         if (_content == null) return;
         _offset = Math.Clamp(_offset, 0, MaxOffset);
         _content.Top = -_offset;
         Invalidate();
+        Scrolled?.Invoke();
     }
 
     public void ScrollBy(int dy)
@@ -1490,28 +1703,87 @@ internal sealed class DropdownSelect : Control, IThemed
         _popup.ItemChosen += i => { Select(i, true); ClosePopup(); };
         _popup.Closed += ClosePopup;
 
-        // 列表本体与输入框左对齐（控件自身含 ProjectionPad 的投影留白）
-        var below = host.PointToClient(PointToScreen(new Point(0, Height)));
-        below.Offset(-DropdownList.ProjectionPad, 2);
-        // 下方空间不够时向上弹出，避免被浮窗裁剪
-        if (below.Y + _popup.Height > host.ClientSize.Height)
-        {
-            var above = host.PointToClient(PointToScreen(new Point(0, 0)));
-            above.Offset(-DropdownList.ProjectionPad, -_popup.Height - 2);
-            if (above.Y >= 0) below = above;
-        }
-        _popup.Location = below;
+        // 必须先挂到宿主上再摆位：PlacePopup 依赖 popup.Parent 做坐标换算，
+        // 否则列表会留在宿主左上角（0,0）而不是输入框下方。
         host.Controls.Add(_popup);
+        PlacePopup();
         _popup.BringToFront();
         _popup.Focus();
+        _openPopup = _popup;                 // 供消息过滤器判断“点到了别处”
+        DropdownClickFilter.Install();
+        _scroller = FindScroller();
+        if (_scroller != null) _scroller.Scrolled += PlacePopup;
+        Trace.Log($"dropdown open items={Items.Length} sel={SelectedIndex} popup={Rect(_popup.RectangleToScreen(_popup.ClientRectangle))}");
+    }
+
+    private static string Rect(Rectangle r) => $"({r.Left},{r.Top},{r.Width}x{r.Height})";
+
+    /// <summary>把列表摆到输入框下方（下方不够高时翻到上方），并按该方向可用空间裁剪高度。</summary>
+    private void PlacePopup()
+    {
+        var popup = _popup;
+        if (popup == null || popup.IsDisposed) return;
+        var host = popup.Parent;
+        if (host == null) return;
+
+        var bottom = host.PointToClient(PointToScreen(new Point(0, Height)));   // 输入框下沿
+        var top = host.PointToClient(PointToScreen(new Point(0, 0)));           // 输入框上沿
+        int spaceBelow = host.ClientSize.Height - (bottom.Y + 2);
+        int spaceAbove = top.Y - 2;
+
+        bool up = spaceBelow < popup.Height && spaceAbove > spaceBelow;
+        popup.FitHeight(Math.Max(0, (up ? spaceAbove : spaceBelow) - DropdownList.ProjectionPad * 2));
+        int y = up ? top.Y - popup.Height - 2 : bottom.Y + 2;
+        popup.Location = new Point(bottom.X - DropdownList.ProjectionPad, y);
+    }
+
+    /// <summary>找到所在页面的滚动容器，滚动时让弹窗跟着走。</summary>
+    private ScrollArea? FindScroller()
+    {
+        for (Control? c = Parent; c != null; c = c.Parent)
+            if (c is ScrollArea sa) return sa;
+        return null;
     }
 
     private void ClosePopup()
     {
         var p = _popup;
         _popup = null;
+        if (ReferenceEquals(_openPopup, p)) _openPopup = null;
+        if (_scroller != null) { _scroller.Scrolled -= PlacePopup; _scroller = null; }
         if (p != null) { p.Parent?.Controls.Remove(p); p.Dispose(); }
         Invalidate();
+        if (p != null) Trace.Log("dropdown close");
+    }
+
+    private ScrollArea? _scroller;
+
+    // ---- 点击浮窗内任意其它位置都收起（即使是不会获得焦点的控件） ----
+    private static DropdownList? _openPopup;
+
+    /// <summary>全局消息过滤：只要有下拉处于展开状态，点到它以外就收起（并让这次点击继续生效）。</summary>
+    private sealed class DropdownClickFilter : IMessageFilter
+    {
+        private const int WM_LBUTTONDOWN = 0x0201;
+        private const int WM_RBUTTONDOWN = 0x0204;
+        private const int WM_MBUTTONDOWN = 0x0207;
+        private static readonly DropdownClickFilter Instance = new();
+
+        public static void Install() => Application.AddMessageFilter(Instance);
+
+        public bool PreFilterMessage(ref Message m)
+        {
+            if (m.Msg != WM_LBUTTONDOWN && m.Msg != WM_RBUTTONDOWN && m.Msg != WM_MBUTTONDOWN) return false;
+            var popup = _openPopup;
+            if (popup == null || popup.IsDisposed) return false;
+
+            // 鼠标消息里的坐标是相对目标窗口的，这里直接用屏幕坐标判断更稳妥
+            var screenRect = popup.RectangleToScreen(popup.ClientRectangle);
+            bool inside = screenRect.Contains(Cursor.Position);
+            Trace.Log($"filter click at {Cursor.Position.X},{Cursor.Position.Y} popup={screenRect.Left},{screenRect.Top},{screenRect.Width}x{screenRect.Height} inside={inside}");
+            if (!inside) popup.RequestClose();
+            return false;      // 让这次点击继续生效
+        }
     }
 
     protected override void OnVisibleChanged(EventArgs e)
@@ -1552,7 +1824,7 @@ internal sealed class DropdownSelect : Control, IThemed
 /// <summary>下拉弹层宿主标记（由设置浮窗实现）。</summary>
 internal interface IPopupHost { }
 
-/// <summary>下拉展开后的选项列表（自绘，圆角 + 细投影），点击外部或 Esc 收起。</summary>
+/// <summary>下拉展开后的选项列表（自绘，圆角 + 极淡投影），点击任意位置或 Esc 收起，滚轮可滚动。</summary>
 internal sealed class DropdownList : Control, IThemed
 {
     private const int RowH = 30;
@@ -1561,10 +1833,14 @@ internal sealed class DropdownList : Control, IThemed
     public const int ProjectionPad = Pad;
     private int _hover = -1;
     private readonly int _selected;
+    private int _scroll;                // 列表比可视区高时的滚动偏移（像素）
 
     public string[] Items { get; }
     public event Action<int>? ItemChosen;
     public event Action? Closed;
+
+    /// <summary>请求收起（供点击过滤器调用）。</summary>
+    public void RequestClose() => Closed?.Invoke();
 
     public DropdownList(string[] items, int selected, int width)
     {
@@ -1581,12 +1857,41 @@ internal sealed class DropdownList : Control, IThemed
     public Rectangle BodyRect() =>
         new(Pad, Pad, Math.Max(10, Width - Pad * 2), Math.Max(10, Height - Pad * 2));
 
+    /// <summary>按可用高度裁剪列表高度（不够高时内部滚动）。可反复调用：每次按内容重新计算，不会越缩越小。</summary>
+    public void FitHeight(int available)
+    {
+        int wanted = Items.Length * RowH + 10;                                  // 内容高度
+        int body = Math.Min(wanted, Math.Max(RowH + 10, available));            // 至少留一行可滚动
+        Size = new Size(Width, body + Pad * 2);
+    }
+
+    private int ContentHeight => Items.Length * RowH + 10;
+    private int MaxScroll => Math.Max(0, ContentHeight - BodyRect().Height);
+
     public void Restyle() { BackColor = SC.CardBg; Invalidate(); }
+
+    protected override void OnMouseWheel(MouseEventArgs e)
+    {
+        if (MaxScroll > 0)
+        {
+            _scroll = Math.Clamp(_scroll - e.Delta / 120 * RowH, 0, MaxScroll);
+            Invalidate();
+        }
+        Trace.Log($"list wheel delta={e.Delta} scroll={_scroll} maxScroll={MaxScroll}");
+        base.OnMouseWheel(e);
+    }
+
+    private int ItemAt(Point p)
+    {
+        int y = p.Y - Pad - 5 + _scroll;
+        if (y < 0) return -1;
+        int i = y / RowH;
+        return i >= 0 && i < Items.Length ? i : -1;
+    }
 
     protected override void OnMouseMove(MouseEventArgs e)
     {
-        int h = (e.Y - Pad - 5) / RowH;
-        h = h >= 0 && h < Items.Length ? h : -1;
+        int h = ItemAt(e.Location);
         if (h != _hover) { _hover = h; Invalidate(); }
         base.OnMouseMove(e);
     }
@@ -1595,9 +1900,10 @@ internal sealed class DropdownList : Control, IThemed
 
     protected override void OnMouseDown(MouseEventArgs e)
     {
-        int i = (e.Y - Pad - 5) / RowH;
-        if (e.Button == MouseButtons.Left && i >= 0 && i < Items.Length) ItemChosen?.Invoke(i);
-        else Closed?.Invoke();
+        int i = ItemAt(e.Location);
+        Trace.Log($"list mousedown at {e.Location.X},{e.Location.Y} scroll={_scroll} -> item {i}");
+        if (e.Button == MouseButtons.Left && i >= 0) ItemChosen?.Invoke(i);
+        else Closed?.Invoke();       // 点列表以外的任何位置都收起
         base.OnMouseDown(e);
     }
 
@@ -1619,25 +1925,31 @@ internal sealed class DropdownList : Control, IThemed
         // 很淡的一圈投影：只用来把菜单和背景轻轻分开，不做厚重阴影
         for (int i = Pad; i >= 1; i--)
         {
-            using var sp = RP.Path(Rectangle.Inflate(body, i, i), 10 + i);
+            using var sp = RP.Path(Rectangle.Inflate(body, i, i), RowRadius + i);
             using var sb = new SolidBrush(Color.FromArgb(3, 12, 16, 28));
             g.FillPath(sb, sp);
         }
 
-        RP.Fill(g, body, 10, SC.CardBg);
+        RP.Fill(g, body, RowRadius, SC.CardBg);
+        var oldClip = g.Clip;
+        g.SetClip(body);
         for (int i = 0; i < Items.Length; i++)
         {
-            var row = new Rectangle(body.X + 5, body.Y + 5 + i * RowH, body.Width - 10, RowH);
+            var row = new Rectangle(body.X + 5, body.Y + 5 + i * RowH - _scroll, body.Width - 10, RowH);
             if (i == _selected) RP.Fill(g, row, 7, SC.Mix(SC.CardBg, SC.Accent, 0.10f));
             else if (i == _hover) RP.Fill(g, row, 7, SC.AccentSoft);
             var ink = i == _selected ? SC.Accent : SC.Ink;
-            TextRenderer.DrawText(g, Items[i], SF.Get(10.5f, i == _selected ? FontStyle.Bold : FontStyle.Regular),
+            // 选中只改颜色，不改字号/粗细
+            TextRenderer.DrawText(g, Items[i], SF.Get(10.5f),
                 new Rectangle(row.X + 10, row.Y, row.Width - 34, row.Height), ink,
                 TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPadding);
             if (i == _selected)
                 Gfx.DrawGlyph(g, Glyph.Check, new RectangleF(row.Right - 22, row.Y + 8, 13, 13), SC.Accent, 1.6f);
         }
-        RP.Stroke(g, body, 10, SC.FieldBorder);
+        g.Clip = oldClip;
+        RP.Stroke(g, body, RowRadius, SC.FieldBorder);
         base.OnPaint(e);
     }
+
+    private const int RowRadius = 10;
 }

@@ -81,16 +81,12 @@ Shot 'pv-1-custom'
 Click $fieldX $chatDropY                # open the provider list
 Pump 500
 Shot 'pv-2-list-open'
-[PV]::keybd_event(0x1B,0,0,[UIntPtr]::Zero); Pump 60     # Esc closes the list
-[PV]::keybd_event(0x1B,0,2,[UIntPtr]::Zero); Pump 300
-Click $fieldX $chatDropY                # open again, then pick
-Pump 400
 ClickSoft $fieldX ($itemY0+30*7)        # item 8 = Ollama (local) -> 2 fields
 Pump 700
 Shot 'pv-3-ollama'
 
 Click $fieldX $chatDropY
-Pump 400
+Pump 500
 ClickSoft $fieldX ($itemY0+30*5)        # item 6 = Volcengine Ark -> 3 fields, 3rd title differs
 Pump 700
 Shot 'pv-4-ark'

@@ -117,7 +117,7 @@ $neutralX=$cardX+430; $neutralY=$cardY+340
 $navY0=$cardY+96+21            # first nav item centre
 $saveX=$cardX+795; $saveY=$cardY+610
 $rowY1=$cardY+178              # centre of the first row's right-hand widget
-$purpleDotX=$cardX+529
+$dotX0=$cardX+556; $dotY=$cardY+232      # preset colour dots: 30px pitch, first dot centre here
 
 # 0) make sure the app really is the front window: another window may be sitting
 #    above it, in which case the clicks below would hit that window instead.
@@ -144,7 +144,7 @@ Hover $neutralX $neutralY
 Shot 'settings-3-appearance'
 
 # 4) pick the purple accent preset -> page becomes dirty (save enabled)
-Click $purpleDotX $rowY1
+Click ($dotX0+30) $dotY
 Start-Sleep -Milliseconds 450
 Hover $neutralX $neutralY
 Shot 'settings-4-dirty'
@@ -172,14 +172,14 @@ Start-Sleep -Milliseconds 500
 Shot 'settings-7-confirm'
 
 # 8) stay editing
-Click ($cardX+(($cw-420)/2)+12+(420-24-232)/2+52) ($cardY+(($ch-180)/2)+100+17)
+Click ($cardX+(($cw-400)/2)+84+52) ($cardY+(($ch-180)/2)+118+17)
 Start-Sleep -Milliseconds 400
 Shot 'settings-8-stay'
 
 # 9) close again, then discard
 Click $closeX $closeY
 Start-Sleep -Milliseconds 500
-Click ($cardX+(($cw-420)/2)+12+(420-24-232)/2+104+12+58) ($cardY+(($ch-180)/2)+100+17)
+Click ($cardX+(($cw-400)/2)+84+104+12+58) ($cardY+(($ch-180)/2)+118+17)
 Start-Sleep -Milliseconds 700
 Shot 'settings-9-closed'
 
