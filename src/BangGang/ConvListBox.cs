@@ -2,138 +2,230 @@ using System.Drawing.Drawing2D;
 
 namespace BangGang;
 
-/// <summary>会话列表（owner-draw）。点击选中；悬浮在右侧显示删除按钮。</summary>
-internal sealed class ConvListBox : ListBox, IThemed
+/// <summary>
+/// 会话列表：完全自绘（不依赖系统 ListBox，因此悬浮移动不会闪烁）。
+/// 每条记录只有标题 + 右侧删除图标，记录之间留间隙，记录宽度为 95% 并左右居中；
+/// 右侧是自己的细圆角滚动条（悬浮/拖动加深，滚轮滚动）。
+/// </summary>
+internal sealed class ConvListBox : Control, IThemed
 {
+    /// <summary>每条记录占的高度（只放一行标题，所以比原来矮很多）。</summary>
+    private const int ItemH = 38;
+    /// <summary>记录之间的间隙。</summary>
+    private const int Gap = 6;
+    /// <summary>记录宽度占控件宽度的比例（左右居中）。</summary>
+    private const float WidthRatio = 0.95f;
+    private const int Radius = 9;
+    /// <summary>标题区域右侧给删除图标预留的宽度。</summary>
+    private const int DelSlot = 32;
+    private const int DelSize = 22;
+    private const int BarW = 6;
+    private const int BarGap = 3;
+
     public List<Conversation> Source { get; private set; } = new();
     public event Action<Conversation>? ConversationActivated;
     public event Action<Conversation>? ConversationDeleted;
 
     private int _hover = -1;
+    private int _hoverDel = -1;
+    private int _offset;
+    private bool _dragBar;
+    private bool _hoverBar;
 
     public ConvListBox()
     {
-        DrawMode = DrawMode.OwnerDrawFixed;
-        ItemHeight = 58;
-        BorderStyle = BorderStyle.None;
-        IntegralHeight = false;
         BackColor = Theme.SideBg;
-        Font = Theme.UI(12f);
-        _ = SystemInformation.VirtualScreen;
-        SetStyle(ControlStyles.OptimizedDoubleBuffer | ControlStyles.AllPaintingInWmPaint, true);
+        SetStyle(ControlStyles.UserPaint | ControlStyles.AllPaintingInWmPaint
+               | ControlStyles.OptimizedDoubleBuffer | ControlStyles.ResizeRedraw, true);
     }
 
     public void Restyle()
     {
         BackColor = Theme.SideBg;
-        ForeColor = Theme.TextMain;
         Invalidate();
     }
 
     public void Rebind(List<Conversation> list, string? activeId)
     {
         Source = list;
-        BeginUpdate();
-        Items.Clear();
-        foreach (var c in list) Items.Add(c);
-        SelectedIndex = list.FindIndex(c => c.Id == activeId);
-        EndUpdate();
+        _selectedId = activeId;
+        _offset = Math.Clamp(_offset, 0, MaxOffset);
+        Invalidate();
     }
 
-    protected override void OnDrawItem(DrawItemEventArgs e)
+    private string? _selectedId;
+
+    private int SelectedIndex => Source.FindIndex(c => c.Id == _selectedId);
+
+    private int ContentHeight => Source.Count == 0 ? 0 : Source.Count * (ItemH + Gap) - Gap;
+    private int MaxOffset => Math.Max(0, ContentHeight - Height);
+
+    private Rectangle ItemRect(int i)
     {
-        if (e.Index < 0 || e.Index >= Items.Count) return;
+        int w = (int)Math.Round(Width * WidthRatio);
+        int x = (Width - w) / 2;
+        return new Rectangle(x, i * (ItemH + Gap) - _offset, Math.Max(40, w), ItemH);
+    }
+
+    private Rectangle DelRect(Rectangle item) =>
+        new(item.Right - 6 - DelSize, item.Y + (item.Height - DelSize) / 2, DelSize, DelSize);
+
+    private Rectangle BarRect()
+    {
+        if (ContentHeight <= Height || Height <= 0) return Rectangle.Empty;
+        int trackH = Height - 8;
+        int h = Math.Max(28, (int)Math.Round(trackH * (Height / (double)ContentHeight)));
+        int y = 4 + (int)Math.Round((trackH - h) * (_offset / (double)Math.Max(1, MaxOffset)));
+        return new Rectangle(Width - BarW - BarGap, y, BarW, h);
+    }
+
+    private int IndexAt(Point p)
+    {
+        if (p.Y < -_offset) return -1;
+        int i = (p.Y + _offset) / (ItemH + Gap);
+        if (i < 0 || i >= Source.Count) return -1;
+        return ItemRect(i).Contains(p) ? i : -1;
+    }
+
+    protected override void OnPaint(PaintEventArgs e)
+    {
         var g = e.Graphics;
         g.SmoothingMode = SmoothingMode.AntiAlias;
-        var c = Items[e.Index] as Conversation;
-        if (c == null) return;
 
-        var rc = e.Bounds;
-        bool sel = (e.State & DrawItemState.Selected) == DrawItemState.Selected;
-        bool hover = e.Index == _hover;
-
-        Color bg = sel ? Theme.Accent : hover ? Theme.Mix(Theme.SideBg, Theme.TextMain, .06f) : Theme.SideBg;
-        using (var b = new SolidBrush(bg)) g.FillRectangle(b, rc);
-        // 选中左侧小竖条
-        if (sel)
+        int sel = SelectedIndex;
+        for (int i = 0; i < Source.Count; i++)
         {
-            using var accent = new SolidBrush(Theme.Mix(Theme.Accent, Theme.TextMain, 0.25f));
-            g.FillRectangle(accent, rc.X, rc.Y, 3, rc.Height);
+            var rc = ItemRect(i);
+            if (rc.Bottom < 0 || rc.Top > Height) continue;
+            bool selected = i == sel;
+            bool hover = i == _hover;
+
+            Color bg = selected ? Theme.Accent
+                     : hover ? Theme.Mix(Theme.SideBg, Theme.TextMain, 0.075f)
+                     : Color.Empty;
+            if (bg != Color.Empty) RP.Fill(g, rc, Radius, bg);
+
+            // 标题：单行 + 省略号
+            var titleRc = new Rectangle(rc.X + 12, rc.Y, Math.Max(20, rc.Width - 12 - DelSlot), rc.Height);
+            string t = Source[i].Title.Length > 0 ? Source[i].Title : "新对话";
+            TextRenderer.DrawText(g, t, SF.Get(11f), titleRc,
+                selected ? Color.White : Theme.TextMain,
+                TextFormatFlags.Left | TextFormatFlags.VerticalCenter
+                | TextFormatFlags.EndEllipsis | TextFormatFlags.NoPrefix);
+
+            DrawDelete(g, DelRect(rc), i, selected, hover);
         }
 
-        float tx = rc.X + 16;
-        using (var title = new SolidBrush(sel ? Color.White : Theme.TextMain))
-        using (var sub = new SolidBrush(sel ? Theme.Mix(Theme.Accent, Color.White, 0.75f) : Theme.TextMuted))
+        // 细圆角滚动条
+        var bar = BarRect();
+        if (!bar.IsEmpty)
         {
-            string t = c.Title.Length > 0 ? c.Title : "新对话";
-            g.DrawString(t, Theme.UI(12f, sel ? FontStyle.Bold : FontStyle.Regular), title, tx, rc.Y + 8);
-            string meta = c.Messages.Count + " 条 · " + c.UpdatedAt.ToString("MM-dd HH:mm");
-            g.DrawString(meta, Theme.UI(9f), sub, tx, rc.Y + 32);
+            float k = _hoverBar || _dragBar ? 0.40f : 0.26f;
+            RP.Fill(g, bar, BarW / 2, Theme.Mix(Theme.SideBg, Theme.TextMain, k));
         }
-
-        if (hover)
-        {
-            var dr = DelRect(rc);
-            using var bg2 = new SolidBrush(Color.FromArgb(64, 226, 64, 60));
-            g.FillEllipse(bg2, dr);
-            Color red = sel ? Color.White : Color.FromArgb(224, 60, 54);
-            float cx = dr.X + dr.Width / 2f;
-            float cy = dr.Y + dr.Height / 2f;
-            using var pen = new Pen(red, 1.6f) { StartCap = LineCap.Round, EndCap = LineCap.Round };
-            // 垃圾桶：盖子 + 提手 + 桶身
-            g.DrawLine(pen, cx - 5.2f, cy - 4.2f, cx + 5.2f, cy - 4.2f);
-            g.DrawLine(pen, cx - 1.7f, cy - 6.6f, cx - 1.7f, cy - 4.2f);
-            g.DrawLine(pen, cx + 1.7f, cy - 6.6f, cx + 1.7f, cy - 4.2f);
-            g.DrawLine(pen, cx - 4.4f, cy - 2.2f, cx - 4.4f, cy + 5.0f);
-            g.DrawLine(pen, cx + 4.4f, cy - 2.2f, cx + 4.4f, cy + 5.0f);
-            g.DrawLine(pen, cx - 6.0f, cy + 5.0f, cx + 6.0f, cy + 5.0f);
-            using var stripe = new Pen(red, 1.3f);
-            g.DrawLine(stripe, cx - 1.0f, cy - 1.6f, cx - 1.0f, cy + 3.8f);
-            g.DrawLine(stripe, cx + 1.0f, cy - 1.6f, cx + 1.0f, cy + 3.8f);
-        }
+        base.OnPaint(e);
     }
 
-    private static Rectangle DelRect(Rectangle rc) =>
-        new(rc.Right - 30, rc.Y + (rc.Height - 20) / 2, 20, 20);
+    /// <summary>删除图标：圆形浅底 + 垃圾桶线条；鼠标压在图标上才变红。</summary>
+    private void DrawDelete(Graphics g, Rectangle rc, int index, bool selected, bool rowHover)
+    {
+        bool hot = index == _hoverDel;
+        if (hot)
+        {
+            using var hb = new SolidBrush(Theme.Mix(Theme.SideBg, Theme.Danger, selected ? 0.55f : 0.16f));
+            g.FillEllipse(hb, rc);
+        }
+        Color ink = hot ? (selected ? Color.White : Theme.Danger)
+                  : selected ? Theme.Mix(Theme.Accent, Color.White, 0.82f)
+                  : rowHover ? Theme.Mix(Theme.SideBg, Theme.TextMain, 0.45f)
+                  : Theme.Mix(Theme.SideBg, Theme.TextMain, 0.26f);
+        Gfx.DrawTrash(g, rc, ink, 1.5f);
+    }
 
-    private Rectangle ItemRect(int idx) => new(0, idx * ItemHeight, ClientSize.Width, ItemHeight);
+    // ---------------- 交互 ----------------
 
     protected override void OnMouseMove(MouseEventArgs e)
     {
-        int h = IndexFromPoint(e.Location);
-        if (h != _hover)
+        // 只重画受影响的两条记录，配合双缓冲，悬浮移动不会闪烁
+        int h = IndexAt(e.Location);
+        int hd = h >= 0 && DelRect(ItemRect(h)).Contains(e.Location) ? h : -1;
+        if (h != _hover || hd != _hoverDel)
         {
             int old = _hover;
-            _hover = h;
-            Invalidate(ItemRect(old));
-            if (h >= 0) Invalidate(ItemRect(h));
+            _hover = h; _hoverDel = hd;
+            if (old >= 0) InvalidateItem(old);
+            if (h >= 0) InvalidateItem(h);
+        }
+        var bar = BarRect();
+        bool over = !bar.IsEmpty && Rectangle.Inflate(bar, 4, 4).Contains(e.Location);
+        if (over != _hoverBar) { _hoverBar = over; Invalidate(BarArea()); }
+
+        if (_dragBar && !bar.IsEmpty)
+        {
+            int trackH = Height - 8;
+            int y = Math.Clamp(e.Y - bar.Height / 2 - 4, 0, Math.Max(1, trackH - bar.Height));
+            _offset = MaxOffset == 0 ? 0 : (int)Math.Round(y / (double)Math.Max(1, trackH - bar.Height) * MaxOffset);
+            Invalidate();
         }
         base.OnMouseMove(e);
+    }
+
+    private Rectangle BarArea() => new(Math.Max(0, Width - BarW - BarGap - 4), 0, BarW + 8, Height);
+
+    private void InvalidateItem(int index)
+    {
+        if (index < 0 || index >= Source.Count) return;
+        var rc = ItemRect(index);
+        rc.Inflate(2, 2);
+        Invalidate(rc);
     }
 
     protected override void OnMouseLeave(EventArgs e)
     {
         int old = _hover;
-        _hover = -1;
-        if (old >= 0) Invalidate(ItemRect(old));
+        _hover = -1; _hoverDel = -1;
+        if (old >= 0) InvalidateItem(old);
+        if (_hoverBar) { _hoverBar = false; Invalidate(BarArea()); }
         base.OnMouseLeave(e);
     }
+
+    protected override void OnMouseDown(MouseEventArgs e)
+    {
+        var bar = BarRect();
+        if (e.Button == MouseButtons.Left && !bar.IsEmpty && bar.Contains(e.Location)) _dragBar = true;
+        base.OnMouseDown(e);
+    }
+
+    protected override void OnMouseUp(MouseEventArgs e) { _dragBar = false; base.OnMouseUp(e); }
 
     protected override void OnMouseClick(MouseEventArgs e)
     {
         if (e.Button != MouseButtons.Left) return;
-        int idx = IndexFromPoint(e.Location);
-        if (idx < 0 || idx >= Items.Count) return;
+        var bar = BarRect();
+        if (!bar.IsEmpty && bar.Contains(e.Location)) return;
+        int idx = IndexAt(e.Location);
+        if (idx < 0) return;
         if (DelRect(ItemRect(idx)).Contains(e.Location))
         {
             ConversationDeleted?.Invoke(Source[idx]);
             return;
         }
-        SelectedIndex = idx;
+        _selectedId = Source[idx].Id;
+        Invalidate();
         ConversationActivated?.Invoke(Source[idx]);
         base.OnMouseClick(e);
     }
 
-    private static Color Blend(Color a, Color b, float k) =>
-        Color.FromArgb((int)(a.R * k + b.R * (1 - k)), (int)(a.G * k + b.G * (1 - k)), (int)(a.B * k + b.B * (1 - k)));
+    protected override void OnMouseWheel(MouseEventArgs e)
+    {
+        ScrollBy(-e.Delta / 120 * 54);
+        base.OnMouseWheel(e);
+    }
+
+    public void ScrollBy(int dy)
+    {
+        int before = _offset;
+        _offset = Math.Clamp(_offset + dy, 0, MaxOffset);
+        if (_offset != before) Invalidate();
+    }
 }

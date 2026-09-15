@@ -96,6 +96,29 @@ internal static class RP
         g.FillPath(b, p);
     }
 
+    /// <summary>
+    /// 画一块抗锯齿的圆角块：先用 <paramref name="backdrop"/>（该圆角块底下真正显示的颜色）
+    /// 铺满整个矩形，再用抗锯齿路径填充圆角本体。
+    /// 这样圆角边缘是“本体色 ↔ 底色”的混合像素，不会出现 Region 硬裁剪造成的锯齿；
+    /// 调用前必须保证 <c>SmoothingMode = AntiAlias</c>。
+    /// </summary>
+    public static void Box(Graphics g, Rectangle r, int rad, Color body, Color backdrop)
+    {
+        if (r.Width <= 0 || r.Height <= 0) return;
+        using (var bb = new SolidBrush(backdrop)) g.FillRectangle(bb, r);
+        Fill(g, r, rad, body);
+    }
+
+    /// <summary>圆角块底下“真正显示的颜色”：沿父链找到第一个不透明的背景色。</summary>
+    public static Color BackdropOf(Control? c, Color fallback)
+    {
+        for (var p = c?.Parent; p != null; p = p.Parent)
+        {
+            if (!p.BackColor.IsEmpty && p.BackColor.A == 255) return p.BackColor;
+        }
+        return fallback;
+    }
+
     public static void Stroke(Graphics g, Rectangle r, int rad, Color c, float w = 1f)
     {
         var rc = new RectangleF(r.X + w / 2f, r.Y + w / 2f, r.Width - w, r.Height - w);
@@ -110,6 +133,27 @@ internal enum Glyph { Sliders, Spark, Palette, Eye, EyeOff, Close, Reset, Check 
 
 internal static class Gfx
 {
+    /// <summary>垃圾桶图标（会话列表的删除按钮）：盖子 + 提手 + 上宽下窄的桶身 + 两条竖线。</summary>
+    public static void DrawTrash(Graphics g, RectangleF r, Color c, float w = 1.5f)
+    {
+        var old = g.SmoothingMode;
+        g.SmoothingMode = SmoothingMode.AntiAlias;
+        float s = Math.Min(r.Width, r.Height) * 0.5f;
+        float cx = r.X + r.Width / 2f;
+        float cy = r.Y + r.Height / 2f + s * 0.08f;
+        using var pen = new Pen(c, w) { StartCap = LineCap.Round, EndCap = LineCap.Round, LineJoin = LineJoin.Round };
+        g.DrawLine(pen, cx - s * 0.76f, cy - s * 0.5f, cx + s * 0.76f, cy - s * 0.5f);          // 盖子
+        g.DrawLine(pen, cx - s * 0.28f, cy - s * 0.5f, cx - s * 0.28f, cy - s * 0.8f);          // 提手
+        g.DrawLine(pen, cx - s * 0.28f, cy - s * 0.8f, cx + s * 0.28f, cy - s * 0.8f);
+        g.DrawLine(pen, cx + s * 0.28f, cy - s * 0.8f, cx + s * 0.28f, cy - s * 0.5f);
+        g.DrawLine(pen, cx - s * 0.58f, cy - s * 0.5f, cx - s * 0.44f, cy + s * 0.76f);         // 桶身
+        g.DrawLine(pen, cx + s * 0.58f, cy - s * 0.5f, cx + s * 0.44f, cy + s * 0.76f);
+        g.DrawLine(pen, cx - s * 0.44f, cy + s * 0.76f, cx + s * 0.44f, cy + s * 0.76f);
+        g.DrawLine(pen, cx - s * 0.15f, cy - s * 0.18f, cx - s * 0.15f, cy + s * 0.48f);        // 竖线
+        g.DrawLine(pen, cx + s * 0.15f, cy - s * 0.18f, cx + s * 0.15f, cy + s * 0.48f);
+        g.SmoothingMode = old;
+    }
+
     public static void DrawGlyph(Graphics g, Glyph gl, RectangleF r, Color c, float w = 1.6f)
     {
         var old = g.SmoothingMode;
@@ -514,9 +558,28 @@ internal sealed class SettingRow : Panel, IThemed, IArranged
         if (_right is IArranged ra) ra.Arrange();
         int tw = Math.Max(20, Width - rw - 18);
         bool two = !string.IsNullOrEmpty(_desc.Text);
-        _title.SetBounds(0, two ? 5 : Math.Max(0, (Height - 22) / 2), tw, 21);
-        _desc.SetBounds(0, 27, tw, 18);
+        // 行高按字体度量算：写死高度会在高 DPI 或换字体时把文字上下裁掉
+        int th = TextHeight(_title);
+        int dh = TextHeight(_desc);
+        if (two)
+        {
+            int top = Math.Max(2, (Height - th - dh) / 2);
+            _title.SetBounds(0, top, tw, th);
+            _desc.SetBounds(0, top + th, tw, dh);
+        }
+        else
+        {
+            _title.SetBounds(0, Math.Max(0, (Height - th) / 2), tw, th);
+            _desc.SetBounds(0, 0, tw, dh);
+        }
         _desc.Visible = two;
+    }
+
+    /// <summary>该标签显示完整一行文字所需的高度（含一点余量，避免上下被裁）。</summary>
+    private static int TextHeight(Label l)
+    {
+        var sz = TextRenderer.MeasureText(l.Text.Length > 0 ? l.Text : "测", l.Font);
+        return Math.Max((int)Math.Ceiling(l.Font.GetHeight()) + 2, sz.Height + 2);
     }
 
     /// <summary>行右侧的控件（切换服务商时用来定位这一行）。</summary>
@@ -573,7 +636,7 @@ internal sealed class InputField : Control, IThemed, IArranged
         Secret = secret;
         Placeholder = placeholder;
         Size = new Size(width, MinHeight);
-        BackColor = SC.CardBg;
+        BackColor = SC.GroupBg;        // 与所在设置行同色：圆角外不会出现色块
         SetStyle(ControlStyles.UserPaint | ControlStyles.AllPaintingInWmPaint
                | ControlStyles.OptimizedDoubleBuffer | ControlStyles.ResizeRedraw, true);
 
@@ -623,11 +686,25 @@ internal sealed class InputField : Control, IThemed, IArranged
     {
         if (_tb == null) return;
         int right = 12 + (ShowEye ? 26 : 0);
-        int h = _tb.PreferredHeight;
+        int h = InnerHeight;
         int y = Math.Max(0, (Height - h) / 2);
         _tb.SetBounds(12, y, Math.Max(10, Width - 12 - right), h);
         UpdatePlaceholder();
     }
+
+    /// <summary>内层文本框高度：取系统首选高度与字体行高的较大值，保证文字上下都不被裁。</summary>
+    private int InnerHeight
+    {
+        get
+        {
+            int byFont = (int)Math.Ceiling(_tb.Font.GetHeight()) + 6;
+            int byText = TextRenderer.MeasureText("测Ag", _tb.Font).Height + 4;
+            return Math.Max(Math.Max(_tb.PreferredHeight, byFont), byText);
+        }
+    }
+
+    /// <summary>占位文字的高度（按字体度量，写死 20px 会把文字上下裁掉）。</summary>
+    private int PlaceholderHeight => Math.Max(InnerHeight, (int)Math.Ceiling(_ph.Font.GetHeight()) + 2);
 
     [AllowNull]
     public override string Text
@@ -654,13 +731,17 @@ internal sealed class InputField : Control, IThemed, IArranged
     {
         bool show = _tb.Text.Length == 0 && !_focus;
         _ph.Visible = show;
-        // 占位文字只占文本框那一行的高度：铺满整高会把输入框上下边框盖住
-        if (show) _ph.SetBounds(12, Math.Max(2, (Height - 20) / 2), Math.Max(10, Width - 24 - (ShowEye ? 28 : 0)), 20);
+        // 占位文字按字体行高居中：只占文本框那一行的高度，铺满整高会盖住输入框上下边框
+        if (show)
+        {
+            int ph = PlaceholderHeight;
+            _ph.SetBounds(12, Math.Max(2, (Height - ph) / 2), Math.Max(10, Width - 24 - (ShowEye ? 28 : 0)), ph);
+        }
     }
 
     public void Restyle()
     {
-        BackColor = SC.CardBg;
+        BackColor = SC.GroupBg;        // 与所在设置行同色：圆角外不会出现色块
         _tb.BackColor = SC.FieldBg; _tb.ForeColor = SC.Ink;
         _ph.BackColor = SC.FieldBg; _ph.ForeColor = SC.InkFaint;
         Invalidate();
@@ -1378,14 +1459,22 @@ internal sealed class ColorDotPicker : Control, IThemed
     }
 }
 
-/// <summary>圆角卡片容器（设置浮窗主体）。</summary>
+/// <summary>圆角卡片容器（设置浮窗主体）：圆角用抗锯齿绘制，不做 Region 硬裁剪（避免锯齿）。</summary>
 internal class RoundPanel : Panel, IThemed
 {
     public int Radius { get; set; } = 10;
     public bool DrawBorder { get; set; } = true;
 
-    /// <summary>是否按圆角裁剪自身（浮层卡片需要留出投影边距，故不裁剪）。</summary>
-    protected virtual bool RoundedClip => true;
+    /// <summary>圆角块底下真正显示的颜色（默认取父级背景色；浮层可显式指定）。</summary>
+    public Color? Backdrop { get; set; }
+
+    /// <summary>圆角以外的像素来源：底层界面快照（浮层卡片用它做到圆角处也显示真实底层）。</summary>
+    public Bitmap? BackdropBitmap { get; set; }
+
+    /// <summary>本控件左上角在 <see cref="BackdropBitmap"/> 中的坐标。</summary>
+    public Point BackdropOffset { get; set; }
+
+    protected virtual Rectangle BodyRect => new(0, 0, Width, Height);
     protected virtual Rectangle BorderRect => new(0, 0, Width, Height);
 
     public RoundPanel()
@@ -1397,21 +1486,33 @@ internal class RoundPanel : Panel, IThemed
 
     public void Restyle() { BackColor = SC.CardBg; Invalidate(true); }
 
-    protected override void OnResize(EventArgs e)
+    /// <summary>背景不透明地画成圆角：先铺底层（快照或底色），再抗锯齿填充圆角本体。</summary>
+    protected override void OnPaintBackground(PaintEventArgs e)
     {
-        base.OnResize(e);
-        if (!RoundedClip || Width <= 0 || Height <= 0) return;
-        using var p = RP.Path(new Rectangle(0, 0, Width, Height), Radius);
-        var old = Region;
-        Region = new Region(p);
-        old?.Dispose();
+        var g = e.Graphics;
+        g.SmoothingMode = SmoothingMode.AntiAlias;
+        var body = BodyRect;
+        var full = new Rectangle(0, 0, Width, Height);
+
+        var snap = BackdropBitmap;
+        var src = new Rectangle(BackdropOffset.X, BackdropOffset.Y, Width, Height);
+        if (snap != null && src.X >= 0 && src.Y >= 0 && src.Right <= snap.Width && src.Bottom <= snap.Height)
+        {
+            g.DrawImage(snap, full, src, GraphicsUnit.Pixel);
+        }
+        else
+        {
+            using var bb = new SolidBrush(Backdrop ?? RP.BackdropOf(this, SC.CardBg));
+            g.FillRectangle(bb, full);
+        }
+        RP.Fill(g, body, Radius, BackColor);
     }
 
     protected override void OnPaint(PaintEventArgs e)
     {
         var g = e.Graphics;
         g.SmoothingMode = SmoothingMode.AntiAlias;
-        // 边框画在圆角路径内侧一点点：既不会被自身的圆角裁剪吃掉四个角，
+        // 边框画在圆角路径内侧一点点：既不会被自身圆角吃掉四个角，
         // 也要求子控件从 3px 处开始摆放（见 SettingsOverlay.LayoutCard），否则会被盖住。
         if (DrawBorder)
         {
@@ -1424,71 +1525,21 @@ internal class RoundPanel : Panel, IThemed
 }
 
 /// <summary>
-/// 悬浮卡片（用于“未保存改动”确认）：只保留填充与 1px 边框，不画任何投影。
+/// 悬浮卡片（设置浮窗本体 / “未保存改动”确认）：只保留填充与 1px 边框，不画任何投影。
 /// </summary>
 internal sealed class FloatingCard : RoundPanel
 {
-    /// <summary>四周留白（默认 0：不画阴影，直接按圆角裁剪）。</summary>
+    /// <summary>四周留白（默认 0：不画阴影，圆角直接贴到控件边缘）。</summary>
     public int Shadow { get; set; } = 0;
 
     protected override Rectangle BorderRect => InnerRect();
+    protected override Rectangle BodyRect => InnerRect();
 
     public Rectangle InnerRect() =>
         new(Shadow, Shadow, Math.Max(1, Width - Shadow * 2), Math.Max(1, Height - Shadow * 2));
-
-    protected override void OnPaint(PaintEventArgs e)
-    {
-        var g = e.Graphics;
-        g.SmoothingMode = SmoothingMode.AntiAlias;
-        var inner = InnerRect();
-        RP.Fill(g, inner, Radius, SC.CardBg);
-        base.OnPaint(e);
-    }
 }
 
-/// <summary>
-/// 浮窗自己的描边：只占最外圈约 1.4px 的圆角环形区域，画在所有子控件之上，
-/// 这样四个圆角处的边框也不会被菜单栏/内容面板盖住。
-/// </summary>
-internal sealed class CardBorderRing : Control, IThemed
-{
-    public int Radius { get; set; } = 10;
-    private const float Thickness = 1.4f;
 
-    public CardBorderRing()
-    {
-        Enabled = false;      // 不拦截鼠标
-        TabStop = false;
-        SetStyle(ControlStyles.UserPaint | ControlStyles.AllPaintingInWmPaint
-               | ControlStyles.OptimizedDoubleBuffer | ControlStyles.ResizeRedraw, true);
-    }
-
-    public void Restyle() => Invalidate();
-
-    protected override void OnResize(EventArgs e)
-    {
-        base.OnResize(e);
-        if (Width <= 6 || Height <= 6) return;
-        using var outer = RP.Path(new Rectangle(0, 0, Width, Height), Radius);
-        var innerRect = new Rectangle(
-            (int)Math.Round(Thickness), (int)Math.Round(Thickness),
-            Math.Max(2, Width - (int)Math.Round(Thickness) * 2),
-            Math.Max(2, Height - (int)Math.Round(Thickness) * 2));
-        using var inner = RP.Path(innerRect, Math.Max(2, Radius - (int)Math.Round(Thickness)));
-        using var region = new Region(outer);
-        region.Exclude(inner);
-        var old = Region;
-        Region = region.Clone();
-        old?.Dispose();
-    }
-
-    protected override void OnPaint(PaintEventArgs e)
-    {
-        using var b = new SolidBrush(SC.CardBorder);
-        e.Graphics.FillRectangle(b, ClientRectangle);
-        base.OnPaint(e);
-    }
-}
 /// <summary>浮窗右上角的圆形关闭按钮。</summary>
 internal sealed class CloseButton : Control, IThemed
 {
@@ -1666,12 +1717,14 @@ internal sealed class DropdownSelect : Control, IThemed
     public DropdownSelect(string[] items, int width = 180, int? selected = null)
     {
         Items = items;
-        Size = new Size(width, 34);
+        Size = new Size(width, InputField.MinHeight);   // 展示高度与同排输入框完全一致
         SelectedIndex = Math.Clamp(selected ?? Math.Max(0, items.Length - 1), 0, Math.Max(0, items.Length - 1));
         BackColor = SC.GroupBg;
         SetStyle(ControlStyles.UserPaint | ControlStyles.AllPaintingInWmPaint
                | ControlStyles.OptimizedDoubleBuffer | ControlStyles.ResizeRedraw, true);
     }
+
+    public void Restyle() { BackColor = SC.GroupBg; Invalidate(); }
 
     public void Select(int idx, bool raise)
     {
@@ -1681,8 +1734,6 @@ internal sealed class DropdownSelect : Control, IThemed
         Invalidate();
         if (raise) Chosen?.Invoke(idx);
     }
-
-    public void Restyle() { BackColor = SC.GroupBg; Invalidate(); }
 
     protected override void OnMouseEnter(EventArgs e) { _hover = true; Invalidate(); base.OnMouseEnter(e); }
     protected override void OnMouseLeave(EventArgs e) { _hover = false; Invalidate(); base.OnMouseLeave(e); }

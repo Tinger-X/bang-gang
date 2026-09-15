@@ -22,7 +22,6 @@ internal sealed class SettingsOverlay : Panel, IPopupHost
     private readonly AppSettings _applied = new();
 
     private readonly RoundPanel _card = new();
-    private readonly CardBorderRing _cardBorder = new();
     private readonly Panel _rail = new();
     private readonly Panel _divider = new();
     private readonly Panel _host = new();
@@ -103,10 +102,9 @@ internal sealed class SettingsOverlay : Panel, IPopupHost
         _card.Controls.Add(_confirm);
         _confirm.BringToFront();
 
-        // ---- 浮窗描边（画在所有子控件之上，圆角处也不缺边） ----
-        _card.DrawBorder = false;
-        _card.Controls.Add(_cardBorder);
-        _cardBorder.BringToFront();
+        // ---- 浮窗描边：由卡片自己抗锯齿绘制（不再用覆盖整张卡片的描边控件：
+        //      那种“只画一圈边框”的控件会整片盖住卡片，且它的窗口一旦没被重画就是一片黑） ----
+        _card.DrawBorder = true;
 
         SelectPage(0);
     }
@@ -157,12 +155,68 @@ internal sealed class SettingsOverlay : Panel, IPopupHost
     /// <summary>打开设置前载入当前设置，并清空所有未保存状态。</summary>
     public void ReloadFrom(AppSettings s)
     {
+        CaptureBackdrop();          // 必须在浮窗可见之前抓底层界面
         _applied.CopyFrom(s);
         HideConfirm();
         foreach (var p in _pages) p.Rebind(_applied);
         SelectPage(_sel);
         RefreshDots();
     }
+
+    /// <summary>
+    /// 抓一张主界面快照：卡片四角是圆角，圆角以外的像素必须显示“真正的底层界面”，
+    /// 用快照填充就能得到抗锯齿的圆角（Region 硬裁剪会留下锯齿）。
+    ///
+    /// 两个坑：
+    /// 1) 不能用屏幕抓图 —— 应用本身对截屏不可见（WDA_EXCLUDEFROMCAPTURE），
+    ///    屏幕抓图在 Release 下只会拿到桌面；
+    /// 2) 不能直接对主窗口 DrawToBitmap，也不能临时隐藏卡片 —— 前者对带 Region 的
+    ///    顶层窗口会得到黑图，后者会在浮窗刚可见时把卡片留在“未绘制”状态（整块变黑）。
+    /// 因此这里逐个把主窗口里除浮窗以外的兄弟控件画进位图再拼起来。
+    /// </summary>
+    private void CaptureBackdrop()
+    {
+        var parent = Parent;
+        if (parent == null || Width <= 0 || Height <= 0) return;
+        try
+        {
+            var bmp = new Bitmap(Width, Height);
+            using (var g = Graphics.FromImage(bmp))
+            {
+                g.Clear(parent.BackColor);
+                // Controls[0] 在最上层，所以从后往前拼
+                for (int i = parent.Controls.Count - 1; i >= 0; i--)
+                {
+                    var c = parent.Controls[i];
+                    if (ReferenceEquals(c, this) || !c.Visible || c.Width <= 0 || c.Height <= 0) continue;
+                    using var cb = new Bitmap(c.Width, c.Height);
+                    c.DrawToBitmap(cb, new Rectangle(0, 0, c.Width, c.Height));
+                    // DrawToBitmap 会忽略控件的 Region（例如只在窗口最外圈画描边的 WindowFrame），
+                    // 因此这里按 Region 裁一下，否则整张快照会被那圈颜色盖住。
+                    var old = g.Clip;
+                    if (c.Region != null)
+                    {
+                        using var rr = c.Region.Clone();
+                        rr.Translate(c.Left, c.Top);
+                        g.SetClip(rr, CombineMode.Intersect);
+                    }
+                    g.DrawImage(cb, c.Left, c.Top);
+                    g.Clip = old;
+                }
+            }
+            _backdrop?.Dispose();
+            _backdrop = bmp;
+        }
+        catch
+        {
+            _backdrop?.Dispose();
+            _backdrop = null;
+        }
+        _card.BackdropBitmap = _backdrop;
+        _card.BackdropOffset = _cardPos;
+    }
+
+    private Bitmap? _backdrop;
 
     public void ApplyTheme()
     {
@@ -213,19 +267,24 @@ internal sealed class SettingsOverlay : Panel, IPopupHost
         _cardPos = new Point((Width - cw) / 2, (Height - ch) / 2);
         _card.Location = _cardPos;
 
+        if (Visible) CaptureBackdrop();     // 窗口尺寸/主题变化后刷新圆角底图
         ApplyRegion();
+        _card.Invalidate(true);             // 卡片是子窗口，父级重画不会带着它刷新
         Invalidate();
         CardBoundsChanged?.Invoke();
     }
 
     /// <summary>
-    /// 只保留浮窗本体所在的区域（圆角卡片），区域外不绘制、也不接收鼠标，
-    /// 因此不会在原界面上留下“陈旧像素”；同时避免把卡片的圆角切掉。
+    /// 只保留卡片所在的圆角区域：卡片以外仍由主界面自己绘制（保持“活用”）。
+    /// Region 用**比卡片本体大 1px** 的圆角路径：这样卡片自己抗锯齿画出的圆角
+    /// 完全落在 Region 内部（不会被硬裁剪成锯齿），Region 自己的硬边又被卡片的
+    /// 抗锯齿边缘盖住，因此看上去是一条平滑的圆角。
     /// </summary>
     private void ApplyRegion()
     {
-        var rect = new Rectangle(_cardPos.X, _cardPos.Y, Math.Max(1, _card.Width), Math.Max(1, _card.Height));
-        using var path = RP.Path(rect, 10);
+        var rect = new Rectangle(_cardPos.X - 1, _cardPos.Y - 1,
+                                 Math.Max(1, _card.Width) + 2, Math.Max(1, _card.Height) + 2);
+        using var path = RP.Path(rect, _card.Radius + 1);
         var region = new Region(path);
         var old = Region;
         Region = region;
@@ -246,8 +305,6 @@ internal sealed class SettingsOverlay : Panel, IPopupHost
         _divider.SetBounds(RailW + 1, inset, 1, h - inset * 2);
         _host.SetBounds(RailW + 2, inset, Math.Max(10, w - RailW - inset - 2), h - inset * 2);
         _close.SetBounds(w - 44, 12, 28, 28);     // 尽量贴近右上角
-        _cardBorder.SetBounds(0, 0, w, h);
-        _cardBorder.BringToFront();
 
         _brandMark.SetBounds(18, 24, 28, 28);
         _railTitle.SetBounds(54, 24, RailW - 70, 28);
@@ -276,13 +333,42 @@ internal sealed class SettingsOverlay : Panel, IPopupHost
     }
 
     /// <summary>
-    /// 浮窗之外不绘制任何东西：本控件只保留卡片所在的区域，
-    /// 该区域外的像素仍属于原界面，从而做到“不遮挡、不影响原有 UI”。
+    /// 浮窗本体只画卡片；卡片以外的区域直接用底层界面快照铺上，
+    /// 这样不会留下“陈旧像素”。不使用 Region：Region 会把圆角硬裁剪出锯齿，
+    /// 卡片以外的点击穿透由 <see cref="WndProc"/> 的 WM_NCHITTEST 处理。
     /// </summary>
     protected override void OnPaintBackground(PaintEventArgs e)
     {
-        // 故意留空：不填充背景，避免盖住底下原有的界面内容
+        var snap = _backdrop;
+        if (snap == null) return;
+        var rc = new Rectangle(0, 0, Width, Height);
+        e.Graphics.DrawImage(snap, rc, rc, GraphicsUnit.Pixel);
     }
+
+    private const int WM_NCHITTEST = 0x0084;
+    private static readonly IntPtr HTTRANSPARENT = new(-1);
+
+    /// <summary>
+    /// 兜底：万一 Region 没生效（例如区域为空），卡片以外的鼠标消息仍然穿透到底下的界面。
+    /// 正常情况下 Region 已经把卡片以外的区域排除在本控件之外，这里不会走到。
+    /// </summary>
+    protected override void WndProc(ref Message m)
+    {
+        if (m.Msg == WM_NCHITTEST)
+        {
+            int lp = m.LParam.ToInt32();
+            var screen = new Point((short)(lp & 0xFFFF), (short)((lp >> 16) & 0xFFFF));
+            if (!CardScreenRect().Contains(screen))
+            {
+                m.Result = HTTRANSPARENT;
+                return;
+            }
+        }
+        base.WndProc(ref m);
+    }
+
+    private Rectangle CardScreenRect() =>
+        new(PointToScreen(_cardPos), new Size(Math.Max(1, _card.Width), Math.Max(1, _card.Height)));
 
     // ---------------- 菜单 / 保存 ----------------
 
@@ -333,6 +419,7 @@ internal sealed class SettingsOverlay : Panel, IPopupHost
         if (dirty > 0)
         {
             _confirmDesc.Text = dirty == 1 ? "当前页面还有未保存的修改。" : $"有 {dirty} 个页面存在未保存的修改。";
+            CaptureConfirmBackdrop();      // 确认条四角要显示真实的设置页内容（抗锯齿圆角）
             _confirm.Visible = true;
             _confirm.BringToFront();
             _confirmStay.Focus();
@@ -340,6 +427,34 @@ internal sealed class SettingsOverlay : Panel, IPopupHost
         }
         CloseNow();
     }
+
+    /// <summary>抓一张设置卡片快照给确认浮层当圆角底图（不含确认条自己）。</summary>
+    private void CaptureConfirmBackdrop()
+    {
+        if (_card.Width <= 0 || _card.Height <= 0) return;
+        bool shown = _confirm.Visible;
+        _confirm.Visible = false;
+        try
+        {
+            var bmp = new Bitmap(_card.Width, _card.Height);
+            _card.DrawToBitmap(bmp, new Rectangle(0, 0, _card.Width, _card.Height));
+            _confirmBackdrop?.Dispose();
+            _confirmBackdrop = bmp;
+        }
+        catch
+        {
+            _confirmBackdrop?.Dispose();
+            _confirmBackdrop = null;
+        }
+        finally
+        {
+            _confirm.Visible = shown;
+        }
+        _confirm.BackdropBitmap = _confirmBackdrop;
+        _confirm.BackdropOffset = _confirm.Location;
+    }
+
+    private Bitmap? _confirmBackdrop;
 
     private void HideConfirm()
     {
@@ -355,9 +470,17 @@ internal sealed class SettingsOverlay : Panel, IPopupHost
 
     protected override void OnVisibleChanged(EventArgs e)
     {
+        base.OnVisibleChanged(e);
         if (Visible)
         {
-            LayoutOverlay();               // 先摆好位置，主窗口随后才能按卡片位置挖遮罩的洞
+            LayoutOverlay();               // 先摆好位置（含圆角底图与 Region）
+            // base 之后窗口才真正带上 WS_VISIBLE：此时重画才会生效，
+            // 否则卡片/菜单栏会停在“从未绘制”的状态（整块黑）。
+            _card.Invalidate(true);
+            Invalidate(true);
+            Update();
+            Trace.DumpAfter(_card, "dbg-card", 900);
+            Trace.DumpAfter(this, "dbg-overlay", 1000);
             if (_navs.Count > 0) _navs[_sel].Focus();
         }
         else
@@ -365,7 +488,6 @@ internal sealed class SettingsOverlay : Panel, IPopupHost
             HideConfirm();
             Ui.HideToolTip();
         }
-        base.OnVisibleChanged(e);
     }
 
     protected override bool ProcessCmdKey(ref Message msg, Keys keyData)

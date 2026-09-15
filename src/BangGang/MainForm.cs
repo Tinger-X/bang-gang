@@ -12,7 +12,7 @@ namespace BangGang;
 public class MainForm : Form
 {
     public const string WindowTitle = "帮帮";
-    public const string AppVersion = "v0.7.14";
+    public const string AppVersion = "v0.7.15";
 
     private const uint Affinity = Native.WDA_EXCLUDEFROMCAPTURE;
     private const int SideW = 304;
@@ -743,14 +743,24 @@ internal sealed class BrandBlock : Panel
     {
         var g = e.Graphics;
         g.SmoothingMode = SmoothingMode.AntiAlias;
+        var tile = new Rectangle(18, 24, 52, 52);
         using (var bg = new SolidBrush(Theme.Accent))
-            g.FillEllipse(bg, 18, 24, 52, 52);
+            g.FillEllipse(bg, tile);
         using (var f = new Font("Microsoft YaHei UI", 24f, FontStyle.Bold))
+        using (var path = new GraphicsPath())
         {
-            string c = "帮";
-            var sz = g.MeasureString(c, f);
+            // 用字形墨迹（GraphicsPath）而不是 MeasureString 来居中：
+            // MeasureString 量到的行框含有上下留白，按它居中会把文字顶偏（下方空隙更大）。
+            float em = f.Size * g.DpiY / 72f;
+            path.AddString("帮", f.FontFamily, (int)f.Style, em, new PointF(0, 0), StringFormat.GenericTypographic);
+            var ink = path.GetBounds();
+            var m = new Matrix();
+            m.Translate(tile.X + tile.Width / 2f - (ink.X + ink.Width / 2f),
+                        tile.Y + tile.Height / 2f - (ink.Y + ink.Height / 2f));
+            path.Transform(m);
+            m.Dispose();
             using var b = new SolidBrush(Color.White);
-            g.DrawString(c, f, b, 18 + (52 - sz.Width) / 2, 24 + (52 - sz.Height) / 2);
+            g.FillPath(b, path);
         }
         using (var name = new SolidBrush(Theme.TextMain))
         using (var sub = new SolidBrush(Theme.TextMuted))
