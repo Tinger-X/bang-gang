@@ -13,15 +13,10 @@ obj/
 .idea/
 .vscode/
 *.swp
+.claude/
 
 # 构建产物（dist/ 由 dotnet build 生成，不入库）
 dist/
-
-# 探针脚本的截图输出（tools/ 生成的本地产物，不入库）
 shoots/
-
-# 临时与日志
-*.log
-temp/
-
-.claude/
+build/
+.local/
