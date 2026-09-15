@@ -12,7 +12,7 @@ namespace BangGang;
 public class MainForm : Form
 {
     public const string WindowTitle = "帮帮";
-    public const string AppVersion = "v0.7.15";
+    public const string AppVersion = "v0.7.16";
 
     private const uint Affinity = Native.WDA_EXCLUDEFROMCAPTURE;
     private const int SideW = 304;
@@ -335,6 +335,7 @@ public class MainForm : Form
         _chrome.SetStatus("设置已保存");
         _statusTimer.Stop();
         _statusTimer.Start();
+        _settingsOverlay.RefreshBackdrop();   // 让“设置已保存”在浮窗打开时也看得见
     }
 
     private void ApplyThemeUi()

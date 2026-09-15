@@ -46,9 +46,8 @@ internal sealed class SettingsOverlay : Panel, IPopupHost
     {
         BackColor = SC.Scrim;
         Dock = DockStyle.Fill;
-        // 注意：这里**不能**开 OptimizedDoubleBuffer —— 浮窗只保留卡片区域，
-        // 双缓冲会把未绘制的区域画成黑色。
-        SetStyle(ControlStyles.UserPaint | ControlStyles.ResizeRedraw, true);
+        // 不能开 OptimizedDoubleBuffer：浮窗大部分区域是“透传”的，双缓冲会把没画的区域涂黑。
+        SetStyle(ControlStyles.UserPaint | ControlStyles.ResizeRedraw | ControlStyles.AllPaintingInWmPaint, true);
 
         // ---- 浮窗主体（固定居中，不可拖动；背后浅色遮罩由主窗口负责） ----
         _card.Radius = 10;
@@ -107,6 +106,21 @@ internal sealed class SettingsOverlay : Panel, IPopupHost
         _card.DrawBorder = true;
 
         SelectPage(0);
+    }
+
+    /// <summary>
+    /// 整棵浮窗用 WS_EX_COMPOSITED 一次性合成后再上屏。
+    /// 否则卡片的十几个子窗口会各自 WM_PAINT，先看到“空卡片/半截内容”（像骨架屏），
+    /// 过一两帧才补全，也就是“打开设置先闪一下”的原因。
+    /// </summary>
+    protected override CreateParams CreateParams
+    {
+        get
+        {
+            var cp = base.CreateParams;
+            cp.ExStyle |= 0x02000000;   // WS_EX_COMPOSITED
+            return cp;
+        }
     }
 
     private void AddPage(SettingsPage page, string navLabel, Glyph icon)
@@ -206,6 +220,7 @@ internal sealed class SettingsOverlay : Panel, IPopupHost
             }
             _backdrop?.Dispose();
             _backdrop = bmp;
+            _backdropFor = _card.Size;
         }
         catch
         {
@@ -217,9 +232,20 @@ internal sealed class SettingsOverlay : Panel, IPopupHost
     }
 
     private Bitmap? _backdrop;
+    private Size _backdropFor;
 
-    public void ApplyTheme()
+    /// <summary>
+    /// 重新抓一次底层界面快照。主窗口状态栏这类内容在浮窗打开期间被快照盖住，
+    /// 保存设置后状态栏会变成“设置已保存”，此时刷新一次底图，用户就能看到提示。
+    /// </summary>
+    public void RefreshBackdrop()
     {
+        if (!Visible) return;
+        CaptureBackdrop();
+        Invalidate();
+    }
+
+    public void ApplyTheme()    {
         BackColor = SC.Scrim;
         _divider.BackColor = SC.Mix(SC.CardBg, Theme.Border, 0.85f);
         _brandMark.BackColor = Theme.Accent;
@@ -254,7 +280,8 @@ internal sealed class SettingsOverlay : Panel, IPopupHost
 
     /// <summary>
     /// 浮窗固定尺寸、始终在主窗口内上下左右居中（不可拖动）。
-    /// 本控件的 Region 只保留卡片区域，卡片以外的“变暗与拦截点击”由主窗口的浅色遮罩窗口负责。
+    /// 浮窗铺满整个窗口：卡片以外画底层界面快照，并吃掉所有鼠标消息
+    /// （设置打开时主界面只“看得见”，不能再被点击操作）。
     /// </summary>
     private void LayoutOverlay()
     {
@@ -267,7 +294,9 @@ internal sealed class SettingsOverlay : Panel, IPopupHost
         _cardPos = new Point((Width - cw) / 2, (Height - ch) / 2);
         _card.Location = _cardPos;
 
-        if (Visible) CaptureBackdrop();     // 窗口尺寸/主题变化后刷新圆角底图
+        // 只有在窗口尺寸真的变了（卡片尺寸变了）时才重新抓底图：
+        // 打开设置时已经抓过一次，重复抓会白等一次整窗渲染，正是“打开时先闪一下”的原因之一。
+        if (Visible && _card.Size != _backdropFor) CaptureBackdrop();
         ApplyRegion();
         _card.Invalidate(true);             // 卡片是子窗口，父级重画不会带着它刷新
         Invalidate();
@@ -275,17 +304,23 @@ internal sealed class SettingsOverlay : Panel, IPopupHost
     }
 
     /// <summary>
-    /// 只保留卡片所在的圆角区域：卡片以外仍由主界面自己绘制（保持“活用”）。
-    /// Region 用**比卡片本体大 1px** 的圆角路径：这样卡片自己抗锯齿画出的圆角
-    /// 完全落在 Region 内部（不会被硬裁剪成锯齿），Region 自己的硬边又被卡片的
-    /// 抗锯齿边缘盖住，因此看上去是一条平滑的圆角。
+    /// 浮窗覆盖整个窗口：Region 置空，卡片以外的鼠标消息落在浮窗上被忽略，
+    /// 因此设置打开期间主界面不再可点（但外观仍与原界面一致，靠底层快照绘制）。
+    /// 万一底图没抓到（DrawToBitmap 失败），退回到“只占卡片区域”的圆角 Region，
+    /// 让主界面自己绘制，避免出现一片未绘制的黑区。
     /// </summary>
     private void ApplyRegion()
     {
-        var rect = new Rectangle(_cardPos.X - 1, _cardPos.Y - 1,
-                                 Math.Max(1, _card.Width) + 2, Math.Max(1, _card.Height) + 2);
-        using var path = RP.Path(rect, _card.Radius + 1);
-        var region = new Region(path);
+        Region? region;
+        if (_backdrop == null)
+        {
+            var rect = new Rectangle(_cardPos.X - 1, _cardPos.Y - 1,
+                                     Math.Max(1, _card.Width) + 2, Math.Max(1, _card.Height) + 2);
+            using var path = RP.Path(rect, _card.Radius + 1);
+            region = new Region(path);
+        }
+        else region = null;
+
         var old = Region;
         Region = region;
         old?.Dispose();
@@ -339,36 +374,18 @@ internal sealed class SettingsOverlay : Panel, IPopupHost
     /// </summary>
     protected override void OnPaintBackground(PaintEventArgs e)
     {
-        var snap = _backdrop;
-        if (snap == null) return;
         var rc = new Rectangle(0, 0, Width, Height);
-        e.Graphics.DrawImage(snap, rc, rc, GraphicsUnit.Pixel);
-    }
-
-    private const int WM_NCHITTEST = 0x0084;
-    private static readonly IntPtr HTTRANSPARENT = new(-1);
-
-    /// <summary>
-    /// 兜底：万一 Region 没生效（例如区域为空），卡片以外的鼠标消息仍然穿透到底下的界面。
-    /// 正常情况下 Region 已经把卡片以外的区域排除在本控件之外，这里不会走到。
-    /// </summary>
-    protected override void WndProc(ref Message m)
-    {
-        if (m.Msg == WM_NCHITTEST)
+        var snap = _backdrop;
+        if (snap != null)
         {
-            int lp = m.LParam.ToInt32();
-            var screen = new Point((short)(lp & 0xFFFF), (short)((lp >> 16) & 0xFFFF));
-            if (!CardScreenRect().Contains(screen))
-            {
-                m.Result = HTTRANSPARENT;
-                return;
-            }
+            e.Graphics.DrawImage(snap, rc, rc, GraphicsUnit.Pixel);
+            return;
         }
-        base.WndProc(ref m);
+        // 底图没抓到也必须画点东西：浮窗覆盖整窗，什么都不画就会露
+        // “从未绘制”的黑色区域。
+        using var b = new SolidBrush(BackColor);
+        e.Graphics.FillRectangle(b, rc);
     }
-
-    private Rectangle CardScreenRect() =>
-        new(PointToScreen(_cardPos), new Size(Math.Max(1, _card.Width), Math.Max(1, _card.Height)));
 
     // ---------------- 菜单 / 保存 ----------------
 

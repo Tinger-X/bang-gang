@@ -1512,14 +1512,10 @@ internal class RoundPanel : Panel, IThemed
     {
         var g = e.Graphics;
         g.SmoothingMode = SmoothingMode.AntiAlias;
-        // 边框画在圆角路径内侧一点点：既不会被自身圆角吃掉四个角，
-        // 也要求子控件从 3px 处开始摆放（见 SettingsOverlay.LayoutCard），否则会被盖住。
+        // 边框画在卡片最外缘：描边以边界为中心、抗锯齿混合。
+        // 不要往内缩 1px —— 那样外缘会留出一条本体色的窄环，看起来像“边框外还有一圈边框”。
         if (DrawBorder)
-        {
-            var r = BorderRect;
-            var inner = new Rectangle(r.X + 1, r.Y + 1, Math.Max(2, r.Width - 2), Math.Max(2, r.Height - 2));
-            RP.Stroke(g, inner, Math.Max(2, Radius - 1), SC.CardBorder, 1.6f);
-        }
+            RP.Stroke(g, BorderRect, Radius, SC.CardBorder, 1.6f);
         base.OnPaint(e);
     }
 }
