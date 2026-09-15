@@ -42,12 +42,16 @@ Invoke-BBProbe {
     # ---------------- A. sidebar width ----------------
 
     Write-Output '--- A. sidebar ---'
+    # The width floor matters: the right-hand main area is now pinned across the whole
+    # window (MainForm.ApplyLayout) so the sidebar can be drawn over its left edge, and it
+    # otherwise matches this shape exactly -- same left edge, same top, taller than 100.
     $side = $null
     foreach ($h in Get-WinKids $main) {
         $r = Get-WinRect $h
         if ($r.Left -ne $mr.Left) { continue }
         if ($r.Top -ne ($mr.Top + 38)) { continue }
         if (($r.Bottom - $r.Top) -lt 100) { continue }
+        if (($r.Right - $r.Left) -gt 400) { continue }
         $side = $r
     }
     if ($null -eq $side) { throw 'sidebar not found' }

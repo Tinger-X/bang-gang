@@ -11,6 +11,17 @@ internal sealed class IconButton : Control, IThemed
     private readonly Color? _backdropHint;
     private bool _hover;
 
+    /// <summary>
+    /// 这个按钮实际盖在谁身上 —— 取底色时用它，而不是 <c>Parent</c>。
+    ///
+    /// 圆钮之外的四个角是**不透明**的 <c>BackColor</c>，所以「父面板什么色」直接决定四角是否无痕。
+    /// 绝大多数按钮的父面板就是它盖住的那块面，两者一致；但对话顶栏那个「收起 / 展开」按钮是
+    /// <c>_chatUI</c> 的孩子，画的却落在**兄弟控件** <c>_convTitle</c>（标题条）上 ——
+    /// 于是 <c>Restyle()</c> 拿 <c>Parent.BackColor</c> 会取到 ChatBg，四角在标题条上留下一圈
+    /// 异色的方块。用户看到的正是这个：「切换主题后非圆角部分没跟着变」。
+    /// </summary>
+    public Control? BackdropOwner { get; set; }
+
     public IconButton(Kind kind, Color? backdrop = null)
     {
         Icon = kind;
@@ -22,11 +33,12 @@ internal sealed class IconButton : Control, IThemed
 
     /// <summary>
     /// 主题切换后重新贴合所在面板的底色。
-    /// 必须取“当前”父面板底色：构造时传进来的颜色属于旧主题，继续沿用就会在按钮四周留一圈旧色。
+    /// 必须取“当前”面板底色：构造时传进来的颜色属于旧主题，继续沿用就会在按钮四周留一圈旧色。
+    /// 盖在兄弟控件上的按钮要用 <see cref="BackdropOwner"/> 指出来，见那里的注释。
     /// </summary>
     public void Restyle()
     {
-        BackColor = Parent?.BackColor ?? _backdropHint ?? Theme.SideBg;
+        BackColor = BackdropOwner?.BackColor ?? Parent?.BackColor ?? _backdropHint ?? Theme.SideBg;
         Invalidate();
     }
 

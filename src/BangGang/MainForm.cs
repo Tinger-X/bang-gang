@@ -13,7 +13,7 @@ namespace BangGang;
 public class MainForm : Form, IMessageFilter
 {
     public const string WindowTitle = "帮帮";
-    public const string AppVersion = "v0.7.26";
+    public const string AppVersion = "v0.7.27";
 
     private const uint Affinity = Native.WDA_EXCLUDEFROMCAPTURE;
 
@@ -120,6 +120,13 @@ public class MainForm : Form, IMessageFilter
         _mainArea = new Panel { BackColor = Theme.ChatBg };
         Controls.Add(_mainArea);
 
+        // 主区铺满整窗（左右都到边，见 ApplyLayout），左侧栏得盖在它**上面**才露得出
+        // 「侧栏那一截」，所以主区必须排在侧栏后面。这里本来就是后加的、天然在后面，
+        // 写出来的目的是把这条不变量钉住 —— ApplyLayout 的铺满式布局依赖它。
+        // 不能反过来调 _sidebar.BringToFront()：那是把侧栏排到同级最前，会一起盖住
+        // _settingsOverlay 和 _frame 画在窗口左缘的那一条描边。
+        Controls.SetChildIndex(_mainArea, Controls.Count - 1);
+
         _chatUI = new Panel { BackColor = Theme.ChatBg };
         _convTitle = new Label { TextAlign = ContentAlignment.MiddleCenter, AutoEllipsis = true, Font = Theme.UI(13f, FontStyle.Bold), ForeColor = Theme.TextMain, BackColor = Theme.PanelBg };
         _chatView = new ChatView();
@@ -131,7 +138,16 @@ public class MainForm : Form, IMessageFilter
 
         // 顶栏左侧的「收起 / 展开左侧栏」。标题居中靠的是 Label 两侧对称的内边距，
         // 所以这个按钮的宽度必须和内边距对得上（见 ApplyLayout 里的 ConvTitlePadX）。
-        _btnSideToggle = new IconButton(IconButton.Kind.Collapse, Theme.PanelBg) { Location = new Point(10, 10) };
+        //
+        // BackdropOwner 必须显式指到标题条上：这个圆钮的孩子身份是 _chatUI，画却落在兄弟
+        // 控件 _convTitle 上。不指的话 Restyle() 会取 ChatBg 去填四角，在标题条（PanelBg）上
+        // 留下一圈异色的方块 —— 平时看不出来（构造时传的是对的 PanelBg），只有换主题后被
+        // Restyle 重刷一次才露出来，正是用户看到的「非圆角部分没跟着主题走」。
+        _btnSideToggle = new IconButton(IconButton.Kind.Collapse, Theme.PanelBg)
+        {
+            Location = new Point(10, 10),
+            BackdropOwner = _convTitle,
+        };
         _btnSideToggle.Click += (_, _) => ToggleSidebar();
         _chatUI.Controls.Add(_btnSideToggle);
         _btnSideToggle.BringToFront();      // 标题横跨整条，别把它压住
@@ -248,18 +264,33 @@ public class MainForm : Form, IMessageFilter
         int listTop = 146;
         _convList.Bounds = new Rectangle(0, listTop, SideW, bodyH - listTop);
 
-        _mainArea.Bounds = new Rectangle(sw, ChromeH, W - sw, bodyH);
-        _welcome.Bounds = new Rectangle(0, 0, W - sw, bodyH);
-        _chatUI.Bounds = new Rectangle(0, 0, W - sw, bodyH);
+        // 右侧主区整块**钉死在窗口上**，收起 / 展开时一格都不动：左右都铺到窗口边，
+        // 「露出来的那一截」靠侧栏盖在它上面（z 序见 ctor 里的 SetChildIndex）让出来。
+        //
+        // 为什么非得钉死：移动一个父控件，Windows 是把**整棵子树**一次性搬走的，而 WinForms
+        // 之后才逐条 SetBounds 把每个后代的显式位置补回来。_send / _attach 钉在输入面板的右缘、
+        // 右缘又贴着窗口右缘，于是「主区已经挪了、输入面板还没重摆」的那一小段里，这两个按钮
+        // 被连带着一起挪走（实测偏移到 112px，正解是 40px）—— DWM 是异步合成的，恰好合到这一帧
+        // 就是用户看见的闪烁和左右抖动。祖先不动之后，还在动的就只剩叶子（标题条、收起按钮、
+        // 欢迎页）和「自己动完就把孩子摆好」的面板（输入区、消息区）：后者的 OnResize 是同一次
+        // SetBounds 里同步回调的，不存在「先挪、后补」的空档。
+        _mainArea.Bounds = new Rectangle(0, ChromeH, W, bodyH);
+        _chatUI.Bounds = new Rectangle(0, 0, W, bodyH);
 
         _settingsOverlay.Bounds = new Rectangle(0, 0, W, H);
         _frame.Bounds = new Rectangle(0, 0, W, H);
 
+        // 这几条才是真正露在外面的：左缘跟着侧栏当前宽度走，宽度是 W - sw。
         int mw = W - sw;
-        _convTitle.Bounds = new Rectangle(0, 0, mw, 48);
+        _welcome.Bounds = new Rectangle(sw, 0, mw, bodyH);
+        _convTitle.Bounds = new Rectangle(sw, 0, mw, 48);
         _convTitle.Padding = new Padding(ConvTitlePadX, 0, ConvTitlePadX, 0);
-        _input.Bounds = new Rectangle(0, bodyH - 150, mw, 150);
-        _chatView.Bounds = new Rectangle(0, 48, mw, bodyH - 48 - 150);
+        _btnSideToggle.Location = new Point(sw + 10, 10);
+        // 输入面板也铺满整窗、不随动画移动，内容靠 ContentInset 让开侧栏：
+        // 它一移动，右下角那两个按钮就得跟着重摆一次，那正是上面要消掉的东西。
+        _input.Bounds = new Rectangle(0, bodyH - 150, W, 150);
+        _input.ContentInset = sw;
+        _chatView.Bounds = new Rectangle(sw, 48, mw, bodyH - 48 - 150);
     }
 
     protected override void OnResize(EventArgs e)

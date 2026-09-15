@@ -67,15 +67,20 @@ function Get-Sidebar($main) {
     return $null
 }
 
-# The chat panel: starts at or right of the sidebar, below the chrome bar, fills the rest.
-# "at" matters -- once the sidebar is collapsed to zero width the panel's left edge IS the
-# window's left edge, and a "-le left, skip" filter would report the panel missing.
+# The chat panel: the area right of the sidebar, below the chrome bar, filling the rest.
+#
+# Measured as the chat VIEW (one title strip further down) rather than the panel that
+# contains it. The containers are deliberately pinned to the window and no longer shrink
+# with the sidebar -- the sidebar is simply drawn over their left edge -- so every one of
+# them reports "window left" no matter what the sidebar is doing. The view is the topmost
+# control whose left edge still means "where the sidebar ends", which is what every check
+# below actually wants to know.
 function Get-ChatPanel($main) {
     $mr = Get-WinRect $main
     $best = $null
     foreach ($h in Get-WinKids $main) {
         $r = Get-WinRect $h
-        if ($r.Top -ne ($mr.Top + 38)) { continue }
+        if ($r.Top -ne ($mr.Top + 38 + 48)) { continue }
         if ($r.Right -ne $mr.Right) { continue }
         if ($r.Left -lt $mr.Left) { continue }
         if ($null -eq $best -or $r.Left -lt $best.Left) { $best = $r }
@@ -100,8 +105,11 @@ Invoke-BBProbe {
     $chat = Get-ChatPanel $main
     if ($null -eq $chat) { throw 'chat panel not found (no conversation active?)' }
     $chatW = $chat.Right - $chat.Left
+    # the title strip sits directly on top of the view (MainForm puts it at y = 48 of the
+    # chat container, and the view right below it)
+    $stripTop = $chat.Top - 48
     Write-Output ("window     : " + $mr.Left + "," + $mr.Top + " ${ww}x" + ($mr.Bottom - $mr.Top))
-    Write-Output ("chat panel : " + $chat.Left + "," + $chat.Top + " ${chatW}x" + ($chat.Bottom - $chat.Top))
+    Write-Output ("chat panel : " + $chat.Left + "," + $stripTop + " ${chatW}x" + ($mr.Bottom - $chat.Top))
 
     # ---------------- A. toggle button + centred title ----------------
 
@@ -112,7 +120,7 @@ Invoke-BBProbe {
         $r = Get-WinRect $h
         if (($r.Right - $r.Left) -ne 28 -or ($r.Bottom - $r.Top) -ne 28) { continue }
         if ([Math]::Abs($r.Left - ($chat.Left + 10)) -gt 2) { continue }
-        if ([Math]::Abs($r.Top - ($chat.Top + 10)) -gt 2) { continue }
+        if ([Math]::Abs($r.Top - ($stripTop + 10)) -gt 2) { continue }
         $toggle = $r
     }
     if ($null -eq $toggle) { throw 'sidebar toggle button not found in the title strip' }
@@ -126,14 +134,14 @@ Invoke-BBProbe {
     # side out to the crop boundary, which reads as a hugely off-centre title.
     $cropX = $chat.Left + 50
     $cropW = $chatW - 50 - 8
-    $box = Get-DiffBoxAt $cropX ($chat.Top + 14) $cropW 20 12
+    $box = Get-DiffBoxAt $cropX ($stripTop + 14) $cropW 20 12
     if ($null -eq $box) { throw 'no title ink found in the strip' }
     $inkCentre = $cropX + ($box.X0 + $box.X1) / 2
     $stripCentre = $chat.Left + $chatW / 2
     $off = [Math]::Abs($inkCentre - $stripCentre)
     Write-Output ("  title    : ink " + ($cropX + $box.X0) + ".." + ($cropX + $box.X1) + ", centre " + $inkCentre + " vs strip centre " + $stripCentre + "  " + $(if ($off -le 3) { 'OK -- centred' } else { "FAIL -- off by $off px" }))
     if ($off -gt 3) { $fail++ }
-    Save-Shot $chat.Left $chat.Top $chatW 48 (Get-ShotPath 'sidebar-title.png')
+    Save-Shot $chat.Left $stripTop $chatW 48 (Get-ShotPath 'sidebar-title.png')
 
     # ---------------- B. the toggle animates ----------------
 

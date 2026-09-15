@@ -25,6 +25,30 @@ internal sealed class InputPanel : Panel
     /// </summary>
     private const int BottomRowH = 38;
 
+    private int _contentInset;
+
+    /// <summary>
+    /// 内容左边要为左侧栏让出多少像素。面板本身铺满整窗、**不随侧栏动画移动**
+    /// （见 <c>MainForm.ApplyLayout</c>），收窄全靠这个内缩。
+    ///
+    /// 之所以不让面板自己缩：面板一移动，钉在它右缘的回形针 / 发送就被父控件整棵子树一起
+    /// 搬走，而 WinForms 要等 <c>OnResize</c> 才把这两个孩子摆回原位 —— 中间那一小段
+    /// 是 DWM 能合成出来的，表现成「收起侧栏时右下角图标左右抖一下」。
+    /// 这里只动叶子：<c>_hint</c> 自成一格，输入框靠 <c>Dock = Fill</c> 跟着 Padding 走，
+    /// 谁都不会拖着别人。
+    /// </summary>
+    public int ContentInset
+    {
+        get => _contentInset;
+        set
+        {
+            if (_contentInset == value) return;
+            _contentInset = value;
+            ApplyInset();
+            LayoutRow();
+        }
+    }
+
     public string Text { get => _box.Text; set => _box.Text = value; }
     public bool HasContent => _box.Text.Trim().Length > 0 || Draft.Count > 0;
 
@@ -115,12 +139,29 @@ internal sealed class InputPanel : Panel
     {
         base.OnResize(e);
         if (_hint == null) return; // 构造期间子控件尚未建立
-        // 用 Padding 把输入框（Dock = Fill）挡在底部工具行上面，见 BottomRowH 的注释。
-        // 面板高度是固定的 150，这个钳位只是防呆：留白不能把输入框挤成负数高。
+        ApplyInset();
+        LayoutRow();
+    }
+
+    /// <summary>
+    /// 用 Padding 把输入框（Dock = Fill）挡在底部工具行上面（见 <see cref="BottomRowH"/>），
+    /// 左边同时留出 <see cref="ContentInset"/>。面板高度是固定的 150，这里的钳位只是防呆：
+    /// 留白不能把输入框挤成负数高。
+    /// </summary>
+    private void ApplyInset()
+    {
+        if (_hint == null) return; // 构造期间子控件尚未建立
         int reserve = Math.Min(BottomRowH, Math.Max(0, Height - 40));
-        if (Padding.Bottom != reserve) Padding = new Padding(0, 0, 0, reserve);
+        var want = new Padding(_contentInset, 0, 0, reserve);
+        if (Padding != want) Padding = want;
+    }
+
+    /// <summary>底部工具行的位置。三个都是「自己就是终点」的叶子，随手摆不牵连别人。</summary>
+    private void LayoutRow()
+    {
+        if (_hint == null) return;
         int bot = Height - 28;
-        _hint.Location = new Point(14, bot);
+        _hint.Location = new Point(Padding.Left + 14, bot);
         _send.Location = new Point(Width - 40, bot - 4);
         _attach.Location = new Point(Width - 78, bot - 4);
         UpdatePh();
