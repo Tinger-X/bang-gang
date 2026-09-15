@@ -113,7 +113,10 @@ internal sealed class ConvListBox : Control, IThemed
                 TextFormatFlags.Left | TextFormatFlags.VerticalCenter
                 | TextFormatFlags.EndEllipsis | TextFormatFlags.NoPrefix);
 
-            DrawDelete(g, DelRect(rc), i, selected, hover);
+            // 删除图标只在鼠标落在这一行时才画 —— 常驻的垃圾桶等于每行右边挂一个红点，
+            // 比对话标题还抢眼。标题宽度仍然无条件扣掉 DelSlot（见上），
+            // 所以图标出现/消失时标题不会重排、也不会跳。
+            if (hover) DrawDelete(g, DelRect(rc), i, selected);
         }
 
         // 细圆角滚动条
@@ -126,8 +129,8 @@ internal sealed class ConvListBox : Control, IThemed
         base.OnPaint(e);
     }
 
-    /// <summary>删除图标：圆形浅底 + 垃圾桶线条；鼠标压在图标上才变红。</summary>
-    private void DrawDelete(Graphics g, Rectangle rc, int index, bool selected, bool rowHover)
+    /// <summary>删除图标：圆形浅底 + 垃圾桶线条；鼠标压在图标上才变红。只在悬浮行上调用。</summary>
+    private void DrawDelete(Graphics g, Rectangle rc, int index, bool selected)
     {
         bool hot = index == _hoverDel;
         if (hot)
@@ -137,8 +140,7 @@ internal sealed class ConvListBox : Control, IThemed
         }
         Color ink = hot ? (selected ? Color.White : Theme.Danger)
                   : selected ? Theme.Mix(Theme.Accent, Color.White, 0.82f)
-                  : rowHover ? Theme.Mix(Theme.SideBg, Theme.TextMain, 0.45f)
-                  : Theme.Mix(Theme.SideBg, Theme.TextMain, 0.26f);
+                  : Theme.Mix(Theme.SideBg, Theme.TextMain, 0.45f);
         Gfx.DrawTrash(g, rc, ink, 1.5f);
     }
 

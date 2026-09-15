@@ -159,7 +159,11 @@ internal static class Gfx
         g.SmoothingMode = old;
     }
 
-    public static void DrawGlyph(Graphics g, Glyph gl, RectangleF r, Color c, float w = 1.6f)
+    /// <summary>
+    /// 画一个线框图标。<paramref name="back"/> 只有「眼睛关闭」用得上：
+    /// 斜杠要在眼眶上留一道底色缺口，否则和虹膜糊成一团。
+    /// </summary>
+    public static void DrawGlyph(Graphics g, Glyph gl, RectangleF r, Color c, float w = 1.6f, Color? back = null)
     {
         var old = g.SmoothingMode;
         g.SmoothingMode = SmoothingMode.AntiAlias;
@@ -198,9 +202,7 @@ internal static class Gfx
 
             case Glyph.Eye:
             case Glyph.EyeOff:
-                g.DrawEllipse(pen, cx - s, cy - s * 0.6f, s * 2, s * 1.2f);
-                g.FillEllipse(br, cx - s * 0.28f, cy - s * 0.28f, s * 0.56f, s * 0.56f);
-                if (gl == Glyph.EyeOff) g.DrawLine(pen, cx - s * 0.95f, cy + s * 0.85f, cx + s * 0.95f, cy - s * 0.85f);
+                Eye(g, pen, br, cx, cy, s, gl == Glyph.EyeOff, back);
                 break;
 
             case Glyph.Close:
@@ -220,6 +222,42 @@ internal static class Gfx
                 break;
         }
         g.SmoothingMode = old;
+    }
+
+    /// <summary>
+    /// 眼睛：杏仁形眼眶（上下两条三次贝塞尔交于左右眼角）+ 虹膜环 + 瞳孔点。
+    ///
+    /// 用贝塞尔而不是 <c>DrawEllipse</c> —— 椭圆眼眶的四个角是圆的，看着像个「鱼眼」；
+    /// 真实的眼睛两端是**尖角**，只有贝塞尔能画出那个收拢的弧度。
+    /// 对称三次贝塞尔的中点正好落在控制点偏移的 3/4 处，所以控制点要按 peak * 4/3 给。
+    ///
+    /// 关闭态先拿 <paramref name="back"/>（输入框底色）画一道加粗斜杠再画细斜杠：
+    /// 直接画细线的话斜杠和虹膜会糊在一起，看不出「划掉」的意思。
+    /// </summary>
+    private static void Eye(Graphics g, Pen pen, Brush br, float cx, float cy, float s, bool off, Color? back)
+    {
+        float ex = s * 0.92f;              // 眼眶半宽（留出笔宽，别贴到矩形边上被裁）
+        float peak = s * 0.60f;            // 眼睑顶点到中线的距离
+        float ctl = peak * 4f / 3f;        // 对称三次贝塞尔：中点峰值 = 3/4 控制点偏移
+        float bend = ex * 0.44f;           // 控制点横向内收，眼角才会收成尖的
+
+        using var lens = new GraphicsPath();
+        lens.AddBezier(cx - ex, cy, cx - bend, cy - ctl, cx + bend, cy - ctl, cx + ex, cy);
+        lens.AddBezier(cx + ex, cy, cx + bend, cy + ctl, cx - bend, cy + ctl, cx - ex, cy);
+        g.DrawPath(pen, lens);
+
+        g.DrawEllipse(pen, cx - s * 0.33f, cy - s * 0.33f, s * 0.66f, s * 0.66f);
+        if (!off) g.FillEllipse(br, cx - s * 0.13f, cy - s * 0.13f, s * 0.26f, s * 0.26f);
+
+        if (!off) return;
+        float ax = s * 0.84f, ay = s * 0.84f;
+        if (back.HasValue)
+        {
+            using var cut = new Pen(back.Value, pen.Width * 2.6f)
+            { StartCap = LineCap.Round, EndCap = LineCap.Round };
+            g.DrawLine(cut, cx - ax, cy + ay, cx + ax, cy - ay);
+        }
+        g.DrawLine(pen, cx - ax, cy + ay, cx + ax, cy - ay);
     }
 }
 
@@ -627,7 +665,7 @@ internal sealed class InputField : Control, IThemed, IArranged
 {
     private readonly TextBox _tb;
     private readonly HintText _ph;
-    private bool _focus, _hover, _revealed;
+    private bool _focus, _hover, _revealed, _hoverEye;
 
     /// <summary>文字距输入框左边缘的距离：占位文字与实际输入共用这一个起点。</summary>
     private const int PadX = 12;
@@ -663,7 +701,19 @@ internal sealed class InputField : Control, IThemed, IArranged
             ForeColor = SC.Ink,
             UseSystemPasswordChar = secret,
         };
-        _tb.TextChanged += (_, _) => { UpdatePlaceholder(); Changed?.Invoke(); Invalidate(); };
+        _tb.TextChanged += (_, _) =>
+        {
+            // 眼睛只在「有内容可看」时才出现；内容被清空就顺手把明文状态收回去，
+            // 否则下次再输入会直接以明文示人。
+            if (Secret && _tb.Text.Length == 0 && _revealed)
+            {
+                _revealed = false;
+                _tb.UseSystemPasswordChar = true;
+            }
+            Arrange();                    // ShowEye 变了，右侧预留跟着变
+            Changed?.Invoke();
+            Invalidate();
+        };
         _tb.GotFocus += (_, _) => { _focus = true; UpdatePlaceholder(); Invalidate(); };
         _tb.LostFocus += (_, _) => { _focus = false; UpdatePlaceholder(); Invalidate(); };
         _tb.HandleCreated += (_, _) => Ui.PinEditTextLeft(_tb);
@@ -746,7 +796,12 @@ internal sealed class InputField : Control, IThemed, IArranged
         return base.ProcessCmdKey(ref msg, keyData);
     }
 
-    private bool ShowEye => Secret;
+    /// <summary>
+    /// 眼睛图标只在「密码框 + 里面真的有内容」时出现。
+    /// 空框上挂一只眼睛，点了没有任何东西可看，属于纯噪声。
+    /// </summary>
+    private bool ShowEye => Secret && _tb.Text.Length > 0;
+
     private Rectangle EyeRect() => new(Width - 32, (Height - 20) / 2, 20, 20);
 
     private void UpdatePlaceholder()
@@ -770,7 +825,24 @@ internal sealed class InputField : Control, IThemed, IArranged
     }
 
     protected override void OnMouseEnter(EventArgs e) { _hover = true; Invalidate(); base.OnMouseEnter(e); }
-    protected override void OnMouseLeave(EventArgs e) { _hover = false; Invalidate(); base.OnMouseLeave(e); }
+    protected override void OnMouseLeave(EventArgs e)
+    {
+        _hover = false;
+        if (_hoverEye) { _hoverEye = false; Invalidate(EyeRect()); }
+        Invalidate();
+        base.OnMouseLeave(e);
+    }
+
+    protected override void OnMouseMove(MouseEventArgs e)
+    {
+        bool hot = ShowEye && EyeRect().Contains(e.Location);
+        if (hot != _hoverEye)
+        {
+            _hoverEye = hot;
+            Invalidate(EyeRect());
+        }
+        base.OnMouseMove(e);
+    }
 
     protected override void OnMouseDown(MouseEventArgs e)
     {
@@ -796,7 +868,17 @@ internal sealed class InputField : Control, IThemed, IArranged
         Color border = _focus ? SC.Accent : (_hover ? SC.Mix(SC.FieldBorder, SC.Accent, 0.35f) : SC.FieldBorder);
         RP.Stroke(g, rc, 9, border, _focus ? 1.4f : 1f);
         if (ShowEye)
-            Gfx.DrawGlyph(g, _revealed ? Glyph.Eye : Glyph.EyeOff, EyeRect(), _revealed ? SC.Accent : SC.InkMuted, 1.4f);
+        {
+            var er = EyeRect();
+            if (_hoverEye)
+            {
+                using var hb = new SolidBrush(SC.Mix(SC.FieldBg, SC.Accent, 0.16f));
+                g.FillEllipse(hb, er);
+            }
+            // 底色交给 DrawGlyph：关闭态那道斜杠要在眼眶上抠出缺口才看得清。
+            Gfx.DrawGlyph(g, _revealed ? Glyph.Eye : Glyph.EyeOff, er,
+                _revealed ? SC.Accent : (_hoverEye ? SC.Ink : SC.InkMuted), 1.4f, SC.FieldBg);
+        }
         base.OnPaint(e);
     }
 }

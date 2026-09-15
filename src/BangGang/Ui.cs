@@ -59,6 +59,12 @@ internal static class Ui
     public const int EditBoxPadY = 6;
 
     /// <summary>
+    /// 盒子下边缘与容器下边缘之间至少留出的空隙。输入框的圆角描边画在容器的最后两行像素上，
+    /// 而 EDIT 会用不透明的底色铺满自己的客户区 —— 盒子一直顶到容器底部就会把那道边盖掉半截。
+    /// </summary>
+    public const int EditBoxBottomGap = 3;
+
+    /// <summary>
     /// 单行 EDIT（以及它的占位文字层）应该占据的矩形。
     ///
     /// 两条实测出来的硬事实，决定了这个函数只能长这样：
@@ -76,6 +82,8 @@ internal static class Ui
     /// 所以：上边缘取「行高盒子竖直居中」的位置（<strong>文字位置与加余量之前完全一致</strong>，
     /// 仍然居中），高度再加 <see cref="EditBoxPadY"/> —— 余量只加在下方。
     /// 要是上下对称地加，文字会被顶到偏上 pad/2，反而不居中了。
+    /// 容器不够高时（搜索框那种 32px 胶囊）余量被 <see cref="EditBoxBottomGap"/> 削掉一部分，
+    /// 但不会削到低于行高 —— 那等于又回到「下缘实笔被裁」的老问题。
     ///
     /// 配套要求：
     /// - <c>tb.AutoSize = false</c>，否则传给 SetBounds 的高度会被改回 PreferredHeight；
@@ -85,8 +93,9 @@ internal static class Ui
     public static Rectangle EditBox(int left, int width, int containerHeight, TextBox tb)
     {
         int line = tb.PreferredHeight;
-        int h = line + EditBoxPadY;
         int top = Math.Max(0, (containerHeight - line) / 2);
+        int h = Math.Min(line + EditBoxPadY,
+                         Math.Max(line, containerHeight - top - EditBoxBottomGap));
         return new Rectangle(left, top, width, h);
     }
 }

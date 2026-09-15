@@ -12,7 +12,7 @@ namespace BangGang;
 public class MainForm : Form
 {
     public const string WindowTitle = "帮帮";
-    public const string AppVersion = "v0.7.20";
+    public const string AppVersion = "v0.7.21";
 
     private const uint Affinity = Native.WDA_EXCLUDEFROMCAPTURE;
     private const int SideW = 304;
@@ -130,6 +130,10 @@ public class MainForm : Form
         _chrome.CloseButtonMoved += () => _settingsOverlay.AppCloseBounds = _chrome.CloseButtonBounds;
         _settingsOverlay.AppCloseBounds = _chrome.CloseButtonBounds;
 
+        // 用户在「放弃未保存的修改」上选了「放弃并退出」：浮窗已经收好了，这里只需真正关窗。
+        // 置位 _forceClose 让 OnFormClosing 不再拦一次（否则会再弹一遍确认条）。
+        _settingsOverlay.AppQuit += () => { _forceClose = true; Close(); };
+
         // ---- 布局 ----
         ApplyLayout();
 
@@ -155,6 +159,27 @@ public class MainForm : Form
 
         // 应用内鼠标一律为箭头指针，且对后续新增控件同样生效。
         Ui.EnforceArrowCursor(this);
+    }
+
+    /// <summary>用户已经在确认条上选了「放弃并退出」，这一次 FormClosing 直接放行。</summary>
+    private bool _forceClose;
+
+    /// <summary>
+    /// 真的可以关窗了吗。设置浮窗开着且有未保存内容时，这里只负责把确认条弹出来
+    /// 并取消本次关闭 —— 用户点「放弃并退出」后走 <c>AppQuit</c>，由它置位
+    /// <see cref="_forceClose"/> 再关一次，那时这里直接放行。
+    ///
+    /// 挂在 FormClosing 而不是关闭按钮上：Alt+F4、任务栏右键关闭走的是同一条路，
+    /// 只守按钮会漏掉它们。
+    /// </summary>
+    protected override void OnFormClosing(FormClosingEventArgs e)
+    {
+        if (!_forceClose && !_settingsOverlay.RequestAppClose())
+        {
+            e.Cancel = true;      // 确认条已弹出，等用户选
+            return;
+        }
+        base.OnFormClosing(e);
     }
 
     // ---------------- 显式布局 ----------------

@@ -15,6 +15,12 @@ internal sealed class SettingsOverlay : Panel, IPopupHost
     public event Action<AppSettings>? Applied;
     public event Action<string>? Status;
 
+    /// <summary>
+    /// 用户在「放弃未保存的修改」确认条上选了「放弃并退出」时触发 —— 主窗口据此真正关掉应用。
+    /// 关闭的**时机**必须由浮窗说了算，所以这里只发通知，不让主窗口自己再判一次。
+    /// </summary>
+    public event Action? AppQuit;
+
     private const int RailW = 208;
     private const int CardW = 880;
     private const int CardH = 640;
@@ -38,6 +44,11 @@ internal sealed class SettingsOverlay : Panel, IPopupHost
     private readonly Label _confirmDesc = new();
     private readonly PillButton _confirmStay = new("继续编辑", PillButton.Look.Ghost, 104, 34);
     private readonly PillButton _confirmQuit = new("放弃并关闭", PillButton.Look.Danger, 116, 34);
+
+    /// <summary>确认条这次是为「关设置」还是「退应用」弹的 —— 决定确认按钮的文案与后续动作。</summary>
+    private enum QuitScope { Settings, App }
+
+    private QuitScope _scope = QuitScope.Settings;
 
     private Point _cardPos;
     private int _sel;
@@ -91,7 +102,7 @@ internal sealed class SettingsOverlay : Panel, IPopupHost
         AddPage(new UiPage(), "界面外观", Glyph.Palette);
 
         // ---- 右上角关闭 ----
-        _close.Click += (_, _) => RequestClose();
+        _close.Click += (_, _) => RequestClose(QuitScope.Settings);
         _card.Controls.Add(_close);
         _close.BringToFront();
 
@@ -153,7 +164,14 @@ internal sealed class SettingsOverlay : Panel, IPopupHost
         _confirmDesc.TextAlign = ContentAlignment.MiddleCenter;
 
         _confirmStay.Click += (_, _) => HideConfirm();
-        _confirmQuit.Click += (_, _) => CloseNow();
+        _confirmQuit.Click += (_, _) =>
+        {
+            // scope 在 CloseNow 之前读出来：CloseNow 会把它复位成 Settings。
+            var scope = _scope;
+            CloseNow();
+            // 真退出交给主窗口 —— 浮窗只管「问清楚了没有」。
+            if (scope == QuitScope.App) AppQuit?.Invoke();
+        };
 
         _confirm.Controls.Add(_confirmTitle);
         _confirm.Controls.Add(_confirmDesc);
@@ -481,19 +499,42 @@ internal sealed class SettingsOverlay : Panel, IPopupHost
 
     // ---------------- 关闭 ----------------
 
-    private void RequestClose()
+    /// <summary>
+    /// 关设置（或退应用）前的守门人。<paramref name="scope"/> 只影响确认按钮的文案和
+    /// 确认之后干什么：<see cref="QuitScope.Settings"/> 只收浮窗，
+    /// <see cref="QuitScope.App"/> 由 <see cref="BuildConfirm"/> 里的处理再发 <see cref="AppQuit"/>。
+    /// </summary>
+    /// <returns>true = 已经真的关了；false = 确认条弹出来了，等用户选。</returns>
+    private bool RequestClose(QuitScope scope)
     {
         int dirty = _pages.Count(p => p.IsDirty);
-        if (dirty > 0)
+        if (dirty == 0) { CloseNow(); return true; }
+        _scope = scope;
+        _confirmDesc.Text = dirty == 1 ? "当前页面还有未保存的修改。" : $"有 {dirty} 个页面存在未保存的修改。";
+        _confirmQuit.Text = scope == QuitScope.App ? "放弃并退出" : "放弃并关闭";
+        CaptureConfirmBackdrop();      // 确认条四角要显示真实的设置页内容（抗锯齿圆角）
+        _confirm.Visible = true;
+        _confirm.BringToFront();
+        _confirmStay.Focus();
+        return false;
+    }
+
+    /// <summary>
+    /// 供主窗口在 FormClosing 里调用：设置浮窗开着且有未保存内容时，先把确认条弹出来。
+    /// </summary>
+    /// <returns>true = 可以关应用了；false = 这次关闭要取消，等用户在确认条上选。</returns>
+    public bool RequestAppClose()
+    {
+        if (!Visible) return true;                 // 没开设置就没有要守的东西
+        if (_confirm.Visible)
         {
-            _confirmDesc.Text = dirty == 1 ? "当前页面还有未保存的修改。" : $"有 {dirty} 个页面存在未保存的修改。";
-            CaptureConfirmBackdrop();      // 确认条四角要显示真实的设置页内容（抗锯齿圆角）
-            _confirm.Visible = true;
-            _confirm.BringToFront();
-            _confirmStay.Focus();
-            return;
+            // 确认条已经因为「关设置」弹着了，而用户现在要关的是整个应用：
+            // 升级 scope，按钮文案跟着变成退出，不重新抓底图（内容没变）。
+            _scope = QuitScope.App;
+            _confirmQuit.Text = "放弃并退出";
+            return false;
         }
-        CloseNow();
+        return RequestClose(QuitScope.App);
     }
 
     /// <summary>抓一张设置卡片快照给确认浮层当圆角底图（不含确认条自己）。</summary>
@@ -531,6 +572,7 @@ internal sealed class SettingsOverlay : Panel, IPopupHost
 
     private void CloseNow()
     {
+        _scope = QuitScope.Settings;   // 复位：下一次弹确认条默认是「关设置」
         _confirm.Visible = false;
         Visible = false;
         Status?.Invoke("已关闭设置（未保存的修改已放弃）");
@@ -562,7 +604,7 @@ internal sealed class SettingsOverlay : Panel, IPopupHost
         if (Visible && keyData == Keys.Escape)
         {
             if (_confirm.Visible) HideConfirm();
-            else RequestClose();
+            else RequestClose(QuitScope.Settings);
             return true;
         }
         // 设置打开时 Tab 只在浮窗内部循环，避免焦点跑到被遮罩盖住的主界面上
@@ -600,6 +642,6 @@ internal sealed class SettingsOverlay : Panel, IPopupHost
     {
         if (!Visible) return;
         if (_confirm.Visible) HideConfirm();
-        else RequestClose();
+        else RequestClose(QuitScope.Settings);
     }
 }
