@@ -22,8 +22,17 @@ internal sealed class SettingsOverlay : Panel, IPopupHost
     public event Action? AppQuit;
 
     private const int RailW = 208;
-    private const int CardW = 880;
-    private const int CardH = 640;
+
+    /// <summary>卡片的设计尺寸。</summary>
+    public const int CardW = 880;
+    public const int CardH = 640;
+
+    /// <summary>
+    /// 卡片四周留白之和（左右各一半）。窗口小于「卡片 + 留白」时卡片就跟着缩水
+    /// （见 <see cref="LayoutOverlay"/>），所以主窗口拿这两个数当自己的尺寸下限，
+    /// 保证设置界面任何时候都能整张摆出来（见 <c>MainForm.MinWindow</c>）。
+    /// </summary>
+    public const int CardMargin = 96;
 
     private readonly AppSettings _applied = new();
 
@@ -236,6 +245,7 @@ internal sealed class SettingsOverlay : Panel, IPopupHost
             _backdrop?.Dispose();
             _backdrop = bmp;
             _backdropFor = _card.Size;
+            _backdropWin = new Size(Width, Height);
         }
         catch
         {
@@ -248,6 +258,7 @@ internal sealed class SettingsOverlay : Panel, IPopupHost
 
     private Bitmap? _backdrop;
     private Size _backdropFor;
+    private Size _backdropWin;
 
     /// <summary>
     /// 重新抓一次底层界面快照。主窗口状态栏这类内容在浮窗打开期间被快照盖住，
@@ -302,8 +313,8 @@ internal sealed class SettingsOverlay : Panel, IPopupHost
     {
         if (Width <= 0 || Height <= 0) return;
 
-        int cw = Math.Min(CardW, Math.Max(520, Width - 96));
-        int ch = Math.Min(CardH, Math.Max(380, Height - 96));
+        int cw = Math.Min(CardW, Math.Max(520, Width - CardMargin));
+        int ch = Math.Min(CardH, Math.Max(380, Height - CardMargin));
         if (_card.Width != cw || _card.Height != ch) _card.Size = new Size(cw, ch);
 
         _cardPos = new Point((Width - cw) / 2, (Height - ch) / 2);
@@ -311,7 +322,12 @@ internal sealed class SettingsOverlay : Panel, IPopupHost
 
         // 只有在窗口尺寸真的变了（卡片尺寸变了）时才重新抓底图：
         // 打开设置时已经抓过一次，重复抓会白等一次整窗渲染，正是“打开时先闪一下”的原因之一。
-        if (Visible && _card.Size != _backdropFor) CaptureBackdrop();
+        //
+        // 底图是按**整窗矩形**拉伸铺上去的（见 OnPaintBackground），所以窗口本身被拖动缩放时
+        // 也必须重抓，否则旧快照会被抻长，卡片周围那圈主界面直接变形。卡片尺寸和窗口尺寸
+        // 任一变化都要重抓 —— 窗口放大到卡片顶到 880×640 上限之后，就只有后者还在变。
+        if (Visible && (_card.Size != _backdropFor || new Size(Width, Height) != _backdropWin))
+            CaptureBackdrop();
         ApplyRegion();
         _card.Invalidate(true);             // 卡片是子窗口，父级重画不会带着它刷新
         Invalidate();
@@ -324,9 +340,9 @@ internal sealed class SettingsOverlay : Panel, IPopupHost
     /// 万一底图没抓到（DrawToBitmap 失败），退回到“只占卡片区域”的圆角 Region，
     /// 让主界面自己绘制，避免出现一片未绘制的黑区。
     ///
-    /// 唯一的例外是主窗口自己的关闭按钮（<see cref="AppCloseBounds"/>）：那一小块被
-    /// 从 Region 里挖掉，鼠标消息于是直接落到下面那个**真按钮**上 —— 设置打开期间
-    /// 也能一键退出，不必先关掉设置。挖掉的那块改由底层界面自己绘制（快照在同一个
+    /// 唯一的例外是主窗口自己的那几个顶栏按钮（<see cref="AppChromeHoles"/>：最大化 / 关闭）：
+    /// 那几小块被从 Region 里挖掉，鼠标消息于是直接落到下面那些**真按钮**上 —— 设置打开期间
+    /// 也能一键最大化 / 退出，不必先关掉设置。挖掉的那块改由底层界面自己绘制（快照在同一个
     /// 位置被让了出来），所以既不会重影，也不会留陈旧像素。
     /// </summary>
     private void ApplyRegion()
@@ -343,12 +359,13 @@ internal sealed class SettingsOverlay : Panel, IPopupHost
         {
             region = new Region(new Rectangle(0, 0, Math.Max(1, Width), Math.Max(1, Height)));
 
-            // 卡片压到关闭按钮上时（窗口极小）不能挖洞，否则会啃掉卡片的一角
-            var hole = _appCloseBounds;
+            // 卡片压到按钮上时（窗口极小）不能挖洞，否则会啃掉卡片的一角
             var cardRect = new Rectangle(_cardPos.X - 1, _cardPos.Y - 1,
                                          Math.Max(1, _card.Width) + 2, Math.Max(1, _card.Height) + 2);
-            if (hole.Width > 0 && hole.Height > 0 && !hole.IntersectsWith(cardRect))
+            foreach (var hole in _appChromeHoles)
             {
+                if (hole.Width <= 0 || hole.Height <= 0) continue;
+                if (hole.IntersectsWith(cardRect)) continue;
                 region.Exclude(hole);
                 RepaintUnder(hole);
             }
@@ -359,19 +376,18 @@ internal sealed class SettingsOverlay : Panel, IPopupHost
         old?.Dispose();
     }
 
-    private Rectangle _appCloseBounds;
+    private Rectangle[] _appChromeHoles = Array.Empty<Rectangle>();
 
     /// <summary>
-    /// 主窗口「关闭」按钮在浮窗坐标系里的矩形（浮窗铺满整个客户区，两者同一坐标系），
-    /// 由主窗口在布局时注入。见 <see cref="ApplyRegion"/>。
+    /// 主窗口顶栏上「设置打开期间也要能点」的那些按钮（最大化 / 关闭）在浮窗坐标系里的矩形
+    /// （浮窗铺满整个客户区，两者同一坐标系），由主窗口在布局时注入。见 <see cref="ApplyRegion"/>。
     /// </summary>
-    public Rectangle AppCloseBounds
+    public Rectangle[] AppChromeHoles
     {
-        get => _appCloseBounds;
+        get => _appChromeHoles;
         set
         {
-            if (_appCloseBounds == value) return;
-            _appCloseBounds = value;
+            _appChromeHoles = value ?? Array.Empty<Rectangle>();
             if (IsHandleCreated) ApplyRegion();
         }
     }

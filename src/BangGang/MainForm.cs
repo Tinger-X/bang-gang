@@ -3,19 +3,26 @@ using System.Drawing.Drawing2D;
 namespace BangGang;
 
 /// <summary>
-/// 主窗口：1200×800 无边框 LLM 聊天主界面。
+/// 主窗口：默认 1200×800 无边框 LLM 聊天主界面。
 /// 左侧栏（品牌 / 搜索 / 会话列表）+ 右侧对话主区（气泡式 Markdown、输入框支持文件图片）。
 /// 全局快捷键由设置驱动：默认 Alt+X 显隐、Alt+C 选区截屏进输入框、Alt+V 按住录音并自动把文件加入输入框。
 /// 整窗对一切共享/录屏/截屏不可见（WDA_EXCLUDEFROMCAPTURE）。
-/// 布局采用显式坐标（固定窗口尺寸），避免 Dock 顺序歧义。
+/// 布局采用显式坐标，全部由 <see cref="ApplyLayout"/> 从当前客户区尺寸算出，随窗口缩放实时重排。
+/// 无边框所以没有系统给的边框可抓，缩放由 <see cref="PreFilterMessage"/> 自己接手，见那里的注释。
 /// </summary>
-public class MainForm : Form
+public class MainForm : Form, IMessageFilter
 {
     public const string WindowTitle = "帮帮";
-    public const string AppVersion = "v0.7.21";
+    public const string AppVersion = "v0.7.23";
 
     private const uint Affinity = Native.WDA_EXCLUDEFROMCAPTURE;
-    private const int SideW = 304;
+
+    /// <summary>
+    /// 左侧栏宽度。栏内从左到右依次是搜索框（<c>SideW - 106</c> 宽）和两个 28px 图标按钮
+    /// （右边距分别为 86 / 46），所以改这个数之前先确认那三样还放得下。
+    /// </summary>
+    private const int SideW = 256;
+
     private const int ChromeH = 38;
 
     private readonly AppSettings _settings;
@@ -56,6 +63,7 @@ public class MainForm : Form
         FormBorderStyle = FormBorderStyle.None;
         StartPosition = FormStartPosition.CenterScreen;
         ClientSize = new Size(1200, 800);
+        MinimumSize = MinWindow;
         ShowInTaskbar = false;
         TopMost = true;
         Opacity = Theme.WindowOpacity;
@@ -67,6 +75,7 @@ public class MainForm : Form
         _chrome = new ChromeBar();
         _chrome.DragRequested += BeginWindowDrag;
         _chrome.CloseRequested += Close;
+        _chrome.MaximizeRequested += ToggleMaximize;
         Controls.Add(_chrome);
 
         // ---- 左侧栏 ----
@@ -124,11 +133,11 @@ public class MainForm : Form
         _settingsOverlay.Visible = false;
         Controls.Add(_settingsOverlay);
 
-        // 浮窗铺满整窗，会吃掉包括关闭按钮在内的所有点击；把按钮的矩形交给它，
-        // 由它在自己的 Region 上挖掉这一块，于是设置打开期间也能直接点关闭退出。
+        // 浮窗铺满整窗，会吃掉包括顶栏按钮在内的所有点击；把按钮的矩形交给它，
+        // 由它在自己的 Region 上挖掉这几块，于是设置打开期间也能直接最大化 / 关闭。
         // 挂在事件上而不是布局里读一次：工具条改宽会重新摆按钮，缓存才不会过期。
-        _chrome.CloseButtonMoved += () => _settingsOverlay.AppCloseBounds = _chrome.CloseButtonBounds;
-        _settingsOverlay.AppCloseBounds = _chrome.CloseButtonBounds;
+        _chrome.ChromeButtonsMoved += () => _settingsOverlay.AppChromeHoles = _chrome.ChromeHoleBounds;
+        _settingsOverlay.AppChromeHoles = _chrome.ChromeHoleBounds;
 
         // 用户在「放弃未保存的修改」上选了「放弃并退出」：浮窗已经收好了，这里只需真正关窗。
         // 置位 _forceClose 让 OnFormClosing 不再拦一次（否则会再弹一遍确认条）。
@@ -159,6 +168,9 @@ public class MainForm : Form
 
         // 应用内鼠标一律为箭头指针，且对后续新增控件同样生效。
         Ui.EnforceArrowCursor(this);
+
+        // 边缘缩放：无边框窗口没有系统边框可抓，由这个消息过滤器自己接手（见 FilterMouse）。
+        Application.AddMessageFilter(this);
     }
 
     /// <summary>用户已经在确认条上选了「放弃并退出」，这一次 FormClosing 直接放行。</summary>
@@ -235,6 +247,163 @@ public class MainForm : Form
     {
         Win32.ReleaseCapture();
         _ = Win32.SendMessage(Handle, Win32.WM_NCLBUTTONDOWN, (IntPtr)Win32.HTCAPTION, IntPtr.Zero);
+    }
+
+    // ---------------- 最大化 / 还原 ----------------
+
+    private bool _maximized;
+    private Rectangle _restoreBounds;
+
+    /// <summary>
+    /// 最大化 / 还原。窗口没有系统标题栏，<c>WindowState.Maximized</c> 在无边框窗口上
+    /// 铺满的是整块屏幕（连任务栏一起盖住），要靠 <c>MaximizedBounds</c> 再掰回来，
+    /// 而那个属性对 <see cref="FormBorderStyle.None"/> 是否生效并不确定。
+    /// 所以这里自己定义这件事，和拖动 / 缩放一脉相承：记下当前矩形，铺满**当前显示器的
+    /// 工作区**（任务栏留着），再点一次回到原来的矩形。
+    /// </summary>
+    private void ToggleMaximize()
+    {
+        if (_maximized)
+        {
+            _maximized = false;
+            if (_restoreBounds.Width > 0 && _restoreBounds.Height > 0) Bounds = _restoreBounds;
+        }
+        else
+        {
+            _restoreBounds = Bounds;
+            _maximized = true;
+            Bounds = Screen.FromControl(this).WorkingArea;
+        }
+        _chrome.SetMaximized(_maximized);
+    }
+
+    // ---------------- 缩放 ----------------
+
+    /// <summary>
+    /// 边缘抓手宽度（像素）。无边框窗口没有可抓的边框，这一圈就是那条隐形的边框：
+    /// 鼠标落在外沿这么多像素以内按下，就算抓住了这一条边。
+    /// </summary>
+    private const int GripPx = 6;
+
+    /// <summary>
+    /// 窗口尺寸下限 = 一整个**原尺寸**的设置卡片 + 四周留白。
+    ///
+    /// 设置浮窗的卡片是 <c>min(CardW, max(520, Width - 96))</c>，窗口小于「卡片 + 留白」时
+    /// 卡片就跟着缩水，里面的输入框被挤窄、行数被裁。下限取卡片设计尺寸加留白，
+    /// 设置界面于是任何时候都是完整的一张，不必再缩。
+    ///
+    /// 屏幕比这个下限还小时（小笔记本）按工作区收一收：宁可卡片缩水，
+    /// 也不能让窗口大过屏幕 —— 无边框窗口没有标题栏，一旦超出就再也拖不回来了。
+    /// </summary>
+    private static readonly Size MinWindow = ComputeMinWindow();
+
+    private static Size ComputeMinWindow()
+    {
+        int w = SettingsOverlay.CardW + SettingsOverlay.CardMargin;
+        int h = SettingsOverlay.CardH + SettingsOverlay.CardMargin;
+        var screen = Screen.PrimaryScreen;
+        if (screen != null)
+        {
+            w = Math.Min(w, Math.Max(480, screen.WorkingArea.Width - 40));
+            h = Math.Min(h, Math.Max(360, screen.WorkingArea.Height - 40));
+        }
+        return new Size(w, h);
+    }
+
+    [Flags]
+    private enum Edge { None = 0, Left = 1, Right = 2, Top = 4, Bottom = 8 }
+
+    private Edge _grip = Edge.None;      // 没在缩放时是 None
+    private Point _gripFrom;             // 按下时的屏幕坐标
+    private Rectangle _gripStart;        // 按下时的窗口矩形
+
+    /// <summary>
+    /// 无边框窗口没有系统边框，缩放自然也无从触发。这里在**消息队列这一层**拦一道：
+    /// 落在窗口外沿 <see cref="GripPx"/> 像素以内的左键按下，改成拖窗口边界，
+    /// 而不是交给边缘底下那个控件。
+    ///
+    /// 挂消息过滤器而不是逐个控件挂 MouseDown：窗口四边分别被工具条 / 侧栏 / 主区 /
+    /// 会话列表等好几个控件压着，逐个挂既要覆盖整棵树、又会漏掉以后新加的自绘控件。
+    /// 过滤器只有一个入口，谁压在最上面都一样。
+    /// </summary>
+    public bool PreFilterMessage(ref Message m)
+    {
+        if (_grip != Edge.None)
+        {
+            if (m.Msg == Win32.WM_MOUSEMOVE) { ApplyResize(Cursor.Position); return true; }
+            if (m.Msg == Win32.WM_LBUTTONUP || m.Msg == Win32.WM_CAPTURECHANGED)
+            {
+                _grip = Edge.None;
+                Win32.ReleaseCapture();
+                return true;
+            }
+            return false;
+        }
+
+        if (m.Msg != Win32.WM_LBUTTONDOWN) return false;
+        if (_maximized) return false;     // 四条边都贴着工作区，没有可拖的余地
+        if (!BelongsToThisForm(m.HWnd)) return false;
+
+        var edge = EdgeAt(Cursor.Position);
+        if (edge == Edge.None) return false;
+
+        _grip = edge;
+        _gripFrom = Cursor.Position;
+        _gripStart = Bounds;
+        Win32.SetCapture(Handle);
+        return true;      // 这一下是抓边框，别再让底下的按钮也响应一次
+    }
+
+    /// <summary>鼠标（屏幕坐标）压在外沿的哪一条边上；角上会同时命中两条。</summary>
+    private Edge EdgeAt(Point screen)
+    {
+        var r = RectangleToScreen(ClientRectangle);
+        var e = Edge.None;
+        if (screen.X < r.Left + GripPx) e |= Edge.Left;
+        else if (screen.X >= r.Right - GripPx) e |= Edge.Right;
+        if (screen.Y < r.Top + GripPx) e |= Edge.Top;
+        else if (screen.Y >= r.Bottom - GripPx) e |= Edge.Bottom;
+        return e;
+    }
+
+    /// <summary>
+    /// 按鼠标位移重算窗口矩形。撞到 <see cref="MinWindow"/> 时让**被拖的那条边**停住、
+    /// 对面那条边不动 —— 少了这一步，继续拖会让窗口一边缩一边朝反方向跑。
+    /// </summary>
+    private void ApplyResize(Point screen)
+    {
+        int dx = screen.X - _gripFrom.X, dy = screen.Y - _gripFrom.Y;
+        var s = _gripStart;
+        int l = s.Left, t = s.Top, w = s.Width, h = s.Height;
+
+        if ((_grip & Edge.Left) != 0) { l += dx; w -= dx; }
+        if ((_grip & Edge.Right) != 0) w += dx;
+        if ((_grip & Edge.Top) != 0) { t += dy; h -= dy; }
+        if ((_grip & Edge.Bottom) != 0) h += dy;
+
+        if (w < MinWindow.Width)
+        {
+            if ((_grip & Edge.Left) != 0) l = s.Right - MinWindow.Width;
+            w = MinWindow.Width;
+        }
+        if (h < MinWindow.Height)
+        {
+            if ((_grip & Edge.Top) != 0) t = s.Bottom - MinWindow.Height;
+            h = MinWindow.Height;
+        }
+
+        Bounds = new Rectangle(l, t, w, h);
+    }
+
+    /// <summary>
+    /// 这个 HWND 是主窗口自己还是它的后代。截图浮窗之类的**另外的**顶层窗口走的是同一个
+    /// 消息队列，不筛一下会把它们上面的点击也当成抓边框吃掉。
+    /// </summary>
+    private bool BelongsToThisForm(IntPtr h)
+    {
+        for (var c = Control.FromHandle(h); c != null; c = c.Parent)
+            if (ReferenceEquals(c, this)) return true;
+        return false;
     }
 
     // ---------------- 会话管理 ----------------
@@ -419,6 +588,7 @@ public class MainForm : Form
 
     protected override void OnFormClosed(FormClosedEventArgs e)
     {
+        Application.RemoveMessageFilter(this);   // 别让缩放过滤器比窗口活得久
         _guardTimer.Stop();
         _pttTimer.Stop();
         _statusTimer.Stop();
@@ -684,24 +854,32 @@ internal sealed class WindowFrame : Control
     }
 }
 
-/// <summary>顶部工具条：品牌 + 状态 + 关闭；整条可拖动。</summary>
+/// <summary>顶部工具条：品牌 + 状态 + 最大化 + 关闭；整条可拖动。</summary>
 internal sealed class ChromeBar : Panel, IThemed
 {
     public event Action? DragRequested;
     public event Action? CloseRequested;
+    public event Action? MaximizeRequested;
     public string StatusText { get; private set; } = "";
     private readonly Label _status;
     private readonly Label _brand;
-    private IconButton _close = null!;
+    private readonly IconButton _max;
+    private readonly IconButton _close;
+
+    private const int BtnSize = 28;
+    private const int BtnTop = 5;
+    private const int CloseRight = 12;    // 关闭按钮右边缘到工具条右端的空档
+    private const int BtnGap = 6;         // 关闭与最大化之间的空档
 
     /// <summary>
-    /// 关闭按钮相对本工具条的矩形。工具条贴在客户区左上角，所以这份坐标
-    /// 直接就是主窗口客户区坐标 —— 设置浮窗据此在自己的 Region 上给按钮开洞。
+    /// 「设置打开期间也要能点」的那些按钮（最大化 / 关闭）相对本工具条的矩形。
+    /// 工具条贴在客户区左上角，所以这份坐标直接就是主窗口客户区坐标 ——
+    /// 设置浮窗据此在自己的 Region 上给这些按钮开洞（<c>SettingsOverlay.AppChromeHoles</c>）。
     /// </summary>
-    public Rectangle CloseButtonBounds => _close.Bounds;
+    public Rectangle[] ChromeHoleBounds => new[] { _max.Bounds, _close.Bounds };
 
-    /// <summary>关闭按钮被重新摆放（工具条改宽）时触发，订阅者据此同步自己缓存的矩形。</summary>
-    public event Action? CloseButtonMoved;
+    /// <summary>按钮被重新摆放（工具条改宽）时触发，订阅者据此同步自己缓存的矩形。</summary>
+    public event Action? ChromeButtonsMoved;
 
     public ChromeBar()
     {
@@ -730,20 +908,35 @@ internal sealed class ChromeBar : Panel, IThemed
         };
         Controls.Add(_status);
 
+        _max = new IconButton(IconButton.Kind.Maximize, Theme.PanelBg);
+        _max.Click += (_, _) => MaximizeRequested?.Invoke();
+        Controls.Add(_max);
+
         _close = new IconButton(IconButton.Kind.Close, Theme.PanelBg);
         _close.Click += (_, _) => CloseRequested?.Invoke();
         Controls.Add(_close);
 
         MouseDown += (_, e) => { if (e.Button == MouseButtons.Left) DragRequested?.Invoke(); };
         _brand.MouseDown += (_, e) => { if (e.Button == MouseButtons.Left) DragRequested?.Invoke(); };
-        Resize += (_, _) => PlaceClose();
-        PlaceClose();
+        Resize += (_, _) => PlaceButtons();
+        PlaceButtons();
     }
 
-    private void PlaceClose()
+    /// <summary>两个按钮一起靠右端排开：关闭在最右，最大化紧挨着它左边。</summary>
+    private void PlaceButtons()
     {
-        _close.Location = new Point(Width - 40, 5);
-        CloseButtonMoved?.Invoke();
+        _close.Location = new Point(Width - CloseRight - BtnSize, BtnTop);
+        _max.Location = new Point(_close.Left - BtnGap - BtnSize, BtnTop);
+        ChromeButtonsMoved?.Invoke();
+    }
+
+    /// <summary>最大化状态变了：按钮在「最大化 / 还原」两个字形之间切换。</summary>
+    public void SetMaximized(bool on)
+    {
+        var want = on ? IconButton.Kind.Restore : IconButton.Kind.Maximize;
+        if (_max.Icon == want) return;
+        _max.Icon = want;
+        _max.Invalidate();
     }
 
     /// <summary>主题切换后重新着色（顶栏也要跟随暗色）。</summary>
@@ -754,6 +947,7 @@ internal sealed class ChromeBar : Panel, IThemed
         _brand.ForeColor = Theme.Accent;
         _status.BackColor = Theme.PanelBg;
         SetStatus(StatusText);
+        _max.Restyle();
         _close.Restyle();
         Invalidate();
     }

@@ -250,6 +250,95 @@ function Get-InkBoxAt([int]$x, [int]$y, [int]$w, [int]$h) {
 
 function Invoke-MouseClick([int]$x, [int]$y) { [BB]::Click($x, $y) }
 
+# Drag from (x0,y0) to (x1,y1) in screen coords, in $Steps hops so the app sees a real
+# MouseMove stream rather than one teleport. The window's resize tracks Cursor.Position,
+# so moving the real cursor is what drives it.
+#
+# Watch out: SetCursorPos CLAMPS to the screen. A drag whose endpoint is off-screen
+# silently delivers less movement than asked for, which then looks like a bug in the app.
+function Invoke-Drag([int]$x0, [int]$y0, [int]$x1, [int]$y1, [int]$Steps = 8) {
+    $MEF_DOWN = [uint32]0x0002
+    $MEF_UP   = [uint32]0x0004
+    [void][BB]::SetCursorPos($x0, $y0)
+    Start-Sleep -Milliseconds 200
+    [BB]::mouse_event($MEF_DOWN, 0, 0, 0, [IntPtr]::Zero)
+    Start-Sleep -Milliseconds 150
+
+    # Re-assert the grab point before stepping. The app reads Cursor.Position when it
+    # DEQUEUES the button-down, not when the button went down; if the UI thread was busy
+    # (the 3s guard timer does affinity + theme work) it dequeues late, sees the cursor
+    # already at the first step, and its edge hit test lands outside the grip band --
+    # so nothing happens at all. Holding still here gives it a second chance.
+    [void][BB]::SetCursorPos($x0, $y0)
+    Start-Sleep -Milliseconds 300
+
+    for ($i = 1; $i -le $Steps; $i++) {
+        [void][BB]::SetCursorPos(($x0 + [int](($x1 - $x0) * $i / $Steps)),
+                                 ($y0 + [int](($y1 - $y0) * $i / $Steps)))
+        Start-Sleep -Milliseconds 70
+    }
+    Start-Sleep -Milliseconds 200
+    [BB]::mouse_event($MEF_UP, 0, 0, 0, [IntPtr]::Zero)
+    Start-Sleep -Milliseconds 350
+}
+
+# The main window's minimum size: one full-size settings card plus its margin, pulled
+# back if the screen cannot fit that (see MainForm.ComputeMinWindow).
+function Get-MinWindow {
+    $wa = [System.Windows.Forms.Screen]::PrimaryScreen.WorkingArea
+    return @{
+        W = [Math]::Min(880 + 96, [Math]::Max(480, $wa.Width - 40))
+        H = [Math]::Min(640 + 96, [Math]::Max(360, $wa.Height - 40))
+    }
+}
+
+# The two 28x28 buttons on the chrome bar's row: the close button, and the
+# maximize/restore button immediately to its left.
+function Get-ChromeButtons($main) {
+    $mr = Get-WinRect $main
+    $btns = @()
+    foreach ($h in Get-WinKids $main) {
+        $r = Get-WinRect $h
+        if (($r.Right - $r.Left) -ne 28 -or ($r.Bottom - $r.Top) -ne 28) { continue }
+        if ([Math]::Abs($r.Top - ($mr.Top + 5)) -gt 1) { continue }
+        if ($r.Left -lt ($mr.Left + 400)) { continue }   # the sidebar's gear/plus sit elsewhere
+        $btns += ,$r
+    }
+    if ($btns.Count -ne 2) { return $null }
+    $sorted = @($btns | Sort-Object Left)
+    return @{ Max = $sorted[0]; Close = $sorted[1] }
+}
+
+# The sidebar's search pill. Found by POSITION, never by width: SearchField sits at
+# x=10 with a 32px pill height, whereas its width is SideW-106 and moves every time
+# the sidebar is resized. Probes used to look for "the 198x32 control", which
+# silently stopped matching the moment SideW changed.
+function Get-SearchPill($main) {
+    $mr = Get-WinRect $main
+    foreach ($h in Get-WinKids $main) {
+        $r = Get-WinRect $h
+        if (($r.Bottom - $r.Top) -ne 32) { continue }
+        if ([Math]::Abs($r.Left - ($mr.Left + 10)) -gt 1) { continue }
+        if ($r.Top -le $mr.Top + 38) { continue }      # the chrome bar is not the sidebar
+        return $r
+    }
+    return $null
+}
+
+# The settings gear: the leftmost 28x28 child on the pill's row. Its x is SideW-86,
+# so "leftmost of the two 28x28 buttons on that row" is the position-free way to say it.
+function Get-SettingsGear($main, $pill) {
+    $gear = $null
+    foreach ($h in Get-WinKids $main) {
+        $r = Get-WinRect $h
+        if (($r.Right - $r.Left) -ne 28 -or ($r.Bottom - $r.Top) -ne 28) { continue }
+        if ([Math]::Abs($r.Top - ($pill.Top + 2)) -gt 3) { continue }
+        if ($r.Left -le $pill.Right) { continue }
+        if ($null -eq $gear -or $r.Left -lt $gear.Left) { $gear = $r }
+    }
+    return $gear
+}
+
 # Calls out the end of a probe run so it is obvious in the transcript.
 function Write-BBDone([string]$Name) {
     Write-Output ''

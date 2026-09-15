@@ -8,9 +8,9 @@
 # Sequence:
 #   A. no settings open          -> close button quits immediately
 #   B. settings open + dirty edit-> close button must NOT quit, confirm bar appears
-#                                   with "放弃并退出"; "继续编辑" keeps the app alive
-#                                   and hides the bar; close again -> bar returns;
-#                                   "放弃并退出" finally quits
+#                                   with the quit label; the stay label keeps the app
+#                                   alive and hides the bar; close again -> bar
+#                                   returns; the quit label finally quits
 #
 # The confirm bar is found by control TEXT, not by arithmetic: its title label and
 # its buttons are real HWNDs, so WM_GETTEXT across the process boundary names them.
@@ -62,21 +62,9 @@ Invoke-BBProbe {
     $closeX = $mr.Left + $ww - 40 + 14
     $closeY = $mr.Top + 5 + 14
 
-    $pill = $null
-    foreach ($h in Get-WinKids $main) {
-        $r = Get-WinRect $h
-        if (($r.Right - $r.Left) -eq 198 -and ($r.Bottom - $r.Top) -eq 32) { $pill = $r }
-    }
+    $pill = Get-SearchPill $main
     if ($null -eq $pill) { throw 'search pill not found' }
-
-    $gear = $null
-    foreach ($h in Get-WinKids $main) {
-        $r = Get-WinRect $h
-        if (($r.Right - $r.Left) -ne 28 -or ($r.Bottom - $r.Top) -ne 28) { continue }
-        if ($r.Left -le $pill.Right) { continue }
-        if ([Math]::Abs($r.Top - ($pill.Top + 2)) -gt 3) { continue }
-        if ($null -eq $gear -or $r.Left -lt $gear.Left) { $gear = $r }
-    }
+    $gear = Get-SettingsGear $main $pill
     if ($null -eq $gear) { throw 'settings gear not found' }
 
     # ---------------- A. nothing to guard ----------------

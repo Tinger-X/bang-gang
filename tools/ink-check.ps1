@@ -31,23 +31,14 @@ Invoke-BBProbe {
     $ww = $mr.Right - $mr.Left
     $wh = $mr.Bottom - $mr.Top
 
+    # Both branches need the pill: the field branch to reach the gear beside it,
+    # the search branch to derive the EDIT's width from it.
+    $pill = Get-SearchPill $main
+    if ($null -eq $pill) { throw 'search pill not found' }
+
     if ($Target -eq 'field') {
         # model-access page: open settings, click rail row 1
-        $pill = $null
-        foreach ($h in Get-WinKids $main) {
-            $r = Get-WinRect $h
-            if (($r.Right - $r.Left) -eq 198 -and ($r.Bottom - $r.Top) -eq 32) { $pill = $r }
-        }
-        if ($null -eq $pill) { throw 'search pill not found' }
-
-        $gear = $null
-        foreach ($h in Get-WinKids $main) {
-            $r = Get-WinRect $h
-            if (($r.Right - $r.Left) -ne 28 -or ($r.Bottom - $r.Top) -ne 28) { continue }
-            if ($r.Left -le $pill.Right) { continue }
-            if ([Math]::Abs($r.Top - ($pill.Top + 2)) -gt 3) { continue }
-            if ($null -eq $gear -or $r.Left -lt $gear.Left) { $gear = $r }
-        }
+        $gear = Get-SettingsGear $main $pill
         if ($null -eq $gear) { throw 'settings gear not found' }
 
         $cardX = $mr.Left + [int](($ww - 880) / 2)
@@ -64,7 +55,9 @@ Invoke-BBProbe {
         Start-Sleep -Milliseconds 600
     }
 
-    $want = 162
+    # search EDIT = pill width - TextPadX(10) - 26 reserved for the clear button.
+    # Derived, not hard-coded: the pill is SideW-106 and that changes with the sidebar.
+    $want = ($pill.Right - $pill.Left) - 36
     if ($Target -eq 'field') { $want = 306 }
 
     $edit = [IntPtr]::Zero

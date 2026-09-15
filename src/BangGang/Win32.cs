@@ -21,11 +21,23 @@ internal static class Win32
     public const int WM_NCLBUTTONDOWN = 0x00A1;
     public const int HTCAPTION = 0x2;
 
+    // 鼠标消息（缩放手柄在消息过滤器里按这几个消息号分流）
+    public const int WM_MOUSEMOVE = 0x0200;
+    public const int WM_LBUTTONDOWN = 0x0201;
+    public const int WM_LBUTTONUP = 0x0202;
+    public const int WM_CAPTURECHANGED = 0x0215;
+
     [DllImport("user32.dll")]
     public static extern short GetAsyncKeyState(int vKey);
 
     [DllImport("user32.dll")]
     public static extern bool ReleaseCapture();
+
+    [DllImport("user32.dll")]
+    public static extern IntPtr SetCapture(IntPtr hWnd);
+
+    [DllImport("user32.dll")]
+    public static extern IntPtr GetCapture();
 
     [DllImport("user32.dll")]
     public static extern IntPtr SendMessage(IntPtr hWnd, int msg, IntPtr wParam, IntPtr lParam);

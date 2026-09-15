@@ -1,7 +1,7 @@
 # Verifies the three visual fixes in 0.7.21.
 #
 #   1. Search pill: the EDIT's opaque background used to run to the bottom of the
-#      198x32 pill and paint over its 1px border. Measure the gap between the
+#      search pill and paint over its 1px border. Measure the gap between the
 #      EDIT's bottom edge and the pill's, and prove ink still exists in the
 #      border strip below the EDIT.
 #   2. Password field eye: it must only appear once the field has content.
@@ -11,9 +11,10 @@
 #      conversation, screenshot its row cold, then hover it and compare.
 #
 # Geometry used below (see SearchField.cs / SettingsWidgets.cs / ConvListBox.cs):
-#   search pill 198x32, EDIT inset 10 from the left, 26 reserved on the right
+#   search pill = SideW-106 wide (SideW=256 in 0.7.22), EDIT inset 10 from the
+#   left, 26 reserved on the right for the clear button
 #   InputField 330x42, EDIT inset PadX=12, eye rect = (Width-32, (H-20)/2, 20, 20)
-#   ConvListBox items are 95% of SideW=304 wide, centred, 38 tall, 6 apart
+#   ConvListBox items are 95% of SideW wide, centred, 38 tall, 6 apart
 #
 # Usage:  powershell -File tools\round7-check.ps1
 
@@ -66,12 +67,10 @@ Invoke-BBProbe {
 
     # ---------------- 1. search pill bottom border ----------------
 
-    $pill = $null
-    foreach ($h in Get-WinKids $main) {
-        $r = Get-WinRect $h
-        if (($r.Right - $r.Left) -eq 198 -and ($r.Bottom - $r.Top) -eq 32) { $pill = $r }
-    }
+    $pill = Get-SearchPill $main
     if ($null -eq $pill) { throw 'search pill not found' }
+    $gear = Get-SettingsGear $main $pill
+    if ($null -eq $gear) { throw 'settings gear not found' }
 
     $sEdit = $null
     foreach ($h in Get-WinKids $main) {
@@ -86,7 +85,7 @@ Invoke-BBProbe {
     $gap = $pill.Bottom - $sEdit.Bottom
     Write-Output ''
     Write-Output '--- 1. search pill bottom border ---'
-    Write-Output ("  pill      : " + $pill.Left + "," + $pill.Top + " 198x32  (rows " + $pill.Top + ".." + ($pill.Bottom - 1) + ")")
+    Write-Output ("  pill      : " + $pill.Left + "," + $pill.Top + " " + ($pill.Right - $pill.Left) + "x32  (rows " + $pill.Top + ".." + ($pill.Bottom - 1) + ")")
     Write-Output ("  EDIT      : " + $sEdit.Left + "," + $sEdit.Top + " " + ($sEdit.Right - $sEdit.Left) + "x" + ($sEdit.Bottom - $sEdit.Top) + "  (last row " + ($sEdit.Bottom - 1) + ")")
     Write-Output ("  clearance : " + $gap + "px of pill left below the EDIT  " + $(if ($gap -ge 3) { 'OK' } else { 'FAIL -- EDIT covers the border' }))
     if ($gap -lt 3) { $fail++ }
@@ -99,34 +98,38 @@ Invoke-BBProbe {
 
     # ---------------- 3. conversation delete icon ----------------
 
-    # items only exist once there is a conversation; the plus button is 28x28 at
-    # (SideW-46, 9) inside the 46-tall head strip that starts at y=ChromeH+100.
-    $plusX = $mr.Left + 304 - 46 + 14
-    $plusY = $mr.Top + 38 + 100 + 9 + 14
+    # items only exist once there is a conversation. The plus button is the second
+    # 28x28 icon on the head strip's row -- take it from the gear we already located
+    # rather than recomputing SideW-46, which moves whenever the sidebar is resized.
+    $plusX = $gear.Left + 40 + 14
+    $plusY = $gear.Top + 14
     Invoke-MouseClick $plusX $plusY
     Start-Sleep -Milliseconds 900
 
     # find the list control itself rather than deriving its origin. The sidebar
-    # holds two 304-wide children: the 46-tall search/head strip and the list
-    # below it, so the height is what tells them apart.
+    # the sidebar holds two full-width children: the 46-tall search/head strip
+    # and the list below it, so the height is what tells them apart.
     $list = $null
     foreach ($h in Get-WinKids $main) {
         $r = Get-WinRect $h
-        if (($r.Right - $r.Left) -ne 304) { continue }
-        if (($r.Bottom - $r.Top) -lt 100) { continue }
-        if ($r.Top -le $mr.Top + 38) { continue }
+        if ($r.Left -ne $mr.Left) { continue }              # flush with the window's left edge
+        if (($r.Right - $r.Left) -ge 320) { continue }      # the main area, not the sidebar
+        if (($r.Bottom - $r.Top) -lt 100) { continue }      # the 46-tall head strip above it
+        if ($r.Top -le $mr.Top + 38) { continue }           # the chrome bar
         $list = $r
     }
     if ($null -eq $list) { throw 'conversation list not found' }
 
-    # item 0: 95% of 304 -> 289 wide, centred at x=7, 38 tall, DelRect inset 8/6
-    $rowX = $list.Left + 7
+    # item 0: 95% of the list width, centred, 38 tall, DelRect inset 8/6
+    $listW = $list.Right - $list.Left
+    $rowW = [int]($listW * 0.95)
+    $rowX = $list.Left + [int](($listW - $rowW) / 2)
     $rowY = $list.Top
-    $delX = $rowX + 289 - 6 - 22
+    $delX = $rowX + $rowW - 6 - 22
     $delY = $rowY + 8
     Write-Output ''
-    Write-Output ("  list      : " + $list.Left + "," + $list.Top + " 304x" + ($list.Bottom - $list.Top))
-    Write-Output ("  row 0     : " + $rowX + "," + $rowY + " 289x38")
+    Write-Output ("  list      : " + $list.Left + "," + $list.Top + " " + $listW + "x" + ($list.Bottom - $list.Top))
+    Write-Output ("  row 0     : " + $rowX + "," + $rowY + " ${rowW}x38")
 
     # park the pointer well away from the list first so no row is hovered
     [void][BB]::SetCursorPos(($mr.Left + $ww - 400), ($mr.Top + $wh - 60))
@@ -151,16 +154,6 @@ Invoke-BBProbe {
     Start-Sleep -Milliseconds 400
 
     # ---------------- 2. password field eye ----------------
-
-    $gear = $null
-    foreach ($h in Get-WinKids $main) {
-        $r = Get-WinRect $h
-        if (($r.Right - $r.Left) -ne 28 -or ($r.Bottom - $r.Top) -ne 28) { continue }
-        if ($r.Left -le $pill.Right) { continue }
-        if ([Math]::Abs($r.Top - ($pill.Top + 2)) -gt 3) { continue }
-        if ($null -eq $gear -or $r.Left -lt $gear.Left) { $gear = $r }
-    }
-    if ($null -eq $gear) { throw 'settings gear not found' }
 
     $cardX = $mr.Left + [int](($ww - 880) / 2)
     $cardY = $mr.Top + [int](($wh - 640) / 2)
