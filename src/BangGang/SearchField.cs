@@ -9,6 +9,7 @@ internal sealed class SearchField : Control
 {
     private const int WM_PRINT = 0x0317;
 
+    private readonly Font _uiFont = Theme.UI(11.5f);
     private readonly TextBox _tb;
     private readonly Label _ph;
     private readonly System.Windows.Forms.Timer _debounce;
@@ -26,7 +27,7 @@ internal sealed class SearchField : Control
         _tb = new TextBox
         {
             BorderStyle = BorderStyle.None,
-            Font = Theme.UI(11.5f),
+            Font = _uiFont,
             BackColor = Theme.InputBg,
             ForeColor = Theme.TextMain,
         };
@@ -37,9 +38,10 @@ internal sealed class SearchField : Control
 
         _ph = new Label
         {
-            AutoSize = true,
+            AutoSize = false,               // 与 TextBox 等高的盒子，两者文字才会落在同一高度
+            TextAlign = ContentAlignment.MiddleLeft,
             BackColor = Theme.InputBg,
-            Font = Theme.UI(11.5f),
+            Font = _uiFont,
             ForeColor = Theme.TextMuted,
             Text = "搜索对话…",
         };
@@ -54,7 +56,7 @@ internal sealed class SearchField : Control
         {
             if (!ClearRect().Contains(e.Location)) _tb.Focus();
         };
-        UpdateUI();
+        LayoutBox();
     }
 
     public string Text
@@ -71,11 +73,29 @@ internal sealed class SearchField : Control
         _debounce.Start();
     }
 
+    /// <summary>
+    /// 输入文字所占的矩形（占位 Label 与 TextBox 共用同一套纵向坐标）。
+    ///
+    /// 单行 TextBox 的高度由字体锁定 —— 传给 SetBounds 的高度会被 WinForms
+    /// 改回 PreferredHeight，而且即使按传进去的高度排版，EDIT 也是把文字
+    /// **顶对齐**在自己客户区里的。所以「文字竖直居中」不能靠调 TextBox 高度，
+    /// 只能把这个“字体高度”的盒子整体摆到控件正中。
+    /// </summary>
+    private Rectangle TextBounds()
+    {
+        int h = _tb.PreferredHeight;
+        return new Rectangle(8, (Height - h) / 2, Width - 8 - 26, h);
+    }
+
     private void UpdateUI()
     {
         bool has = _tb.Text.Length > 0;
         _ph.Visible = !has;
-        if (!has) _ph.Location = new Point(10, (Height - _ph.Height) / 2);
+        if (!has)
+        {
+            var r = TextBounds();
+            _ph.Bounds = new Rectangle(10, r.Y, Width - 10 - 26, r.Height);
+        }
         Invalidate();
     }
 
@@ -112,9 +132,7 @@ internal sealed class SearchField : Control
 
     private void LayoutBox()
     {
-        int h = Math.Max(18, Height - 4);
-        _tb.Bounds = new Rectangle(8, 2, Width - 8 - 26, Height - 4);
-        _tb.Font = Theme.UI(11.5f);
+        _tb.Bounds = TextBounds();
         UpdateUI();
     }
 
@@ -135,10 +153,13 @@ internal sealed class SearchField : Control
     }
 
     /// <summary>
-    /// 拦截 WM_PRINT：DrawToBitmap 打印整棵控件树时，TextBox 子控件会盖在
-    /// 其他子控件（占位 Label）之上并裁掉其文字。这里在打印路径上自行绘制
-    /// 完整内容（含占位/已输入文字）并跳过全部子控件，保证设置浮窗的底层
-    /// 快照里搜索框内容完整。
+    /// 拦截 WM_PRINT：DrawToBitmap 打印整棵控件树时，默认实现按 <c>Controls</c>
+    /// 的顺序（也就是 z 序的反序）打子控件，TextBox 会盖在占位 Label 之上并
+    /// 裁掉其文字。这里自己按正确顺序把子控件画出来。
+    ///
+    /// 要点是「让子控件自己画」而不是父层代画一遍文字：快照里的文字与屏幕上
+    /// 出自同一次绘制，不会出现两套坐标导致的上下位移（设置浮窗的底图正是
+    /// 用这张快照铺满整窗的，所以位移会直接暴露给用户）。
     /// </summary>
     protected override void WndProc(ref Message m)
     {
@@ -146,12 +167,24 @@ internal sealed class SearchField : Control
         {
             using var g = Graphics.FromHdc(m.WParam);
             DrawContent(g);
+            PrintChild(g, _tb);
+            if (_ph.Visible) PrintChild(g, _ph);
             m.Result = IntPtr.Zero;
             return;
         }
         base.WndProc(ref m);
     }
 
+    /// <summary>把子控件按它自己的 WM_PRINT 画到指定画布上（与屏幕上同一份像素）。</summary>
+    private static void PrintChild(Graphics g, Control c)
+    {
+        if (!c.Visible || c.Width <= 0 || c.Height <= 0) return;
+        using var bmp = new Bitmap(c.Width, c.Height);
+        c.DrawToBitmap(bmp, new Rectangle(0, 0, c.Width, c.Height));
+        g.DrawImage(bmp, c.Left, c.Top);
+    }
+
+    /// <summary>只画底、边框与清空按钮：文字一律由子控件负责。</summary>
     private void DrawContent(Graphics g)
     {
         g.SmoothingMode = SmoothingMode.AntiAlias;
@@ -162,20 +195,6 @@ internal sealed class SearchField : Control
         using (var pen = new Pen(_focused ? Theme.Accent : Theme.Border, 1f))
         using (var p2 = Rounded(rc, Height / 2))
             g.DrawPath(pen, p2);
-
-        // 打印路径跳过子控件：文字必须在这里自绘（正常路径由 TextBox / 占位 Label 负责）
-        if (_tb.Text.Length == 0)
-        {
-            TextRenderer.DrawText(g, "搜索对话…", Theme.UI(11.5f),
-                new Rectangle(12, 0, Width - 40, Height), Theme.TextMuted,
-                TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPadding);
-        }
-        else
-        {
-            TextRenderer.DrawText(g, _tb.Text, _tb.Font,
-                new Rectangle(10, 2, Width - 38, Height - 4), Theme.TextMain,
-                TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPadding);
-        }
 
         // 清空按钮
         if (_tb.Text.Length > 0)
