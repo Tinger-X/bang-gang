@@ -13,6 +13,18 @@ internal sealed class InputPanel : Panel
     public List<Attachment> Draft { get; } = new();
     public event Action? SendRequested;
 
+    /// <summary>
+    /// 底部工具行（提示文字 + 回形针 + 发送）占掉的高度。输入框 <c>Dock = Fill</c>，必须止步于此。
+    ///
+    /// 不留这个空档，输入框就会盖住这一行：WinForms 的 <c>Controls.Add</c> 是**越晚加越靠后**，
+    /// <c>_box</c> 铺满整个面板，于是后加的 <c>_hint</c> / <c>_send</c> / <c>_attach</c> 全被压在它下面
+    /// （<c>WindowFromPoint</c> 打在按钮中心返回的是 EDIT 的 HWND）。后果是这三样在正常使用时
+    /// 一直**看不见也点不到**，而打开设置界面时又冒出来两个「乱码图标」—— 因为设置浮窗的底图是
+    /// <c>DrawToBitmap</c>（WM_PRINT）拼的，原生 EDIT 的 <c>WM_PRINTCLIENT</c> 只画文字、不画底色，
+    /// 压在它下面的控件就透出来了。加宽高比这个空档更重要的是别再往 <c>_box</c> 后面加兄弟控件。
+    /// </summary>
+    private const int BottomRowH = 38;
+
     public string Text { get => _box.Text; set => _box.Text = value; }
     public bool HasContent => _box.Text.Trim().Length > 0 || Draft.Count > 0;
 
@@ -103,6 +115,10 @@ internal sealed class InputPanel : Panel
     {
         base.OnResize(e);
         if (_hint == null) return; // 构造期间子控件尚未建立
+        // 用 Padding 把输入框（Dock = Fill）挡在底部工具行上面，见 BottomRowH 的注释。
+        // 面板高度是固定的 150，这个钳位只是防呆：留白不能把输入框挤成负数高。
+        int reserve = Math.Min(BottomRowH, Math.Max(0, Height - 40));
+        if (Padding.Bottom != reserve) Padding = new Padding(0, 0, 0, reserve);
         int bot = Height - 28;
         _hint.Location = new Point(14, bot);
         _send.Location = new Point(Width - 40, bot - 4);
