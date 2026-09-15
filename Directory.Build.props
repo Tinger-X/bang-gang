@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  所有项目的构建产物统一落到仓库根的 build/ 下：build/bin/<配置>/<框架>/、build/obj/<配置>/。
+  src/ 里只留源码，不再出现 bin / obj。
+
+  为什么放在仓库根的这个文件里，而不是各 csproj 内部：BaseIntermediateOutputPath 必须在该
+  项目被求值之前就定好，写在 csproj 的属性组里 MSBuild 会报
+  "The value of the property BaseIntermediateOutputPath was modified after it was used"，
+  NuGet 还原也会把 project.assets.json 放错地方。Directory.Build.props 会在项目被加载前导入。
+-->
+<Project>
+
+  <PropertyGroup>
+    <BaseOutputPath>$(MSBuildThisFileDirectory)build\bin\</BaseOutputPath>
+    <BaseIntermediateOutputPath>$(MSBuildThisFileDirectory)build\obj\</BaseIntermediateOutputPath>
+  </PropertyGroup>
+
+</Project>

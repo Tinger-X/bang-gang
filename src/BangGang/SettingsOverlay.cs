@@ -194,6 +194,7 @@ internal sealed class SettingsOverlay : Panel, IPopupHost
     public void ReloadFrom(AppSettings s)
     {
         CaptureBackdrop();          // 必须在浮窗可见之前抓底层界面
+        _backdropStale = false;     // 上面这一张就是当前尺寸的，别再重抓一次
         _applied.CopyFrom(s);
         HideConfirm();
         foreach (var p in _pages) p.Rebind(_applied);
@@ -268,6 +269,7 @@ internal sealed class SettingsOverlay : Panel, IPopupHost
     {
         if (!Visible) return;
         CaptureBackdrop();
+        _backdropStale = false;     // 刚抓过，别让待办的那次再抓一遍
         Invalidate();
     }
 
@@ -309,6 +311,9 @@ internal sealed class SettingsOverlay : Panel, IPopupHost
     /// 浮窗铺满整个窗口：卡片以外画底层界面快照，并吃掉所有鼠标消息
     /// （设置打开时主界面只“看得见”，不能再被点击操作）。
     /// </summary>
+    /// <summary>底图需要在整窗布局落定之后重抓，见 <see cref="LayoutOverlay"/>。</summary>
+    private bool _backdropStale;
+
     private void LayoutOverlay()
     {
         if (Width <= 0 || Height <= 0) return;
@@ -323,11 +328,18 @@ internal sealed class SettingsOverlay : Panel, IPopupHost
         // 只有在窗口尺寸真的变了（卡片尺寸变了）时才重新抓底图：
         // 打开设置时已经抓过一次，重复抓会白等一次整窗渲染，正是“打开时先闪一下”的原因之一。
         //
-        // 底图是按**整窗矩形**拉伸铺上去的（见 OnPaintBackground），所以窗口本身被拖动缩放时
-        // 也必须重抓，否则旧快照会被抻长，卡片周围那圈主界面直接变形。卡片尺寸和窗口尺寸
-        // 任一变化都要重抓 —— 窗口放大到卡片顶到 880×640 上限之后，就只有后者还在变。
+        // 底图是按整窗矩形铺上去的（见 OnPaintBackground），所以窗口本身被拖动缩放时
+        // 也必须重抓，否则旧快照就对不上新窗口了。卡片尺寸和窗口尺寸任一变化都要重抓 ——
+        // 窗口放大到卡片顶到 880×640 上限之后，就只有后者还在变。
         if (Visible && (_card.Size != _backdropFor || new Size(Width, Height) != _backdropWin))
-            CaptureBackdrop();
+            _backdropStale = true;
+        // 这里**不能**同步抓图：本次布局还没走完。
+        //
+        // MainForm.ApplyLayout 先把浮窗改成新尺寸（这一下就回调到这里），之后才逐个摆放底图
+        // 要画的那几个控件（欢迎页 / 标题条 / 输入区 / 消息区）。在这一刻抓，抓到的是**上一个
+        // 尺寸**的主界面，而且此后不会再有第二次重抓 —— 用户看到的就一直是那张旧图，也就是
+        // “设置界面打开时缩放窗口，界面不更新”。推迟到 WM_PAINT 是因为绘制消息排在队列里，
+        // 一定在本次 WM_SIZE 处理完之后，那一刻布局必然已经落定。
         ApplyRegion();
         _card.Invalidate(true);             // 卡片是子窗口，父级重画不会带着它刷新
         Invalidate();
@@ -459,6 +471,14 @@ internal sealed class SettingsOverlay : Panel, IPopupHost
     /// </summary>
     protected override void OnPaintBackground(PaintEventArgs e)
     {
+        // 底图的（重）抓放在这里，而不是缩放回调里 —— 只有到绘制这一刻，整窗布局才一定落定。
+        // 见 LayoutOverlay 里的注释。
+        if (_backdropStale)
+        {
+            _backdropStale = false;
+            CaptureBackdrop();
+        }
+
         var rc = new Rectangle(0, 0, Width, Height);
         var snap = _backdrop;
         if (snap != null)

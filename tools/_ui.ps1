@@ -125,7 +125,8 @@ public static class BB {
 }
 '@
 
-$script:BBExe = Join-Path (Split-Path $PSScriptRoot -Parent) 'src\BangGang\bin\Debug\net8.0-windows\BangGang.exe'
+# Build output lives under <repo>\build\ (see Directory.Build.props), not in src\BangGang\bin.
+$script:BBExe = Join-Path (Split-Path $PSScriptRoot -Parent) 'build\bin\Debug\net8.0-windows\BangGang.exe'
 $script:BBShoots = Join-Path (Split-Path $PSScriptRoot -Parent) 'shoots'
 $script:BBPid = 0
 $script:BBMain = [IntPtr]::Zero
