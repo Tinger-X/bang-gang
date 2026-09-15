@@ -75,12 +75,10 @@ internal sealed class InputPanel : Panel
         Controls.Add(_hint);
 
         _send = new IconButton(IconButton.Kind.Send, Theme.InputBg);
-        Ui.SetToolTip(_send, "发送 (Enter)");
         _send.Click += (_, _) => { if (HasContent) SendRequested?.Invoke(); };
         Controls.Add(_send);
 
         _attach = new IconButton(IconButton.Kind.Paperclip, Theme.InputBg);
-        Ui.SetToolTip(_attach, "添加文件 / 图片");
         _attach.Click += (_, _) => PickFiles();
         Controls.Add(_attach);
 

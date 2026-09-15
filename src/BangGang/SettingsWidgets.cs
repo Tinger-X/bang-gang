@@ -80,6 +80,11 @@ internal static class RP
     public static GraphicsPath PathF(RectangleF r, int rad)
     {
         var p = new GraphicsPath();
+        if (rad <= 0)
+        {
+            p.AddRectangle(r);
+            return p;
+        }
         int d = Math.Max(2, Math.Min(rad * 2, Math.Min((int)r.Width, (int)r.Height)));
         p.AddArc(r.X, r.Y, d, d, 180, 90);
         p.AddArc(r.Right - d, r.Y, d, d, 270, 90);
@@ -643,7 +648,7 @@ internal sealed class InputField : Control, IThemed, IArranged
         _tb = new TextBox
         {
             BorderStyle = BorderStyle.None,
-            Font = Theme.UI(10.5f),
+            Font = Theme.UI(22f),
             BackColor = SC.FieldBg,       // 与外部边框同色，视觉上只有一个框
             ForeColor = SC.Ink,
             UseSystemPasswordChar = secret,
@@ -656,7 +661,7 @@ internal sealed class InputField : Control, IThemed, IArranged
         _ph = new Label
         {
             AutoSize = false,
-            Font = Theme.UI(10.5f),
+            Font = Theme.UI(22f),
             ForeColor = SC.InkFaint,
             BackColor = SC.FieldBg,
             Text = placeholder,
@@ -670,7 +675,7 @@ internal sealed class InputField : Control, IThemed, IArranged
     }
 
     /// <summary>按字体需要的行高自动加高（高 DPI 下也不会遮挡文字）。</summary>
-    private int NeededHeight => Math.Max(MinHeight, _tb.PreferredHeight + 20);
+    private int NeededHeight => Math.Max(MinHeight, _tb.PreferredHeight + 8);
 
     /// <summary>更换占位示例（切换服务商时用）。</summary>
     public void SetPlaceholder(string text)
@@ -686,25 +691,11 @@ internal sealed class InputField : Control, IThemed, IArranged
     {
         if (_tb == null) return;
         int right = 12 + (ShowEye ? 26 : 0);
-        int h = InnerHeight;
-        int y = Math.Max(0, (Height - h) / 2);
-        _tb.SetBounds(12, y, Math.Max(10, Width - 12 - right), h);
+        // 文本框与外部边框同高、上下满铺：文字由单行 TextBox 自行左对齐 + 垂直居中
+        _tb.SetBounds(12, 0, Math.Max(10, Width - 12 - right), Height);
         UpdatePlaceholder();
     }
 
-    /// <summary>内层文本框高度：取系统首选高度与字体行高的较大值，保证文字上下都不被裁。</summary>
-    private int InnerHeight
-    {
-        get
-        {
-            int byFont = (int)Math.Ceiling(_tb.Font.GetHeight()) + 6;
-            int byText = TextRenderer.MeasureText("测Ag", _tb.Font).Height + 4;
-            return Math.Max(Math.Max(_tb.PreferredHeight, byFont), byText);
-        }
-    }
-
-    /// <summary>占位文字的高度（按字体度量，写死 20px 会把文字上下裁掉）。</summary>
-    private int PlaceholderHeight => Math.Max(InnerHeight, (int)Math.Ceiling(_ph.Font.GetHeight()) + 2);
 
     [AllowNull]
     public override string Text
@@ -733,10 +724,7 @@ internal sealed class InputField : Control, IThemed, IArranged
         _ph.Visible = show;
         // 占位文字按字体行高居中：只占文本框那一行的高度，铺满整高会盖住输入框上下边框
         if (show)
-        {
-            int ph = PlaceholderHeight;
-            _ph.SetBounds(12, Math.Max(2, (Height - ph) / 2), Math.Max(10, Width - 24 - (ShowEye ? 28 : 0)), ph);
-        }
+            _ph.SetBounds(12, 0, Math.Max(10, Width - 24 - (ShowEye ? 28 : 0)), Height);
     }
 
     public void Restyle()
@@ -1490,10 +1478,18 @@ internal class RoundPanel : Panel, IThemed
     protected override void OnPaintBackground(PaintEventArgs e)
     {
         var g = e.Graphics;
-        g.SmoothingMode = SmoothingMode.AntiAlias;
         var body = BodyRect;
         var full = new Rectangle(0, 0, Width, Height);
 
+        if (Radius <= 0)
+        {
+            // 直角：整块铺满本体色即可（快照只在圆角缺口处才看得见，直角下无缺口）
+            using var b0 = new SolidBrush(BackColor);
+            g.FillRectangle(b0, full);
+            return;
+        }
+
+        g.SmoothingMode = SmoothingMode.AntiAlias;
         var snap = BackdropBitmap;
         var src = new Rectangle(BackdropOffset.X, BackdropOffset.Y, Width, Height);
         if (snap != null && src.X >= 0 && src.Y >= 0 && src.Right <= snap.Width && src.Bottom <= snap.Height)

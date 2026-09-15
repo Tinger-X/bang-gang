@@ -50,7 +50,7 @@ internal sealed class SettingsOverlay : Panel, IPopupHost
         SetStyle(ControlStyles.UserPaint | ControlStyles.ResizeRedraw | ControlStyles.AllPaintingInWmPaint, true);
 
         // ---- 浮窗主体（固定居中，不可拖动；背后浅色遮罩由主窗口负责） ----
-        _card.Radius = 10;
+        _card.Radius = 0;   // 直角边框（需求：设置弹窗不用圆角）
         _card.Resize += (_, _) => LayoutCard();
         Controls.Add(_card);
 
@@ -92,7 +92,6 @@ internal sealed class SettingsOverlay : Panel, IPopupHost
 
         // ---- 右上角关闭 ----
         _close.Click += (_, _) => RequestClose();
-        Ui.SetToolTip(_close, "关闭设置");
         _card.Controls.Add(_close);
         _close.BringToFront();
 
@@ -139,7 +138,7 @@ internal sealed class SettingsOverlay : Panel, IPopupHost
 
     private void BuildConfirm()
     {
-        _confirm.Radius = 10;
+        _confirm.Radius = 0;   // 直角边框（需求：确认弹窗不用圆角）
         _confirm.Visible = false;
 
         _confirmTitle.Text = "放弃未保存的修改？";
@@ -155,8 +154,6 @@ internal sealed class SettingsOverlay : Panel, IPopupHost
 
         _confirmStay.Click += (_, _) => HideConfirm();
         _confirmQuit.Click += (_, _) => CloseNow();
-        Ui.SetToolTip(_confirmStay, "返回继续编辑");
-        Ui.SetToolTip(_confirmQuit, "放弃修改并关闭设置");
 
         _confirm.Controls.Add(_confirmTitle);
         _confirm.Controls.Add(_confirmDesc);
@@ -324,6 +321,18 @@ internal sealed class SettingsOverlay : Panel, IPopupHost
         var old = Region;
         Region = region;
         old?.Dispose();
+    }
+
+    /// <summary>顶部条（ChromeBar 区域）按下时请求主窗口拖动：设置打开期间仍可拖窗。</summary>
+    public event Action? TopDragRequested;
+
+    /// <summary>可拖动顶条的高度（= 主窗口 ChromeBar 高度），由主窗口注入。</summary>
+    public int DragStripHeight { get; set; } = 38;
+
+    protected override void OnMouseDown(MouseEventArgs e)
+    {
+        base.OnMouseDown(e);
+        if (e.Button == MouseButtons.Left && e.Y < DragStripHeight) TopDragRequested?.Invoke();
     }
 
     /// <summary>卡片位置或尺寸变化（窗口缩放）时通知主窗口。</summary>
@@ -503,7 +512,6 @@ internal sealed class SettingsOverlay : Panel, IPopupHost
         else
         {
             HideConfirm();
-            Ui.HideToolTip();
         }
     }
 

@@ -24,8 +24,9 @@ internal static class CaptureGuard
 /// <summary>
 /// 进程级防录屏：拦截本线程创建的每个顶层窗口，立即为其应用
 /// WDA_EXCLUDEFROMCAPTURE，确保颜色/文件对话框等由本线程弹出的顶层窗口
-/// 都不会被录屏 / 截图捕获。应用内 ToolTip 使用带每像素 Alpha 的独立置顶窗口
-/// （见 <see cref="ToolTipForm"/>），由 ToolTipForm 自身应用 WDA_EXCLUDEFROMCAPTURE。
+/// 都不会被录屏 / 截图捕获。
+/// （应用内已不再有任何 ToolTip 浮层：那种独立置顶小窗口一旦漏配防录屏
+/// 就会被录进去，而且它属于辅助信息，直接去掉最稳。）
 /// </summary>
 internal static class CaptureProtector
 {

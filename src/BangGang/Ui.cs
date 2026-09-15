@@ -26,21 +26,6 @@ internal static class Ui
             EnforceArrowCursor(e.Control);
     }
 
-    private static ToolTipForm? _tipForm;
-
-    /// <summary>
-    /// 为控件绑定一个悬浮提示。提示是一个带每像素 Alpha 的置顶窗口（见 <see cref="ToolTipForm"/>），
-    /// 圆角与文字抗锯齿渲染、四角透明，并应用 WDA_EXCLUDEFROMCAPTURE，不会被录屏 / 截图捕获。
-    /// </summary>
-    public static void SetToolTip(Control control, string text)
-    {
-        control.MouseEnter += (_, _) => EnsureForm().Arm(control, text);
-        control.MouseLeave += (_, _) => EnsureForm().Disarm(control);
-    }
-
-    /// <summary>主窗口隐藏 / 关闭时调用，清除可能残留的提示浮层。</summary>
-    public static void HideToolTip() => _tipForm?.HideNow();
-
     /// <summary>
     /// 主题切换后递归刷新整棵控件树：凡是缓存过主题色的控件都实现 <see cref="IThemed"/>，
     /// 在这里统一 Restyle，避免暗色模式下残留浅色底。
@@ -50,12 +35,5 @@ internal static class Ui
         if (root is IThemed t) t.Restyle();
         foreach (Control c in root.Controls) RestyleTree(c);
         root.Invalidate(true);
-    }
-
-    private static ToolTipForm EnsureForm()
-    {
-        if (_tipForm is null || _tipForm.IsDisposed)
-            _tipForm = new ToolTipForm();
-        return _tipForm;
     }
 }

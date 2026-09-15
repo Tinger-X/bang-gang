@@ -12,7 +12,7 @@ namespace BangGang;
 public class MainForm : Form
 {
     public const string WindowTitle = "帮帮";
-    public const string AppVersion = "v0.7.16";
+    public const string AppVersion = "v0.7.17";
 
     private const uint Affinity = Native.WDA_EXCLUDEFROMCAPTURE;
     private const int SideW = 304;
@@ -77,17 +77,15 @@ public class MainForm : Form
         _sidebar.Controls.Add(_brand);
 
         _convHead = new Panel { BackColor = Theme.SideBg };
-        _search = new SearchField { Location = new Point(10, 11), Size = new Size(SideW - 106, 32) };
+        _search = new SearchField { Location = new Point(10, 7), Size = new Size(SideW - 106, 32) };
         _search.Debounced += _ => RebindConversations();
         _convHead.Controls.Add(_search);
 
-        _btnSettings = new IconButton(IconButton.Kind.Gear, Theme.SideBg) { Location = new Point(SideW - 86, 11) };
-        Ui.SetToolTip(_btnSettings, "设置");
+        _btnSettings = new IconButton(IconButton.Kind.Gear, Theme.SideBg) { Location = new Point(SideW - 86, 9) };
         _btnSettings.Click += (_, _) => OpenSettings();
         _convHead.Controls.Add(_btnSettings);
 
-        _btnNew = new IconButton(IconButton.Kind.Plus, Theme.SideBg) { Location = new Point(SideW - 46, 11) };
-        Ui.SetToolTip(_btnNew, "新建对话");
+        _btnNew = new IconButton(IconButton.Kind.Plus, Theme.SideBg) { Location = new Point(SideW - 46, 9) };
         _btnNew.Click += (_, _) => NewConversation();
         _convHead.Controls.Add(_btnNew);
         _sidebar.Controls.Add(_convHead);
@@ -121,6 +119,8 @@ public class MainForm : Form
         // ---- 内部设置浮窗（固定居中、无蒙版；卡片以外的界面保持可见可用） ----
         _settingsOverlay = new SettingsOverlay();
         _settingsOverlay.Applied += OnSettingsApplied;
+        _settingsOverlay.TopDragRequested += BeginWindowDrag;
+        _settingsOverlay.DragStripHeight = ChromeH;
         _settingsOverlay.Visible = false;
         Controls.Add(_settingsOverlay);
 
@@ -161,10 +161,11 @@ public class MainForm : Form
         int bodyH = H - ChromeH;
         _sidebar.Bounds = new Rectangle(0, ChromeH, SideW, bodyH);
 
-        _brand.Bounds = new Rectangle(0, 0, SideW, 140);
-        _convHead.Bounds = new Rectangle(0, 140, SideW, 54);
+        // 品牌块 / 对话功能区 / 对话列表三区紧邻，压缩中间空白
+        _brand.Bounds = new Rectangle(0, 0, SideW, 100);
+        _convHead.Bounds = new Rectangle(0, 100, SideW, 46);
 
-        int listTop = 200;
+        int listTop = 146;
         _convList.Bounds = new Rectangle(0, listTop, SideW, bodyH - listTop);
 
         _mainArea.Bounds = new Rectangle(SideW, ChromeH, W - SideW, bodyH);
@@ -381,7 +382,7 @@ public class MainForm : Form
     {
         base.OnLoad(e);
         ApplyAffinity();
-        CaptureProtector.Install();   // 保护 ToolTip / 对话框等所有顶层窗口
+        CaptureProtector.Install();   // 保护对话框等所有顶层窗口
         ReapplyHotkeys();
     }
 
@@ -431,10 +432,6 @@ public class MainForm : Form
             // 因此每次显示后都显式钉回最上层，避免被其它应用覆盖。
             Native.SetWindowPos(Handle, Native.HWND_TOPMOST, 0, 0, 0, 0,
                 Native.SWP_NOMOVE | Native.SWP_NOSIZE | Native.SWP_NOACTIVATE);
-        }
-        else if (!Visible)
-        {
-            Ui.HideToolTip();
         }
     }
 
@@ -694,7 +691,6 @@ internal sealed class ChromeBar : Panel, IThemed
         Controls.Add(_status);
 
         _close = new IconButton(IconButton.Kind.Close, Theme.PanelBg);
-        Ui.SetToolTip(_close, "关闭");
         _close.Click += (_, _) => CloseRequested?.Invoke();
         Controls.Add(_close);
 

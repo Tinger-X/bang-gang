@@ -1,4 +1,4 @@
-﻿# Drive the settings popup and capture screenshots (local UI review only).
+# Drive the settings popup and capture screenshots (local UI review only).
 #
 # NOTE: the Release build can never be captured (WDA_EXCLUDEFROMCAPTURE with no runtime
 # backdoor). UI screenshots therefore use a *Debug* build, whose temporary
@@ -125,7 +125,7 @@ $dotX0=$cardX+556; $dotY=$cardY+232      # preset colour dots: 30px pitch, first
 Raise-App
 
 # 1) open settings via the gear button, hover the close button
-Click ($script:L+232) ($script:T+203)
+Click ($script:L+232) ($script:T+161)   # 0.7.17: 侧栏三区压缩后齿轮按钮上移（原 203）
 Start-Sleep -Milliseconds 800
 Hover $closeX $closeY
 Shot 'settings-1-shortcuts'

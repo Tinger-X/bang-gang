@@ -7,6 +7,8 @@ namespace BangGang;
 /// </summary>
 internal sealed class SearchField : Control
 {
+    private const int WM_PRINT = 0x0317;
+
     private readonly TextBox _tb;
     private readonly Label _ph;
     private readonly System.Windows.Forms.Timer _debounce;
@@ -128,7 +130,30 @@ internal sealed class SearchField : Control
 
     protected override void OnPaint(PaintEventArgs e)
     {
-        var g = e.Graphics;
+        DrawContent(e.Graphics);
+        base.OnPaint(e);
+    }
+
+    /// <summary>
+    /// 拦截 WM_PRINT：DrawToBitmap 打印整棵控件树时，TextBox 子控件会盖在
+    /// 其他子控件（占位 Label）之上并裁掉其文字。这里在打印路径上自行绘制
+    /// 完整内容（含占位/已输入文字）并跳过全部子控件，保证设置浮窗的底层
+    /// 快照里搜索框内容完整。
+    /// </summary>
+    protected override void WndProc(ref Message m)
+    {
+        if (m.Msg == WM_PRINT && m.WParam != IntPtr.Zero)
+        {
+            using var g = Graphics.FromHdc(m.WParam);
+            DrawContent(g);
+            m.Result = IntPtr.Zero;
+            return;
+        }
+        base.WndProc(ref m);
+    }
+
+    private void DrawContent(Graphics g)
+    {
         g.SmoothingMode = SmoothingMode.AntiAlias;
         var rc = new Rectangle(0, 0, Width - 1, Height - 1);
         using (var p = Rounded(rc, Height / 2))
@@ -137,6 +162,20 @@ internal sealed class SearchField : Control
         using (var pen = new Pen(_focused ? Theme.Accent : Theme.Border, 1f))
         using (var p2 = Rounded(rc, Height / 2))
             g.DrawPath(pen, p2);
+
+        // 打印路径跳过子控件：文字必须在这里自绘（正常路径由 TextBox / 占位 Label 负责）
+        if (_tb.Text.Length == 0)
+        {
+            TextRenderer.DrawText(g, "搜索对话…", Theme.UI(11.5f),
+                new Rectangle(12, 0, Width - 40, Height), Theme.TextMuted,
+                TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPadding);
+        }
+        else
+        {
+            TextRenderer.DrawText(g, _tb.Text, _tb.Font,
+                new Rectangle(10, 2, Width - 38, Height - 4), Theme.TextMain,
+                TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPadding);
+        }
 
         // 清空按钮
         if (_tb.Text.Length > 0)
@@ -150,7 +189,6 @@ internal sealed class SearchField : Control
                 g.DrawLine(xp, cr.Right - 5, cr.Top + 5, cr.Left + 5, cr.Bottom - 5);
             }
         }
-        base.OnPaint(e);
     }
 
     private static GraphicsPath Rounded(Rectangle r, int rad)
