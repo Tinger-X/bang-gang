@@ -657,6 +657,7 @@ internal sealed class InputField : Control, IThemed, IArranged
         _tb = new TextBox
         {
             BorderStyle = BorderStyle.None,
+            AutoSize = false,             // 否则高度被锁回 PreferredHeight，见 Ui.EditBoxHeight
             Font = TextFont,
             BackColor = SC.FieldBg,       // 与外部边框同色，视觉上只有一个框
             ForeColor = SC.Ink,
@@ -683,8 +684,12 @@ internal sealed class InputField : Control, IThemed, IArranged
         Height = NeededHeight;
     }
 
-    /// <summary>按字体需要的行高自动加高（高 DPI 下也不会遮挡文字）。</summary>
-    private int NeededHeight => Math.Max(MinHeight, _tb.PreferredHeight + 8);
+    /// <summary>
+    /// 按字体需要的行高自动加高（高 DPI 下也不会遮挡文字）。
+    /// 用 <see cref="Ui.EditBoxPadY"/>：行高之外还留了这段余量，否则雅黑的下缘
+    /// 实笔（g / j / y / p / q 的尾巴）会被 EDIT 的客户区切掉。
+    /// </summary>
+    private int NeededHeight => Math.Max(MinHeight, _tb.PreferredHeight + Ui.EditBoxPadY);
 
     /// <summary>更换占位示例（切换服务商时用）。</summary>
     public void SetPlaceholder(string text)
@@ -697,16 +702,19 @@ internal sealed class InputField : Control, IThemed, IArranged
 
     /// <summary>
     /// 文字所占的矩形：内部 TextBox 与占位文字层共用同一个盒子，
-    /// 左边缘与竖直中心因此严格对齐。
+    /// 左边缘与竖直位置因此严格对齐。
     ///
     /// 不能把 TextBox 拉满整高 —— 单行 EDIT 会在自己的客户区里**顶对齐**文字，
     /// 高度一多余文字就贴上边框（之前字体大到几乎填满整高，才看着像居中）。
+    ///
+    /// 盒子由 <see cref="Ui.EditBox"/> 给出：上边缘取行高盒子的居中位置
+    /// （文字位置不变），只在下方多留 <see cref="Ui.EditBoxPadY"/> 的余量，
+    /// 免得 CJK 的下缘实笔（g / j / y / p / q 的尾巴）被客户区切掉。
     /// </summary>
     private Rectangle TextBounds()
     {
-        int h = _tb.PreferredHeight;
         int reserve = PadX + (ShowEye ? 28 : 0);      // 右侧给眼睛图标留位
-        return new Rectangle(PadX, (Height - h) / 2, Math.Max(10, Width - PadX - reserve), h);
+        return Ui.EditBox(PadX, Math.Max(10, Width - PadX - reserve), Height, _tb);
     }
 
     /// <summary>把内部文本框与占位文字按当前尺寸摆好（构造与尺寸变化时都要调用）。</summary>

@@ -12,7 +12,15 @@ internal sealed class SearchField : Control
     /// <summary>文字距输入框左边缘的距离：占位文字与实际输入共用这一个起点。</summary>
     private const int TextPadX = 10;
 
-    private readonly Font _uiFont = Theme.UI(11.5f);
+    /// <summary>
+    /// 字号必须是「磅值 × 96 / 72 得到整数像素」的那种。
+    ///
+    /// 11.5pt → 15.33px，GDI+（给 EDIT 建 HFONT 的那条路）向下取整成 15px，
+    /// 而 <see cref="TextRenderer"/>（占位文字那条路）向上取整成 16px —— 同一个字体、
+    /// 同一个字符串，占位文字会比实际输入整整大一个 em 像素（实测 76×16 对 71×13）。
+    /// 11.25pt → 正好 15.0px，两边没有可分歧的余数，两条路渲染出来的字一样大。
+    /// </summary>
+    private readonly Font _uiFont = Theme.UI(11.25f);
     private readonly TextBox _tb;
     private readonly HintText _ph;
     private readonly System.Windows.Forms.Timer _debounce;
@@ -30,6 +38,7 @@ internal sealed class SearchField : Control
         _tb = new TextBox
         {
             BorderStyle = BorderStyle.None,
+            AutoSize = false,               // 否则高度被锁回 PreferredHeight，见 Ui.EditBoxHeight
             Font = _uiFont,
             BackColor = Theme.InputBg,
             ForeColor = Theme.TextMain,
@@ -80,19 +89,16 @@ internal sealed class SearchField : Control
     /// 输入文字所占的矩形（占位 Label 与 TextBox 共用同一套坐标）。
     ///
     /// 单行 TextBox 的高度由字体锁定 —— 传给 SetBounds 的高度会被 WinForms
-    /// 改回 PreferredHeight，而且即使按传进去的高度排版，EDIT 也是把文字
-    /// **顶对齐**在自己客户区里的。所以「文字竖直居中」不能靠调 TextBox 高度，
-    /// 只能把这个“字体高度”的盒子整体摆到控件正中。
+    /// 改回 PreferredHeight，而且 EDIT 是把文字**顶对齐**在自己客户区里的。
+    /// 所以「文字竖直居中」不能靠调 TextBox 高度，只能把这个盒子的上边缘摆到
+    /// 控件正中的行高位置上，再向下加余量（详见 <see cref="Ui.EditBox"/>）。
     ///
     /// 横向同理：左边距由 <see cref="TextPadX"/> 统一给定，EDIT 自己的内边距
     /// 由 <see cref="Ui.PinEditTextLeft"/> 清零，占位文字层也从同一个 x 起画，
-    /// 所以输入前后文字的左侧起始位置不会有肉眼可见的偏移。
+    /// 所以输入前后文字的起始位置不会有肉眼可见的偏移。
     /// </summary>
     private Rectangle TextBounds()
-    {
-        int h = _tb.PreferredHeight;
-        return new Rectangle(TextPadX, (Height - h) / 2, Width - TextPadX - 26, h);
-    }
+        => Ui.EditBox(TextPadX, Width - TextPadX - 26, Height, _tb);
 
     private void UpdateUI()
     {

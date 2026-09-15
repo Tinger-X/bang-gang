@@ -26,6 +26,20 @@ public static class BB {
     [DllImport("user32.dll")] public static extern bool EnumChildWindows(IntPtr h, EnumProc cb, IntPtr l);
     [DllImport("user32.dll")] public static extern IntPtr GetParent(IntPtr h);
     [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr h, out RECT r);
+    [DllImport("user32.dll")] public static extern bool GetClientRect(IntPtr h, out RECT r);
+    [DllImport("gdi32.dll", CharSet=CharSet.Unicode)] public static extern int GetObject(IntPtr h, int n, ref LOGFONT lf);
+    [DllImport("gdi32.dll")] public static extern IntPtr CreateCompatibleDC(IntPtr hdc);
+    [DllImport("gdi32.dll")] public static extern IntPtr SelectObject(IntPtr hdc, IntPtr obj);
+    [DllImport("gdi32.dll")] public static extern bool DeleteDC(IntPtr hdc);
+    [DllImport("gdi32.dll", CharSet=CharSet.Unicode)] public static extern bool GetTextExtentPoint32(IntPtr hdc, string s, int n, out SIZE sz);
+    [StructLayout(LayoutKind.Sequential)] public struct SIZE { public int cx, cy; }
+    [StructLayout(LayoutKind.Sequential, CharSet=CharSet.Unicode)]
+    public struct LOGFONT {
+        public int lfHeight, lfWidth, lfEscapement, lfOrientation, lfWeight;
+        public byte lfItalic, lfUnderline, lfStrikeOut, lfCharSet, lfOutPrecision,
+                    lfClipPrecision, lfQuality, lfPitchAndFamily;
+        [MarshalAs(UnmanagedType.ByValTStr, SizeConst=32)] public string lfFaceName;
+    }
     [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr h, out uint pid);
     [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr h);
     [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr h, int c);
@@ -62,6 +76,33 @@ public static class BB {
     }
 
     public static string Cls(IntPtr h) { var s = new StringBuilder(256); GetClassName(h, s, 256); return s.ToString(); }
+
+    // WM_GETFONT -> the HFONT the control is actually rendered with. This is how
+    // you tell whether a placeholder and the EDIT it sits in really share a font,
+    // instead of trusting that both were assigned the same one in C#.
+    public static string FontOf(IntPtr h) {
+        IntPtr hf = SendMessage(h, 0x0031, IntPtr.Zero, IntPtr.Zero);
+        if (hf == IntPtr.Zero) return "(no font)";
+        var lf = new LOGFONT();
+        if (GetObject(hf, Marshal.SizeOf(typeof(LOGFONT)), ref lf) == 0) return "(GetObject failed)";
+        return lf.lfFaceName + "  height=" + lf.lfHeight + "  width=" + lf.lfWidth + "  weight=" + lf.lfWeight;
+    }
+
+    // Line height the control's own font produces, measured through a memory DC.
+    // If this exceeds the control's client height, the glyphs cannot fit and the
+    // descenders get cut -- no guessing required.
+    public static string TextExtent(IntPtr h, string s) {
+        IntPtr hf = SendMessage(h, 0x0031, IntPtr.Zero, IntPtr.Zero);
+        if (hf == IntPtr.Zero) return "(no font)";
+        IntPtr dc = CreateCompatibleDC(IntPtr.Zero);
+        IntPtr old = SelectObject(dc, hf);
+        SIZE sz;
+        bool ok = GetTextExtentPoint32(dc, s, s.Length, out sz);
+        SelectObject(dc, old);
+        DeleteDC(dc);
+        if (!ok) return "(GetTextExtent failed)";
+        return "line height=" + sz.cy + "  text width=" + sz.cx;
+    }
 
     // GetWindowText cannot read another process's control -- it only returns the
     // cached title, which is empty for a foreign child HWND. WM_GETTEXT via
@@ -138,9 +179,12 @@ function Invoke-BBProbe {
 }
 
 function Get-WinRect($h) { $r = New-Object BB+RECT; [void][BB]::GetWindowRect($h, [ref]$r); return $r }
+function Get-ClientRect($h) { $r = New-Object BB+RECT; [void][BB]::GetClientRect($h, [ref]$r); return $r }
 function Get-WinKids($h) { return [BB]::Kids($h) }
 function Get-WinClass($h) { return [BB]::Cls($h) }
 function Get-WinText($h) { return [BB]::Tx($h) }
+function Get-WinFont($h) { return [BB]::FontOf($h) }
+function Get-TextExtent($h, [string]$s) { return [BB]::TextExtent($h, $s) }
 
 function Write-WinTree($root) {
     $mr = Get-WinRect $root

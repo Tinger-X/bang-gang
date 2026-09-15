@@ -54,6 +54,41 @@ internal static class Ui
         const int EC_LEFTMARGIN = 0x0001;
         Win32.SendMessage(tb.Handle, EM_SETMARGINS, (IntPtr)EC_LEFTMARGIN, IntPtr.Zero);
     }
+
+    /// <summary>单行 EDIT 的盒子在字体行高之外预留的余量（像素）。</summary>
+    public const int EditBoxPadY = 6;
+
+    /// <summary>
+    /// 单行 EDIT（以及它的占位文字层）应该占据的矩形。
+    ///
+    /// 两条实测出来的硬事实，决定了这个函数只能长这样：
+    ///
+    /// 1) **EDIT 把单行文字顶对齐在自己的客户区里** —— 同一串字，盒子高 18 和 24，
+    ///    墨迹都从第 5 行开始。也就是说<strong>盒子的上边缘决定文字位置</strong>，
+    ///    盒子加高只会把多出来的空间全部留在下方，文字不会跟着往下走。
+    ///    （见 tools/hint-align.ps1，纯 WinForms 复现，不依赖本程序。）
+    ///
+    /// 2) WinForms 把单行 TextBox 的高度锁死在 <c>PreferredHeight</c>（≈ 字体行高，
+    ///    不含任何余量），而雅黑这类 CJK 字体的下缘实笔略超出 GDI 报的行高，
+    ///    于是 g / j / y / p / q 的尾巴正好被客户区裁掉约 1px —— 全选时最明显：
+    ///    高亮块的下边界切在字上。
+    ///
+    /// 所以：上边缘取「行高盒子竖直居中」的位置（<strong>文字位置与加余量之前完全一致</strong>，
+    /// 仍然居中），高度再加 <see cref="EditBoxPadY"/> —— 余量只加在下方。
+    /// 要是上下对称地加，文字会被顶到偏上 pad/2，反而不居中了。
+    ///
+    /// 配套要求：
+    /// - <c>tb.AutoSize = false</c>，否则传给 SetBounds 的高度会被改回 PreferredHeight；
+    /// - 占位层用 <see cref="TextFormatFlags.Top"/> 画（而不是 VerticalCenter），
+    ///   它才会和 EDIT 一样顶对齐到同一个位置。
+    /// </summary>
+    public static Rectangle EditBox(int left, int width, int containerHeight, TextBox tb)
+    {
+        int line = tb.PreferredHeight;
+        int h = line + EditBoxPadY;
+        int top = Math.Max(0, (containerHeight - line) / 2);
+        return new Rectangle(left, top, width, h);
+    }
 }
 
 /// <summary>
@@ -63,6 +98,11 @@ internal static class Ui
 /// glyph overhang 内边距，起点和 EDIT 对不齐；这里显式带 <c>NoPadding</c>，
 /// 文字起点就是客户区左边缘，与 <see cref="Ui.PinEditTextLeft"/> 处理过的
 /// EDIT 完全一致。
+///
+/// 为什么竖直方向用 <see cref="TextFormatFlags.Top"/> 而不是 VerticalCenter：
+/// EDIT 把单行文字**顶对齐**在自己的客户区里，VerticalCenter 则按矩形高度居中 ——
+/// 两者只在「矩形高度恰好等于行高」时才碰巧重合，盒子一加余量就错开 3px。
+/// 实测 Top 与 EDIT 的墨迹逐像素一致（tools/hint-align.ps1），且与矩形高度无关。
 ///
 /// 为什么必须是浮在 TextBox 之上的独立子控件：TextBox 会用不透明底色铺满
 /// 自己的客户区，父层 <c>OnPaint</c> 里画的占位文字会被它整片盖掉。
@@ -94,7 +134,7 @@ internal sealed class HintText : Control
     {
         if (_hint.Length == 0) return;
         TextRenderer.DrawText(e.Graphics, _hint, Font, new Rectangle(0, 0, Width, Height), ForeColor,
-            TextFormatFlags.Left | TextFormatFlags.VerticalCenter
+            TextFormatFlags.Left | TextFormatFlags.Top
             | TextFormatFlags.NoPrefix | TextFormatFlags.NoPadding);
     }
 }

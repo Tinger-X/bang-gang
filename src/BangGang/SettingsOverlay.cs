@@ -305,6 +305,11 @@ internal sealed class SettingsOverlay : Panel, IPopupHost
     /// 因此设置打开期间主界面不再可点（但外观仍与原界面一致，靠底层快照绘制）。
     /// 万一底图没抓到（DrawToBitmap 失败），退回到“只占卡片区域”的圆角 Region，
     /// 让主界面自己绘制，避免出现一片未绘制的黑区。
+    ///
+    /// 唯一的例外是主窗口自己的关闭按钮（<see cref="AppCloseBounds"/>）：那一小块被
+    /// 从 Region 里挖掉，鼠标消息于是直接落到下面那个**真按钮**上 —— 设置打开期间
+    /// 也能一键退出，不必先关掉设置。挖掉的那块改由底层界面自己绘制（快照在同一个
+    /// 位置被让了出来），所以既不会重影，也不会留陈旧像素。
     /// </summary>
     private void ApplyRegion()
     {
@@ -316,11 +321,48 @@ internal sealed class SettingsOverlay : Panel, IPopupHost
             using var path = RP.Path(rect, _card.Radius + 1);
             region = new Region(path);
         }
-        else region = null;
+        else
+        {
+            region = new Region(new Rectangle(0, 0, Math.Max(1, Width), Math.Max(1, Height)));
+
+            // 卡片压到关闭按钮上时（窗口极小）不能挖洞，否则会啃掉卡片的一角
+            var hole = _appCloseBounds;
+            var cardRect = new Rectangle(_cardPos.X - 1, _cardPos.Y - 1,
+                                         Math.Max(1, _card.Width) + 2, Math.Max(1, _card.Height) + 2);
+            if (hole.Width > 0 && hole.Height > 0 && !hole.IntersectsWith(cardRect))
+            {
+                region.Exclude(hole);
+                RepaintUnder(hole);
+            }
+        }
 
         var old = Region;
         Region = region;
         old?.Dispose();
+    }
+
+    private Rectangle _appCloseBounds;
+
+    /// <summary>
+    /// 主窗口「关闭」按钮在浮窗坐标系里的矩形（浮窗铺满整个客户区，两者同一坐标系），
+    /// 由主窗口在布局时注入。见 <see cref="ApplyRegion"/>。
+    /// </summary>
+    public Rectangle AppCloseBounds
+    {
+        get => _appCloseBounds;
+        set
+        {
+            if (_appCloseBounds == value) return;
+            _appCloseBounds = value;
+            if (IsHandleCreated) ApplyRegion();
+        }
+    }
+
+    /// <summary>挖洞后让下面的兄弟控件把那一块重画一遍，别留下浮窗的旧像素。</summary>
+    private void RepaintUnder(Rectangle hole)
+    {
+        if (!Visible) return;
+        Parent?.Invalidate(hole, true);
     }
 
     /// <summary>顶部条（ChromeBar 区域）按下时请求主窗口拖动：设置打开期间仍可拖窗。</summary>
@@ -378,8 +420,8 @@ internal sealed class SettingsOverlay : Panel, IPopupHost
 
     /// <summary>
     /// 浮窗本体只画卡片；卡片以外的区域直接用底层界面快照铺上，
-    /// 这样不会留下“陈旧像素”。不使用 Region：Region 会把圆角硬裁剪出锯齿，
-    /// 卡片以外的点击穿透由 <see cref="WndProc"/> 的 WM_NCHITTEST 处理。
+    /// 这样不会留下“陈旧像素”。圆角不做 Region 裁剪（会裁出锯齿），而是靠快照本身
+    /// 就是抗锯齿画出来的；Region 只用来整块覆盖 / 挖掉关闭按钮，见 <see cref="ApplyRegion"/>。
     /// </summary>
     protected override void OnPaintBackground(PaintEventArgs e)
     {

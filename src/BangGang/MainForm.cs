@@ -12,7 +12,7 @@ namespace BangGang;
 public class MainForm : Form
 {
     public const string WindowTitle = "帮帮";
-    public const string AppVersion = "v0.7.19";
+    public const string AppVersion = "v0.7.20";
 
     private const uint Affinity = Native.WDA_EXCLUDEFROMCAPTURE;
     private const int SideW = 304;
@@ -123,6 +123,12 @@ public class MainForm : Form
         _settingsOverlay.DragStripHeight = ChromeH;
         _settingsOverlay.Visible = false;
         Controls.Add(_settingsOverlay);
+
+        // 浮窗铺满整窗，会吃掉包括关闭按钮在内的所有点击；把按钮的矩形交给它，
+        // 由它在自己的 Region 上挖掉这一块，于是设置打开期间也能直接点关闭退出。
+        // 挂在事件上而不是布局里读一次：工具条改宽会重新摆按钮，缓存才不会过期。
+        _chrome.CloseButtonMoved += () => _settingsOverlay.AppCloseBounds = _chrome.CloseButtonBounds;
+        _settingsOverlay.AppCloseBounds = _chrome.CloseButtonBounds;
 
         // ---- 布局 ----
         ApplyLayout();
@@ -663,6 +669,15 @@ internal sealed class ChromeBar : Panel, IThemed
     private readonly Label _brand;
     private IconButton _close = null!;
 
+    /// <summary>
+    /// 关闭按钮相对本工具条的矩形。工具条贴在客户区左上角，所以这份坐标
+    /// 直接就是主窗口客户区坐标 —— 设置浮窗据此在自己的 Region 上给按钮开洞。
+    /// </summary>
+    public Rectangle CloseButtonBounds => _close.Bounds;
+
+    /// <summary>关闭按钮被重新摆放（工具条改宽）时触发，订阅者据此同步自己缓存的矩形。</summary>
+    public event Action? CloseButtonMoved;
+
     public ChromeBar()
     {
         Height = 38;
@@ -696,8 +711,14 @@ internal sealed class ChromeBar : Panel, IThemed
 
         MouseDown += (_, e) => { if (e.Button == MouseButtons.Left) DragRequested?.Invoke(); };
         _brand.MouseDown += (_, e) => { if (e.Button == MouseButtons.Left) DragRequested?.Invoke(); };
-        Resize += (_, _) => _close.Location = new Point(Width - 40, 5);
+        Resize += (_, _) => PlaceClose();
+        PlaceClose();
+    }
+
+    private void PlaceClose()
+    {
         _close.Location = new Point(Width - 40, 5);
+        CloseButtonMoved?.Invoke();
     }
 
     /// <summary>主题切换后重新着色（顶栏也要跟随暗色）。</summary>
