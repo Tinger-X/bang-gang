@@ -5,7 +5,7 @@ namespace BangGang;
 /// <summary>小型图标按钮（放大镜 / 齿轮 / 加号 / 发送 / 关闭 / 回形针等），不改变鼠标指针。</summary>
 internal sealed class IconButton : Control, IThemed
 {
-    public enum Kind { Search, Gear, Plus, Send, Record, Close, Paperclip, Maximize, Restore }
+    public enum Kind { Search, Gear, Plus, Send, Record, Close, Paperclip, Maximize, Restore, Collapse, Expand }
 
     public Kind Icon { get; set; }
     private readonly Color? _backdropHint;
@@ -85,6 +85,15 @@ internal sealed class IconButton : Control, IThemed
                 g.DrawLine(pen, c - 3, c - 3, c - 3, c - 5);
                 g.DrawLine(pen, c - 3, c - 5, c + 5, c - 5);
                 g.DrawLine(pen, c + 5, c - 5, c + 5, c + 3);
+                break;
+            case Kind.Collapse:
+            case Kind.Expand:
+                // 侧栏那条竖边 + 一个尖角：尖角指左 = 收起，指右 = 展开
+                g.DrawLine(pen, c - 5, c - 6, c - 5, c + 6);
+                float tip = Icon == Kind.Collapse ? c - 1 : c + 3;
+                float back = Icon == Kind.Collapse ? c + 3 : c - 1;
+                g.DrawLine(pen, back, c - 4, tip, c);
+                g.DrawLine(pen, tip, c, back, c + 4);
                 break;
             case Kind.Paperclip:
                 g.DrawArc(pen, c - 7, c - 3, 9, 10, 60, 300);

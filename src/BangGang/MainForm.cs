@@ -13,15 +13,25 @@ namespace BangGang;
 public class MainForm : Form, IMessageFilter
 {
     public const string WindowTitle = "帮帮";
-    public const string AppVersion = "v0.7.23";
+    public const string AppVersion = "v0.7.24";
 
     private const uint Affinity = Native.WDA_EXCLUDEFROMCAPTURE;
 
     /// <summary>
-    /// 左侧栏宽度。栏内从左到右依次是搜索框（<c>SideW - 106</c> 宽）和两个 28px 图标按钮
-    /// （右边距分别为 86 / 46），所以改这个数之前先确认那三样还放得下。
+    /// 左侧栏**展开时**的宽度。栏内从左到右依次是搜索框（<c>SideW - 106</c> 宽）和两个 28px
+    /// 图标按钮（右边距分别为 86 / 46），所以改这个数之前先确认那三样还放得下。
+    ///
+    /// 栏内控件的几何一律按这个数算、固定不变，收起时的收窄由 <see cref="ApplyLayout"/>
+    /// 只改父面板宽度完成 —— 父控件会裁掉超出的子控件，于是动画中途不会出现 0 宽 /
+    /// 负宽的控件，也就不必到处写 <c>Math.Max(0, ...)</c>。
     /// </summary>
     private const int SideW = 256;
+
+    /// <summary>侧栏收起 / 展开动画的帧间隔（毫秒）。</summary>
+    private const int SideAnimMs = 18;
+
+    /// <summary>每帧消掉剩余距离的比例。0.28 大约 14 帧（≈250ms）走完，是一条缓出曲线。</summary>
+    private const double SideAnimEase = 0.28;
 
     private const int ChromeH = 38;
 
@@ -42,6 +52,7 @@ public class MainForm : Form, IMessageFilter
     private readonly WelcomeView _welcome;
     private readonly Panel _chatUI;
     private readonly Label _convTitle;
+    private readonly IconButton _btnSideToggle;
     private readonly ChatView _chatView;
     private readonly InputPanel _input;
     private readonly SettingsOverlay _settingsOverlay;
@@ -51,6 +62,7 @@ public class MainForm : Form, IMessageFilter
     private readonly System.Windows.Forms.Timer _guardTimer;
     private readonly System.Windows.Forms.Timer _pttTimer;
     private readonly System.Windows.Forms.Timer _statusTimer;
+    private readonly System.Windows.Forms.Timer _sideTimer;
 
     private AudioMixRecorder? _recorder;
     private bool _overlayActive;
@@ -109,13 +121,20 @@ public class MainForm : Form, IMessageFilter
         Controls.Add(_mainArea);
 
         _chatUI = new Panel { BackColor = Theme.ChatBg };
-        _convTitle = new Label { TextAlign = ContentAlignment.MiddleLeft, Font = Theme.UI(13f, FontStyle.Bold), ForeColor = Theme.TextMain, Padding = new Padding(20, 0, 0, 0), BackColor = Theme.PanelBg };
+        _convTitle = new Label { TextAlign = ContentAlignment.MiddleCenter, AutoEllipsis = true, Font = Theme.UI(13f, FontStyle.Bold), ForeColor = Theme.TextMain, BackColor = Theme.PanelBg };
         _chatView = new ChatView();
         _input = new InputPanel();
         _input.SendRequested += SendFromInput;
         _chatUI.Controls.Add(_convTitle);
         _chatUI.Controls.Add(_chatView);
         _chatUI.Controls.Add(_input);
+
+        // 顶栏左侧的「收起 / 展开左侧栏」。标题居中靠的是 Label 两侧对称的内边距，
+        // 所以这个按钮的宽度必须和内边距对得上（见 ApplyLayout 里的 ConvTitlePadX）。
+        _btnSideToggle = new IconButton(IconButton.Kind.Collapse, Theme.PanelBg) { Location = new Point(10, 10) };
+        _btnSideToggle.Click += (_, _) => ToggleSidebar();
+        _chatUI.Controls.Add(_btnSideToggle);
+        _btnSideToggle.BringToFront();      // 标题横跨整条，别把它压住
 
         _welcome = new WelcomeView { BackColor = Theme.ChatBg };
         _welcome.StartRequested += () => NewConversation();
@@ -155,6 +174,9 @@ public class MainForm : Form, IMessageFilter
 
         _statusTimer = new System.Windows.Forms.Timer { Interval = 3000 };
         _statusTimer.Tick += (_, _) => { _statusTimer.Stop(); _chrome.SetStatus(""); };
+
+        _sideTimer = new System.Windows.Forms.Timer { Interval = SideAnimMs };
+        _sideTimer.Tick += (_, _) => SideTick();
 
         AllowDrop = true;
         DragEnter += Main_DragEnter;
@@ -196,30 +218,46 @@ public class MainForm : Form, IMessageFilter
 
     // ---------------- 显式布局 ----------------
 
+    /// <summary>
+    /// 顶栏标题两侧对称的内边距：等于「按钮左间距 + 按钮宽 + 一点余量」，
+    /// 左右一样宽，于是 <c>MiddleCenter</c> 出来的标题正好落在整条的几何中线上，
+    /// 又不会被左边的按钮压住。
+    /// </summary>
+    private const int ConvTitlePadX = 44;
+
     private void ApplyLayout()
     {
         int W = ClientSize.Width, H = ClientSize.Height;
         _chrome.Bounds = new Rectangle(0, 0, W, ChromeH);
 
         int bodyH = H - ChromeH;
-        _sidebar.Bounds = new Rectangle(0, ChromeH, SideW, bodyH);
+
+        // 侧栏宽 = 当前动画值。栏内所有子控件仍按展开时的 SideW 摆，
+        // 收窄全靠父面板裁剪 —— 见 SideW 的注释。
+        int sw = _sideW;
+        _sidebar.Bounds = new Rectangle(0, ChromeH, sw, bodyH);
+        _sidebar.Visible = sw > 0;
 
         // 品牌块 / 对话功能区 / 对话列表三区紧邻，压缩中间空白
         _brand.Bounds = new Rectangle(0, 0, SideW, 100);
         _convHead.Bounds = new Rectangle(0, 100, SideW, 46);
+        _search.Size = new Size(SideW - 106, 32);
+        _btnSettings.Location = new Point(SideW - 86, 9);
+        _btnNew.Location = new Point(SideW - 46, 9);
 
         int listTop = 146;
         _convList.Bounds = new Rectangle(0, listTop, SideW, bodyH - listTop);
 
-        _mainArea.Bounds = new Rectangle(SideW, ChromeH, W - SideW, bodyH);
-        _welcome.Bounds = new Rectangle(0, 0, W - SideW, bodyH);
-        _chatUI.Bounds = new Rectangle(0, 0, W - SideW, bodyH);
+        _mainArea.Bounds = new Rectangle(sw, ChromeH, W - sw, bodyH);
+        _welcome.Bounds = new Rectangle(0, 0, W - sw, bodyH);
+        _chatUI.Bounds = new Rectangle(0, 0, W - sw, bodyH);
 
         _settingsOverlay.Bounds = new Rectangle(0, 0, W, H);
         _frame.Bounds = new Rectangle(0, 0, W, H);
 
-        int mw = W - SideW;
+        int mw = W - sw;
         _convTitle.Bounds = new Rectangle(0, 0, mw, 48);
+        _convTitle.Padding = new Padding(ConvTitlePadX, 0, ConvTitlePadX, 0);
         _input.Bounds = new Rectangle(0, bodyH - 150, mw, 150);
         _chatView.Bounds = new Rectangle(0, 48, mw, bodyH - 48 - 150);
     }
@@ -239,6 +277,62 @@ public class MainForm : Form, IMessageFilter
     private void ApplyRoundRegion()
     {
         Region = null;
+    }
+
+    // ---------------- 左侧栏收起 / 展开 ----------------
+
+    private int _sideW = SideW;          // 当前动画宽度，0 = 完全收起
+    private int _sideTarget = SideW;     // 动画目标
+
+    /// <summary>
+    /// 收起 / 展开左侧栏。宽度不是一下跳过去的：<see cref="_sideTimer"/> 每帧把
+    /// <see cref="_sideW"/> 往目标推掉剩余距离的一部分，走一条缓出曲线。
+    /// 图标在这一刻就翻转（而不是等动画结束），点下去马上有反馈。
+    /// </summary>
+    private void ToggleSidebar()
+    {
+        bool collapse = _sideTarget > 0;             // 当前是展开的 -> 这一次要收起
+        _sideTarget = collapse ? 0 : SideW;
+        _btnSideToggle.Icon = collapse ? IconButton.Kind.Expand : IconButton.Kind.Collapse;
+        _btnSideToggle.Invalidate();
+        _sideTimer.Start();                          // 重复点只是换目标，不会叠出第二个动画
+    }
+
+    private void SideTick()
+    {
+        int d = _sideTarget - _sideW;
+
+        // 收尾：snap 到整数目标并停表。不能只判 d == 0 —— 指数逼近永远差一点点。
+        if (Math.Abs(d) <= 2)
+        {
+            _sideW = _sideTarget;
+            _sideTimer.Stop();
+        }
+        else
+        {
+            _sideW += (int)Math.Round(d * SideAnimEase);
+        }
+
+        ApplyLayout();
+    }
+
+    /// <summary>
+    /// 确保侧栏是展开的。<see cref="ToggleSidebar"/> 的按钮长在「对话栏」顶栏上，而那个
+    /// 顶栏只在有会话时可见，所以「侧栏收起 + 没有会话」是个死局：既没有按钮，也没有
+    /// 行可以点。
+    ///
+    /// 这个死局目前进不去 —— 侧栏一收，会话列表就跟着被父面板裁掉（不显示也点不到），
+    /// 删不掉最后一个会话。所以这里是一条保险：只要「活跃会话没了」这件事还能从别的
+    /// 路径发生，退到欢迎页时就把侧栏一并展开，不留一个回不来的界面。
+    /// </summary>
+    private void EnsureSidebarOpen()
+    {
+        if (_sideTarget > 0) return;
+        _sideTimer.Stop();
+        _sideTarget = SideW;
+        _sideW = SideW;
+        _btnSideToggle.Icon = IconButton.Kind.Collapse;
+        ApplyLayout();
     }
 
     // ---------------- 拖动 ----------------
@@ -435,6 +529,7 @@ public class MainForm : Form, IMessageFilter
             _chatUI.Visible = false;
             _welcome.Visible = true;
             _chatView.Load(null!);
+            EnsureSidebarOpen();     // 顶栏（连同收起按钮）没了，侧栏就得自己回来
         }
         RebindConversations();
     }
@@ -592,6 +687,7 @@ public class MainForm : Form, IMessageFilter
         _guardTimer.Stop();
         _pttTimer.Stop();
         _statusTimer.Stop();
+        _sideTimer.Stop();
         UnregisterHotkeys();
         _recorder?.Stop();
         base.OnFormClosed(e);
