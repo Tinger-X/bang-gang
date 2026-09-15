@@ -9,9 +9,12 @@ internal sealed class SearchField : Control
 {
     private const int WM_PRINT = 0x0317;
 
+    /// <summary>文字距输入框左边缘的距离：占位文字与实际输入共用这一个起点。</summary>
+    private const int TextPadX = 10;
+
     private readonly Font _uiFont = Theme.UI(11.5f);
     private readonly TextBox _tb;
-    private readonly Label _ph;
+    private readonly HintText _ph;
     private readonly System.Windows.Forms.Timer _debounce;
     private bool _focused;
     private bool _overClear;
@@ -34,16 +37,16 @@ internal sealed class SearchField : Control
         _tb.TextChanged += (_, _) => { UpdateUI(); RestartDebounce(); };
         _tb.GotFocus += (_, _) => { _focused = true; Invalidate(); };
         _tb.Leave += (_, _) => { _focused = false; Invalidate(); };
+        _tb.HandleCreated += (_, _) => Ui.PinEditTextLeft(_tb);
         Controls.Add(_tb);
+        Ui.PinEditTextLeft(_tb);
 
-        _ph = new Label
+        _ph = new HintText
         {
-            AutoSize = false,               // 与 TextBox 等高的盒子，两者文字才会落在同一高度
-            TextAlign = ContentAlignment.MiddleLeft,
+            Font = _uiFont,                 // 与 TextBox 同字体，两者文字才可能像素对齐
             BackColor = Theme.InputBg,
-            Font = _uiFont,
             ForeColor = Theme.TextMuted,
-            Text = "搜索对话…",
+            Hint = "搜索对话…",
         };
         _ph.MouseDown += (_, _) => { _tb.Focus(); };
         Controls.Add(_ph);
@@ -74,28 +77,28 @@ internal sealed class SearchField : Control
     }
 
     /// <summary>
-    /// 输入文字所占的矩形（占位 Label 与 TextBox 共用同一套纵向坐标）。
+    /// 输入文字所占的矩形（占位 Label 与 TextBox 共用同一套坐标）。
     ///
     /// 单行 TextBox 的高度由字体锁定 —— 传给 SetBounds 的高度会被 WinForms
     /// 改回 PreferredHeight，而且即使按传进去的高度排版，EDIT 也是把文字
     /// **顶对齐**在自己客户区里的。所以「文字竖直居中」不能靠调 TextBox 高度，
     /// 只能把这个“字体高度”的盒子整体摆到控件正中。
+    ///
+    /// 横向同理：左边距由 <see cref="TextPadX"/> 统一给定，EDIT 自己的内边距
+    /// 由 <see cref="Ui.PinEditTextLeft"/> 清零，占位文字层也从同一个 x 起画，
+    /// 所以输入前后文字的左侧起始位置不会有肉眼可见的偏移。
     /// </summary>
     private Rectangle TextBounds()
     {
         int h = _tb.PreferredHeight;
-        return new Rectangle(8, (Height - h) / 2, Width - 8 - 26, h);
+        return new Rectangle(TextPadX, (Height - h) / 2, Width - TextPadX - 26, h);
     }
 
     private void UpdateUI()
     {
         bool has = _tb.Text.Length > 0;
         _ph.Visible = !has;
-        if (!has)
-        {
-            var r = TextBounds();
-            _ph.Bounds = new Rectangle(10, r.Y, Width - 10 - 26, r.Height);
-        }
+        _ph.Bounds = TextBounds();      // 与 TextBox 同一个盒子，左边缘与竖直中心都对齐
         Invalidate();
     }
 
@@ -126,7 +129,7 @@ internal sealed class SearchField : Control
     protected override void OnResize(EventArgs e)
     {
         base.OnResize(e);
-        if (_tb == null) return; // 构造期间子控件尚未建立
+        if (_tb == null || _ph == null) return; // 构造期间子控件尚未建立
         LayoutBox();
     }
 

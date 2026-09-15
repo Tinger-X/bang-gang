@@ -626,8 +626,17 @@ internal sealed class SettingRow : Panel, IThemed, IArranged
 internal sealed class InputField : Control, IThemed, IArranged
 {
     private readonly TextBox _tb;
-    private readonly Label _ph;
+    private readonly HintText _ph;
     private bool _focus, _hover, _revealed;
+
+    /// <summary>文字距输入框左边缘的距离：占位文字与实际输入共用这一个起点。</summary>
+    private const int PadX = 12;
+
+    /// <summary>
+    /// 输入文字的字体：与同一张卡片里的下拉框（<see cref="DropdownSelect"/> 用 10.5f）一致。
+    /// 之前这里是 22f —— 是所有设置控件里唯一一个这么大的字号，显得整页只有输入框是「大字」。
+    /// </summary>
+    private static readonly Font TextFont = Theme.UI(10.5f);
 
     public bool Secret { get; set; }
     public string Placeholder { get; private set; } = "";
@@ -648,7 +657,7 @@ internal sealed class InputField : Control, IThemed, IArranged
         _tb = new TextBox
         {
             BorderStyle = BorderStyle.None,
-            Font = Theme.UI(22f),
+            Font = TextFont,
             BackColor = SC.FieldBg,       // 与外部边框同色，视觉上只有一个框
             ForeColor = SC.Ink,
             UseSystemPasswordChar = secret,
@@ -656,16 +665,16 @@ internal sealed class InputField : Control, IThemed, IArranged
         _tb.TextChanged += (_, _) => { UpdatePlaceholder(); Changed?.Invoke(); Invalidate(); };
         _tb.GotFocus += (_, _) => { _focus = true; UpdatePlaceholder(); Invalidate(); };
         _tb.LostFocus += (_, _) => { _focus = false; UpdatePlaceholder(); Invalidate(); };
+        _tb.HandleCreated += (_, _) => Ui.PinEditTextLeft(_tb);
         Controls.Add(_tb);
+        Ui.PinEditTextLeft(_tb);
 
-        _ph = new Label
+        _ph = new HintText
         {
-            AutoSize = false,
-            Font = Theme.UI(22f),
+            Font = TextFont,              // 与 TextBox 同字体，两者文字才可能像素对齐
             ForeColor = SC.InkFaint,
             BackColor = SC.FieldBg,
-            Text = placeholder,
-            TextAlign = ContentAlignment.MiddleLeft,
+            Hint = placeholder,
         };
         _ph.MouseDown += (_, _) => _tb.Focus();
         Controls.Add(_ph);
@@ -681,18 +690,32 @@ internal sealed class InputField : Control, IThemed, IArranged
     public void SetPlaceholder(string text)
     {
         Placeholder = text ?? "";
-        _ph.Text = Placeholder;
+        _ph.Hint = Placeholder;
         UpdatePlaceholder();
         Invalidate();
+    }
+
+    /// <summary>
+    /// 文字所占的矩形：内部 TextBox 与占位文字层共用同一个盒子，
+    /// 左边缘与竖直中心因此严格对齐。
+    ///
+    /// 不能把 TextBox 拉满整高 —— 单行 EDIT 会在自己的客户区里**顶对齐**文字，
+    /// 高度一多余文字就贴上边框（之前字体大到几乎填满整高，才看着像居中）。
+    /// </summary>
+    private Rectangle TextBounds()
+    {
+        int h = _tb.PreferredHeight;
+        int reserve = PadX + (ShowEye ? 28 : 0);      // 右侧给眼睛图标留位
+        return new Rectangle(PadX, (Height - h) / 2, Math.Max(10, Width - PadX - reserve), h);
     }
 
     /// <summary>把内部文本框与占位文字按当前尺寸摆好（构造与尺寸变化时都要调用）。</summary>
     public void Arrange()
     {
-        if (_tb == null) return;
-        int right = 12 + (ShowEye ? 26 : 0);
-        // 文本框与外部边框同高、上下满铺：文字由单行 TextBox 自行左对齐 + 垂直居中
-        _tb.SetBounds(12, 0, Math.Max(10, Width - 12 - right), Height);
+        if (_tb == null || _ph == null) return;
+        var r = TextBounds();
+        _tb.Bounds = r;
+        _ph.Bounds = r;
         UpdatePlaceholder();
     }
 
@@ -720,11 +743,8 @@ internal sealed class InputField : Control, IThemed, IArranged
 
     private void UpdatePlaceholder()
     {
-        bool show = _tb.Text.Length == 0 && !_focus;
-        _ph.Visible = show;
-        // 占位文字按字体行高居中：只占文本框那一行的高度，铺满整高会盖住输入框上下边框
-        if (show)
-            _ph.SetBounds(12, 0, Math.Max(10, Width - 24 - (ShowEye ? 28 : 0)), Height);
+        // 位置在 Arrange() 里统一摆放，这里只管显示/隐藏
+        _ph.Visible = _tb.Text.Length == 0 && !_focus;
     }
 
     public void Restyle()
