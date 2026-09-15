@@ -13,7 +13,7 @@ namespace BangGang;
 public class MainForm : Form, IMessageFilter
 {
     public const string WindowTitle = "帮帮";
-    public const string AppVersion = "v0.7.24";
+    public const string AppVersion = "v0.7.25";
 
     private const uint Affinity = Native.WDA_EXCLUDEFROMCAPTURE;
 
@@ -981,7 +981,12 @@ internal sealed class ChromeBar : Panel, IThemed
     {
         Height = 38;
         BackColor = Theme.PanelBg;
-        SetStyle(ControlStyles.OptimizedDoubleBuffer | ControlStyles.UserPaint | ControlStyles.AllPaintingInWmPaint, true);
+        // 本文件里自绘的控件一律开 ResizeRedraw（见 WindowFrame / WelcomeView）。
+        // 这一条本身不是必须的 —— 底边线画在 y=Height-1、横跨 0..Width，而尺寸变化时 Windows
+        // 补画的恰好就是它要延伸的那条新增区域，所以它不会画旧。纯粹是补齐一致性，
+        // 别给下一个往这条上画东西的人留坑（缺 CS_HREDRAW/CS_VREDRAW 时的症状见 WelcomeView）。
+        SetStyle(ControlStyles.OptimizedDoubleBuffer | ControlStyles.UserPaint
+               | ControlStyles.AllPaintingInWmPaint | ControlStyles.ResizeRedraw, true);
 
         _brand = new Label
         {
@@ -1127,7 +1132,12 @@ internal sealed class WelcomeView : Panel
     public WelcomeView()
     {
         BackColor = Theme.ChatBg;
-        SetStyle(ControlStyles.OptimizedDoubleBuffer | ControlStyles.UserPaint | ControlStyles.AllPaintingInWmPaint, true);
+        // ResizeRedraw 必须开：整块内容是照着 Width / Height 现场摆的（居中、上下留白），
+        // 而不带 CS_HREDRAW/CS_VREDRAW 的窗口在尺寸变化时只有 Windows 补画的那一条新增区域
+        // 会重画，中间的原像素原样留着 —— 表现成「窗口拉大了，欢迎页还停在旧宽度居中」。
+        // 这是实测到的那个 bug 本身（tools/resize-lag.ps1 少了这一行就 FAIL），不是预防性写法。
+        SetStyle(ControlStyles.OptimizedDoubleBuffer | ControlStyles.UserPaint
+               | ControlStyles.AllPaintingInWmPaint | ControlStyles.ResizeRedraw, true);
     }
 
     protected override void OnMouseMove(MouseEventArgs e)

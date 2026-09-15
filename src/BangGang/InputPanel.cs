@@ -19,7 +19,11 @@ internal sealed class InputPanel : Panel
     public InputPanel()
     {
         BackColor = Theme.InputBg;
-        SetStyle(ControlStyles.OptimizedDoubleBuffer | ControlStyles.UserPaint | ControlStyles.AllPaintingInWmPaint, true);
+        // 自绘的控件一律开 ResizeRedraw，理由与「不这么做会怎样」见 MainForm.WelcomeView。
+        // 这里的顶边线画在 y=0、横跨 0..Width，本身不会画旧（Windows 补画的新增区域正是它要
+        // 延伸的地方），这一条是补齐一致性。
+        SetStyle(ControlStyles.OptimizedDoubleBuffer | ControlStyles.UserPaint
+               | ControlStyles.AllPaintingInWmPaint | ControlStyles.ResizeRedraw, true);
         Height = 150;
 
         _draft = new FlowLayoutPanel
