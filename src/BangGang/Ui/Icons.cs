@@ -2,7 +2,10 @@ using System.Drawing.Drawing2D;
 
 namespace BangGang;
 
-/// <summary>线框图标（统一 1.6px 圆头线条，风格与主界面一致）。</summary>
+/// <summary>
+/// 图标形状。除 <see cref="Glyph.Link"/> 外都是 1.6px 圆头线条；
+/// <see cref="Glyph.Link"/> 照搬的是一张**实心**参考图，笔画粗细由形状自己定，见那里的注释。
+/// </summary>
 internal enum Glyph { Sliders, Spark, Palette, Bubble, Link, Eye, EyeOff, Close, Reset, Check }
 
 internal static class Gfx
@@ -82,15 +85,56 @@ internal static class Gfx
                 break;
 
             case Glyph.Link:
-                // 外部链接：一个**开口朝右上**的方框 + 一支从框里指到框外的斜箭头。
-                // 三条边留下缺口是它的读法所在 —— 画成闭合方框就成了「复制」之类的另一个图标。
-                g.DrawLine(pen, cx - s * 0.92f, cy - s * 0.28f, cx - s * 0.92f, cy + s * 0.92f);   // 左边
-                g.DrawLine(pen, cx - s * 0.92f, cy + s * 0.92f, cx + s * 0.28f, cy + s * 0.92f);   // 下边
-                g.DrawLine(pen, cx + s * 0.28f, cy + s * 0.92f, cx + s * 0.28f, cy + s * 0.24f);   // 右边（半截）
-                g.DrawLine(pen, cx - s * 0.92f, cy - s * 0.28f, cx - s * 0.34f, cy - s * 0.28f);   // 上边（半截）
-                g.DrawLine(pen, cx - s * 0.06f, cy + s * 0.06f, cx + s * 0.92f, cy - s * 0.92f);   // 斜箭头
-                g.DrawLine(pen, cx + s * 0.28f, cy - s * 0.92f, cx + s * 0.92f, cy - s * 0.92f);   // 箭头两撇
-                g.DrawLine(pen, cx + s * 0.92f, cy - s * 0.92f, cx + s * 0.92f, cy - s * 0.28f);
+                // 外部链接：一圈**粗圆角方框**，右上角断开，一支同样粗的箭头穿过缺口指到框外。
+                //
+                // 形状照搬参考图 shoots/open.svg（那是一张**实心**图标），但它是**等宽**的：
+                // 框壁和箭杆都是 1024 网格里的 90 个单位，四个自由端都是半径 45 的半圆。
+                // 所以不必走填充路径 —— 一条同宽的圆头画笔沿中轴走一遍就得到同一张图，
+                // 于是它和别的线框图标共用 DrawGlyph 这一条路（同一套圆头、圆角连接、抗锯齿），
+                // 也不用在这里另开一段 Graphics 状态或自己管填充色。
+                //
+                // 下面的数是参考图 1024 网格里的原值（原点是 viewBox 中心、y 向下），乘 u 换成像素：
+                //   框    中心线半宽 355、圆角半径 105
+                //   缺口  上边停在中心线右侧 185 处，右边停在中心线下方 185 处
+                //   箭头  两条臂交在框缺掉的那个角 (355,-355) 上，各自只伸到离中心线 55 处；
+                //         箭杆从那个角一路连到中心 —— 长的那一笔是杆，短的两笔是头
+                {
+                    // 1.10：参考图的墨迹只占 1024 里的 800（78%），原样铺进 20px 的图标框偏小；
+                    // 放大一成后最远处的墨迹离圆心 10.8px，28px 圆钮（半径 14）里仍留 3px 余量。
+                    const float k = 1.10f;
+                    float u = s * k / 512f;
+                    float e = 355f * u, rr = 105f * u, stop = 185f * u, arm = 55f * u;
+
+                    // 笔宽由形状自己定，不取 DrawGlyph 的 w：等宽是这张图的一部分，
+                    // 而 90/1024 换算到本应用是 2.1px，比线框图标的 1.6 略粗 —— 实心图标就得这么读。
+                    using var lp = new Pen(c, 90f * u)
+                    { StartCap = LineCap.Round, EndCap = LineCap.Round, LineJoin = LineJoin.Round };
+
+                    // 框：从右边缺口处起笔，绕过左下三个圆角，收在上边缺口处。两端的半圆端头
+                    // 由圆头笔帽给出 —— 和参考图里的那两段弧是同一个东西。
+                    using (var frame = new GraphicsPath())
+                    {
+                        frame.AddLine(cx + e, cy + stop, cx + e, cy + e - rr);
+                        frame.AddArc(cx + e - 2 * rr, cy + e - 2 * rr, 2 * rr, 2 * rr, 0, 90);
+                        frame.AddLine(cx + e - rr, cy + e, cx - e + rr, cy + e);
+                        frame.AddArc(cx - e, cy + e - 2 * rr, 2 * rr, 2 * rr, 90, 90);
+                        frame.AddLine(cx - e, cy + e - rr, cx - e, cy - e + rr);
+                        frame.AddArc(cx - e, cy - e, 2 * rr, 2 * rr, 180, 90);
+                        frame.AddLine(cx - e + rr, cy - e, cx - stop, cy - e);
+                        g.DrawPath(lp, frame);
+                    }
+
+                    // 杆和两条臂画成**两个图形**：并成一条折线的话它会在这个角上来回折返，
+                    // 而 180° 的折返是个退化的连接；分成两个图形在那儿只是互相叠上。
+                    using (var arrow = new GraphicsPath())
+                    {
+                        arrow.AddLine(cx, cy, cx + e, cy - e);
+                        arrow.StartFigure();
+                        arrow.AddLine(cx + arm, cy - e, cx + e, cy - e);
+                        arrow.AddLine(cx + e, cy - e, cx + e, cy - arm);
+                        g.DrawPath(lp, arrow);
+                    }
+                }
                 break;
 
             case Glyph.Eye:

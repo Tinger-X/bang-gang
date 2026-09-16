@@ -254,12 +254,14 @@ internal sealed class IconButton : Control, IThemed
                 DrawPaperclip(g, c, c, 20f, ink);
                 break;
             case Kind.Link:
-                // 「打开外部链接」：复用同一套线框图标，别在这里另画一遍 ——
-                // 设置页的导航图标（Glyph.Link）和这里必须是同一个形状。
+                // 「打开外部链接」：形状一律走 Gfx.DrawGlyph(Glyph.Link)，别在这里另画一遍 ——
+                // 全应用只有这一枚按钮用它，多一处就多一份要同步的形状。
                 //
-                // 往里收 4px：这个形状按「占满整个方框」画（左右各到 0.92 个半宽），
-                // 直接铺在 28px 里时四角几乎顶到圆的边上，看着像被圆切了一刀。
-                Gfx.DrawGlyph(g, Glyph.Link, new RectangleF(4, 4, Width - 8, Height - 8), ink, 1.6f);
+                // 往里收 4px 让出 20px 的图标框：这个形状的圆角方框加上圆角连接，
+                // 对角线上最远的墨迹要伸到图标框外 0.8px，铺在 28px 里正好离圆边还剩 3px。
+                // 不传笔宽 —— 它照搬的是一张实心参考图，笔画粗细是形状自己的一部分，
+                // 由 DrawGlyph 里那一段按参考图的等宽算出来（见 Icons.cs 的 Glyph.Link）。
+                Gfx.DrawGlyph(g, Glyph.Link, new RectangleF(4, 4, Width - 8, Height - 8), ink);
                 break;
         }
         base.OnPaint(e);
