@@ -29,7 +29,40 @@ public class ChatMessage
     public string Role { get; set; } = "user"; // "user" | "assistant"
     public DateTime When { get; set; } = DateTime.Now;
     public string Text { get; set; } = "";
+
+    /// <summary>
+    /// 推理模型在正文之前吐出来的思考过程（`delta.reasoning_content`，deepseek-r1 /
+    /// 各种 `-thinking` 模型都有）。不是正文的一部分：**不会**被 <see cref="LlmClient"/>
+    /// 发回给模型，只在气泡里当「模型正在干什么」显示 —— 思考阶段动辄几秒到几十秒，
+    /// 一个字都不显示的话界面看着就是卡住了。
+    /// </summary>
+    public string Reasoning { get; set; } = "";
+
+    /// <summary>这一轮思考花了多少毫秒（0 = 没有思考）。收起状态那行「思考过程 · 6.2s」用它。</summary>
+    public int ReasoningMs { get; set; }
+
+    /// <summary>
+    /// 这条回复没能正常收尾时的说明，目前只有「被最大回复长度截断」。
+    ///
+    /// 和 <see cref="Text"/> 分开存是有意的：正文会被发回给模型当上下文，
+    /// 把一句中文警告混进去，模型下一轮就会对着自己的「警告」接着往下说。
+    /// 它只在气泡里显示。
+    /// </summary>
+    public string Warning { get; set; } = "";
+
     public List<Attachment> Attachments { get; set; } = new();
+
+    /// <summary>
+    /// 这条消息有没有值得留下来 / 值得画出来的东西。
+    ///
+    /// 落盘那边用它决定「空会话不写文件」，所以思考过程也算数：用户按了暂停、
+    /// 或者模型把长度上限全用在思考上时，正文是空的而思考是满的 —— 那一轮
+    /// 用户明明看见了东西，重启回来看见它没了会以为聊天记录丢了。
+    ///
+    /// 三个属性都可能是 JSON 里的 null（反序列化不看非空声明），所以逐个兜一层。
+    /// </summary>
+    public bool IsEmpty =>
+        (Text ?? "").Length == 0 && (Reasoning ?? "").Length == 0 && (Attachments?.Count ?? 0) == 0;
 }
 
 /// <summary>输入框/消息中的附件。</summary>

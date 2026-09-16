@@ -35,6 +35,7 @@ internal sealed class ChatView : Panel, IThemed
             {
                 var b = new MessageBubble(m, m.Role == "user");
                 b.ImagePressed += a => ImagePressed?.Invoke(a);
+                b.HeightChanged += NotifyRowGrew;
                 _rows.Add(b);
                 Controls.Add(b);
             }
@@ -89,6 +90,7 @@ internal sealed class ChatView : Panel, IThemed
     {
         var b = new MessageBubble(m, m.Role == "user");
         b.ImagePressed += a => ImagePressed?.Invoke(a);
+        b.HeightChanged += NotifyRowGrew;
         _rows.Add(b);
         Controls.Add(b);
         LayoutRows();

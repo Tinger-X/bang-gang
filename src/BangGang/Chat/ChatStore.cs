@@ -91,9 +91,15 @@ internal static class ChatStore
 
     private static string PathFor(string id) => Path.Combine(Dir, id + ".json");
 
-    /// <summary>这条会话里真正值得写下去的消息。空会话（一条都没有）返回空表。</summary>
+    /// <summary>
+    /// 这条会话里真正值得写下去的消息。空会话（一条都没有）返回空表。
+    ///
+    /// 「值得」的判据在 <see cref="ChatMessage.IsEmpty"/> 里 —— 那里把**思考过程**
+    /// 也算作内容：暂停在一轮思考中途、或者长度上限全被思考吃掉时，正文是空的而
+    /// 思考是满的，用户明明看见了一整屏字，只按正文判就等于凭空吃掉这一轮。
+    /// </summary>
     private static List<ChatMessage> Persistable(Conversation c) =>
-        c.Messages.Where(m => (m.Text ?? "").Length > 0 || m.Attachments.Count > 0).ToList();
+        c.Messages.Where(m => m != null && !m.IsEmpty).ToList();
 
     /// <summary>
     /// 把一条会话写进它自己的文件。
@@ -213,6 +219,10 @@ internal static class ChatStore
         foreach (var m in c.Messages)
         {
             m.Text = m.Text ?? "";
+            // 思考过程和截断说明同样可能是 JSON 里的 null：反序列化不看非空声明，
+            // 而气泡那边（以及文本发回模型那条路）都当它们是普通字符串在用。
+            m.Reasoning = m.Reasoning ?? "";
+            m.Warning = m.Warning ?? "";
             if (m.Attachments == null) m.Attachments = new();
             foreach (var a in m.Attachments)
             {

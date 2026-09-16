@@ -39,9 +39,12 @@ internal sealed class ProviderPicker : Panel, IThemed
         _dd.Chosen += i => { SyncGuide(); Chosen?.Invoke(i); };
         Controls.Add(_dd);
 
+        // 按钮常驻一枚淡强调色的圆底（Look.Tinted）：右边紧挨着下拉框，没有底衬时
+        // 那根细线箭头看上去只是卡片上的装饰，读不出「这儿能点」。
         _link = new IconButton(IconButton.Kind.Link, SC.GroupBg)
         {
             Location = new Point(width - BtnSize, (InputField.MinHeight - BtnSize) / 2),
+            Skin = IconButton.Look.Tinted,
         };
         _link.Click += (_, _) => OpenGuide();
         Controls.Add(_link);

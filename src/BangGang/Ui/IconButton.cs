@@ -8,13 +8,17 @@ internal sealed class IconButton : Control, IThemed
     public enum Kind { Search, Gear, Plus, Send, Stop, Record, Close, Paperclip, Maximize, Restore, Collapse, Expand, Link }
 
     /// <summary>
-    /// 底衬的三种画法。
+    /// 底衬的四种画法。
     ///
     /// <c>Chrome</c> 是顶栏 / 侧栏用的老样式：常驻一个浅色圆底，图标压在上面。
     /// 输入区底部工具行换成了参考产品的样子，那里两个按钮的底衬语义完全不同，于是拆出另外两种：
     /// <c>Ghost</c> 平时**不画**底衬（只有悬浮时才浮出一个圆），<c>Solid</c> 则永远是一枚实心圆。
+    ///
+    /// <c>Tinted</c> 是 <c>Chrome</c> 的强调色版本：常驻一枚淡色圆底，但底色往**主题强调色**上靠、
+    /// 图标本体也是强调色。给的是「这是一枚按钮」这个信息 —— 模型接入页那枚「打开官网指引」
+    /// 右边紧挨着下拉框，没有底衬时那根细线箭头看上去只是卡片上的装饰，读不出能点。
     /// </summary>
-    public enum Look { Chrome, Ghost, Solid }
+    public enum Look { Chrome, Ghost, Solid, Tinted }
 
     public Kind Icon { get; set; }
     public Look Skin { get; set; } = Look.Chrome;
@@ -152,6 +156,23 @@ internal sealed class IconButton : Control, IThemed
                 g.FillEllipse(sb, 0, 0, Width, Height);
             ink = Color.White;
         }
+        else if (Skin == Look.Tinted)
+        {
+            // 常驻的淡强调色圆底。**底色一律混自己的 BackColor**，不能取 Theme.SideBg 之类 ——
+            // 这枚圆盖在设置卡片的 GroupBg 上，混错基准就会在卡片上留一个异色圆斑
+            // （和 BackdropOwner 那段注释是同一个坑）。
+            //
+            // 不可点时换成中性的灰底：这里没有第二层表达（不像发送键那样靠实心圆的颜色说话），
+            // 只剩这个圈和那根图标，圈还是强调色的话，对「自定义」服务商就是一枚
+            // 看着能点、点了没反应的按钮。
+            using (var tb = new SolidBrush(!_clickable
+                       ? Theme.Mix(BackColor, Theme.TextMuted, 0.08f)
+                       : Theme.Mix(BackColor, Theme.Accent, _hover ? 0.26f : 0.13f)))
+                g.FillEllipse(tb, 0, 0, Width, Height);
+            ink = !_clickable ? Theme.Mix(BackColor, Theme.TextMuted, 0.34f)
+                : _hover ? Theme.Accent
+                : Theme.Mix(Theme.Accent, Theme.TextMain, 0.28f);
+        }
         else
         {
             // 常驻浅底圆钮（Chrome），或只在悬浮时才浮出来的圆底（Ghost）。
@@ -235,7 +256,10 @@ internal sealed class IconButton : Control, IThemed
             case Kind.Link:
                 // 「打开外部链接」：复用同一套线框图标，别在这里另画一遍 ——
                 // 设置页的导航图标（Glyph.Link）和这里必须是同一个形状。
-                Gfx.DrawGlyph(g, Glyph.Link, new RectangleF(0, 0, Width, Height), ink, 1.6f);
+                //
+                // 往里收 4px：这个形状按「占满整个方框」画（左右各到 0.92 个半宽），
+                // 直接铺在 28px 里时四角几乎顶到圆的边上，看着像被圆切了一刀。
+                Gfx.DrawGlyph(g, Glyph.Link, new RectangleF(4, 4, Width - 8, Height - 8), ink, 1.6f);
                 break;
         }
         base.OnPaint(e);

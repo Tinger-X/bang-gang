@@ -125,11 +125,18 @@ partial class MainForm
     private sealed class StreamState
     {
         public readonly StringBuilder Pending = new();
+
+        /// <summary>思考增量。和正文分两个缓冲，收尾时才知道哪一路有东西。</summary>
+        public readonly StringBuilder PendingReason = new();
+
         public readonly object Gate = new();
         public required Conversation Conv;
         public required ChatMessage Msg;
         public readonly CancellationTokenSource Cts = new();
         public System.Windows.Forms.Timer? Timer;
+
+        /// <summary>第一段思考到达的时刻（<see cref="Environment.TickCount64"/>）。0 = 还没开始思考。</summary>
+        public long ReasonStart;
     }
 
     private StreamState? _stream;
@@ -167,10 +174,26 @@ partial class MainForm
         FlashStatus("正在等待模型回复…");
         try
         {
-            await LlmClient.StreamAsync(cfg, history, s => { lock (st.Gate) st.Pending.Append(s); }, st.Cts.Token);
+            var res = await LlmClient.StreamAsync(
+                cfg, history,
+                s => { lock (st.Gate) st.Pending.Append(s); },
+                s =>
+                {
+                    lock (st.Gate)
+                    {
+                        if (st.ReasonStart == 0) st.ReasonStart = Environment.TickCount64;
+                        st.PendingReason.Append(s);
+                    }
+                },
+                st.Cts.Token);
+
             Flush(st);
-            if (st.Msg.Text.Length == 0) st.Msg.Text = "（模型没有返回内容）";
-            Trace.Log("llm done chars=" + st.Msg.Text.Length);
+            // 上限用完时流是「正常」结束的（finish_reason=length），不主动看一眼就只剩
+            // 「回复说着说着没了」这一个现象。见 LlmStreamResult 的注释。
+            if (res.Finish == "length") st.Msg.Warning = TruncationNote(cfg, res, st.Msg);
+            if (st.Msg.Text.Length == 0 && st.Msg.Warning.Length == 0)
+                st.Msg.Text = "（模型没有返回内容）";
+            Trace.Log($"llm done chars={st.Msg.Text.Length} reason={st.Msg.Reasoning.Length} finish={res.Finish}");
         }
         catch (OperationCanceledException)
         {
@@ -189,6 +212,11 @@ partial class MainForm
             st.Timer?.Dispose();
             st.Timer = null;
             st.Cts.Dispose();
+            Flush(st);                              // 收尾时还可能压着最后一段思考没落地
+            // 思考了多久只有这里知道（回调只看得到「第一段是什么时候到的」）。
+            // 已经在计时器里定过就不再覆盖：一轮里 PaintStream 只该让它变一次。
+            if (st.ReasonStart != 0 && st.Msg.ReasoningMs == 0)
+                st.Msg.ReasoningMs = (int)(Environment.TickCount64 - st.ReasonStart);
             PaintStream(st);                        // 收尾那一笔（错误说明 / 空回复提示）也要落到气泡上
             if (ReferenceEquals(_stream, st))
             {
@@ -201,16 +229,23 @@ partial class MainForm
         }
     }
 
-    /// <summary>把缓冲里的增量落到气泡上。后台线程只管往 <c>Pending</c> 里塞，一个字都不碰控件。</summary>
+    /// <summary>把缓冲里的增量落到气泡上。后台线程只管往两个 Pending 里塞，一个字都不碰控件。</summary>
     private void Flush(StreamState st)
     {
         string add;
+        bool grew;
         lock (st.Gate)
         {
-            if (st.Pending.Length == 0) return;
+            grew = st.Pending.Length > 0 || st.PendingReason.Length > 0;
             add = st.Pending.ToString();
             st.Pending.Clear();
+            if (st.PendingReason.Length > 0)
+            {
+                st.Msg.Reasoning += st.PendingReason.ToString();
+                st.PendingReason.Clear();
+            }
         }
+        if (!grew) return;
         st.Msg.Text += add;
         PaintStream(st);
     }
@@ -244,6 +279,24 @@ partial class MainForm
             RebindConversations();
         }
         PersistChat(conv);
+    }
+
+    /// <summary>
+    /// 这一轮被长度上限截断时贴在气泡下面的那句话。
+    ///
+    /// 必须把「去哪儿改」写出来：上限是本程序自己发出去的参数，用户看到的现象只是
+    /// 「回复说到一半就没了」，不给这句话就只能靠猜。而推理模型这一条尤其要讲清楚 ——
+    /// 思考的 token 和正文**共用**这一个上限，把上限全用在思考上时正文干脆是空的，
+    /// 看上去完全像是「模型坏了」，其实是设置小了。
+    /// </summary>
+    private static string TruncationNote(LlmConfig cfg, LlmStreamResult res, ChatMessage msg)
+    {
+        string s = $"回复被长度上限截断：单次最多 {cfg.MaxTokens} tokens，已经用完。";
+        if (res.ReasoningTokens > 0)
+            s += $"其中思考占了 {res.ReasoningTokens} tokens —— 推理模型的思考也算在这个上限里。";
+        else if (msg.Reasoning.Length > 0)
+            s += "推理模型的思考也算在这个上限里。";
+        return s + "调大「设置 → 对话设置 → 最大回复长度」再试。";
     }
 
     /// <summary>用户在输入框的「暂停」上点了：掐掉网络读取，已经收到的部分留在气泡里。</summary>

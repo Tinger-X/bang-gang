@@ -57,7 +57,7 @@ internal sealed class ChatPage : SettingsPage
 
         var gen = new GroupCard("生成参数", "按当前模型的能力量力而行，设置过大会被接口拒绝");
         gen.Add(new SettingRow("对话温度", "越低越稳定，越高越发散", _temp));
-        gen.Add(new SettingRow("最大回复长度", "单次回复的 token 上限", _tokens));
+        gen.Add(new SettingRow("最大回复长度", "单次上限，推理模型的思考也计入", _tokens));
         gen.Height = gen.MeasureHeight();
         Stack.Controls.Add(gen);
 

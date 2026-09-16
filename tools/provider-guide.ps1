@@ -24,10 +24,17 @@
 #   powershell -File tools\provider-guide.ps1            (A/B/C, plus the negative half of D)
 #   powershell -File tools\provider-guide.ps1 -Launch     (adds the positive half of D)
 #   powershell -File tools\provider-guide.ps1 -Dump       (prints the raw geometry)
+#   powershell -File tools\provider-guide.ps1 -Shot       (saves a crop of each state to shoots/)
+#
+# -Shot exists because the numbers in C cannot tell you whether the button LOOKS right:
+# "darkest=85" is satisfied by any number of shapes. The two crops are the only way to
+# see the circle the tinted skin draws, and having them come out of the same run that
+# measured them keeps the two readings on the same pixels.
 
 param(
     [switch]$Launch,
-    [switch]$Dump
+    [switch]$Dump,
+    [switch]$Shot
 )
 
 . "$PSScriptRoot\_ui.ps1"
@@ -119,6 +126,21 @@ function Measure-Icon($r) {
     }
     $bmp.Dispose()
     return @{ Bg = [int]$bg; Min = [int]$min; N = $n }
+}
+
+# A crop of the button with a little margin, so the card's own colour around the halo
+# circle is in the picture -- the circle is what the skin added, and a shot cropped to
+# the button's exact 28x28 would cut it off at the corners.
+#
+# The pointer is parked away first: this is called right after Get-HoverChange, which
+# leaves the cursor sitting ON the button, and a shot of the hover state would show the
+# wrong idle colours -- the thing being judged here is the resting look.
+function Save-IconShot($r, [string]$Name) {
+    if (-not $Shot) { return }
+    [void][BB]::SetCursorPos(($script:mr.Left + 30), ($script:mr.Top + 300))
+    Start-Sleep -Milliseconds 400
+    $m = 6
+    Save-Shot ($r.Left - $m) ($r.Top - $m) ((RW $r) + $m * 2) ((RH $r) + $m * 2) (Get-ShotPath $Name)
 }
 
 # Park the pointer somewhere neutral, shoot the button, move onto the button, shoot
@@ -269,6 +291,7 @@ Invoke-BBProbe {
 
     $dim = Measure-Icon $br
     $dimHover = Get-HoverChange $br
+    Save-IconShot $br 'guide-btn-custom.png'
     Write-Output ("  custom : bg=" + $dim.Bg + "  darkest=" + $dim.Min + "  inked px=" + $dim.N + "  hover-diff=" + $dimHover)
 
     $before = (Get-OpenLines).Count
@@ -294,6 +317,7 @@ Invoke-BBProbe {
 
     $lit = Measure-Icon $br
     $litHover = Get-HoverChange $br
+    Save-IconShot $br 'guide-btn-openai.png'
     Write-Output ("  openai : bg=" + $lit.Bg + "  darkest=" + $lit.Min + "  inked px=" + $lit.N + "  hover-diff=" + $litHover)
 
     if ($lit.Min -le ($dim.Min - 15)) { Write-Output ("  OK   enabled ink is darker (" + $dim.Min + " -> " + $lit.Min + ")") }

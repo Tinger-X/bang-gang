@@ -86,10 +86,27 @@ internal sealed class LlmConfig
 }
 
 /// <summary>
+/// 一轮流式回复读完之后剩下的那点信息。
+///
+/// <see cref="Finish"/> 必须带出来：推理模型把**思考也算进 max_tokens**，
+/// 上限小的时候思考能把整个预算吃光，正文只出来半句（甚至一个字都没有），
+/// 而流本身是「正常」结束的 —— 不看这个字段就分不清「模型就这么短」和
+/// 「被自己的设置截断了」。
+/// </summary>
+internal sealed class LlmStreamResult
+{
+    /// <summary>"stop" | "length" | "content_filter" …（服务端没给就是空串）。</summary>
+    public string Finish = "";
+
+    /// <summary>这一轮思考用了多少 token（服务端没报就是 0）。</summary>
+    public int ReasoningTokens;
+}
+
+/// <summary>
 /// OpenAI 兼容的流式对话客户端。只用 BCL（<see cref="HttpClient"/> + System.Text.Json）——
 /// 本仓库不引 NuGet，SSE 也就自己按行拆。
 ///
-/// 回调 <c>onDelta</c> 在**后台线程**上被调用，调用方自己负责切回 UI 线程。
+/// 两个回调都在**后台线程**上被调用，调用方自己负责切回 UI 线程。
 /// </summary>
 internal static class LlmClient
 {
@@ -108,9 +125,11 @@ internal static class LlmClient
     /// </summary>
     private static readonly HttpClient Http = new() { Timeout = Timeout.InfiniteTimeSpan };
 
-    public static async Task StreamAsync(
-        LlmConfig cfg, IReadOnlyList<ChatMessage> history, Action<string> onDelta, CancellationToken ct)
+    public static async Task<LlmStreamResult> StreamAsync(
+        LlmConfig cfg, IReadOnlyList<ChatMessage> history,
+        Action<string> onDelta, Action<string> onReasoning, CancellationToken ct)
     {
+        var result = new LlmStreamResult();
         var body = new JsonObject
         {
             ["model"] = cfg.Model,
@@ -149,9 +168,16 @@ internal static class LlmClient
             if (payload.Length == 0) continue;
             if (payload == "[DONE]") break;
 
-            string? delta = DeltaOf(payload);
-            if (!string.IsNullOrEmpty(delta)) onDelta(delta);
+            var chunk = ChunkOf(payload);
+            if (chunk == null) continue;
+            // 思考在前、正文在后，两路各走各的回调：调用方按「正文有没有开始」决定
+            // 思考那块要不要收起来，混进一路就没法区分了。
+            if (!string.IsNullOrEmpty(chunk.Value.Reasoning)) onReasoning(chunk.Value.Reasoning);
+            if (!string.IsNullOrEmpty(chunk.Value.Content)) onDelta(chunk.Value.Content);
+            if (!string.IsNullOrEmpty(chunk.Value.Finish)) result.Finish = chunk.Value.Finish;
+            if (chunk.Value.ReasoningTokens > 0) result.ReasoningTokens = chunk.Value.ReasoningTokens;
         }
+        return result;
     }
 
     // ---------------- 请求体 ----------------
@@ -280,8 +306,28 @@ internal static class LlmClient
 
     // ---------------- 响应 ----------------
 
-    /// <summary>从一条 SSE 数据里取出增量正文；不是正文（角色帧、结束帧）返回 null。</summary>
-    private static string? DeltaOf(string payload)
+    /// <summary>一条 SSE 数据里可能带的三样东西：正文增量、思考增量、结束原因。</summary>
+    private readonly struct Chunk
+    {
+        public readonly string? Content;
+        public readonly string? Reasoning;
+        public readonly string? Finish;
+        public readonly int ReasoningTokens;
+
+        public Chunk(string? content, string? reasoning, string? finish, int reasoningTokens)
+        {
+            Content = content; Reasoning = reasoning; Finish = finish; ReasoningTokens = reasoningTokens;
+        }
+    }
+
+    /// <summary>
+    /// 从一条 SSE 数据里取出这一帧携带的内容；不是内容帧（角色帧、心跳）返回 null。
+    ///
+    /// 一帧里三样都可能出现，所以**不能**像原来那样「取到正文就返回」：
+    /// 推理模型的帧长这样 —— <c>{"delta":{"content":null,"reasoning_content":"We"}}</c>，
+    /// 正文那一格里是 JSON 的 null，只有思考那一格有东西。
+    /// </summary>
+    private static Chunk? ChunkOf(string payload)
     {
         JsonNode? node;
         try { node = JsonNode.Parse(payload); }
@@ -293,9 +339,27 @@ internal static class LlmClient
 
         if (o["choices"] is not JsonArray { Count: > 0 } ch) return null;
         if (ch[0] is not JsonObject c0) return null;
-        if (c0["delta"] is JsonObject d && Str(d["content"]) is { } s) return s;
-        if (c0["message"] is JsonObject mm && Str(mm["content"]) is { } s2) return s2;   // 非流式兜底
-        return null;
+
+        string? content = null, reasoning = null, finish = Str(c0["finish_reason"]);
+        if (c0["delta"] is JsonObject d)
+        {
+            content = Str(d["content"]);
+            reasoning = Str(d["reasoning_content"]) ?? Str(d["reasoning"]);
+        }
+        else if (c0["message"] is JsonObject mm)
+        {
+            content = Str(mm["content"]);      // 非流式兜底
+            reasoning = Str(mm["reasoning_content"]);
+        }
+
+        // 结束帧上挂着 usage，思考用了多少 token 只有这里报（有些网关干脆不报，那就是 0）
+        int rt = 0;
+        if (o["usage"] is JsonObject u && u["completion_tokens_details"] is JsonObject det
+            && det["reasoning_tokens"] is JsonValue rv && rv.TryGetValue<int>(out var rti))
+            rt = rti;
+
+        if (content == null && reasoning == null && finish == null && rt == 0) return null;
+        return new Chunk(content, reasoning, finish, rt);
     }
 
     private static string? Str(JsonNode? n) =>
