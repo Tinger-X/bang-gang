@@ -50,7 +50,17 @@ internal sealed class MessageBubble : Control
                 }
             }
 
-        _md = Markdown.Measure(Msg.Text ?? "", InnerCap);
+        // 正文取一次存成局部变量，后面都读它。
+        //
+        // 两个理由。一是**确实可能是 null**：消息是从磁盘上的 JSON 反序列化回来的，
+        // System.Text.Json 会把 `"Text": null` 直接塞进这个声明为不可空的属性里，
+        // 声明的非空拦不住它（上面 Attachments 那一手也是同一个原因）。
+        // 二是编译器认这个理：`Msg.Text ?? ""` 会让它把 `Msg.Text` 的流状态记成
+        // 「可能为空」，之后再解引用同一个属性就报 CS8602 —— 同一件事在方法里
+        // 说两遍，两遍的说法还不一样。存成局部变量，「可能为空」只在取名那一行出现。
+        string text = Msg.Text ?? "";
+
+        _md = Markdown.Measure(text, InnerCap);
 
         float attachH = 0;
         foreach (var (_, s) in _imgs) attachH += s.Height + 6;
@@ -65,7 +75,7 @@ internal sealed class MessageBubble : Control
         foreach (var f in _files) contentW = Math.Max(contentW, f.W);
         Width = (int)Math.Min(InnerCap + PadX * 2, contentW + PadX * 2);
         Height = (int)(PadY + headH + attachH + _md.Height + PadY);
-        if (Msg.Text.Length == 0 && _imgs.Count == 0 && _files.Count == 0) Height = 28;
+        if (text.Length == 0 && _imgs.Count == 0 && _files.Count == 0) Height = 28;
     }
 
     private void DisposeImgs()

@@ -1,4 +1,5 @@
 using System.Drawing.Drawing2D;
+using System.Drawing.Imaging;
 
 namespace BangGang;
 
@@ -57,6 +58,9 @@ internal sealed class DraftStrip : Control
 
     private const int XSize = 17;        // 删除按钮的直径
 
+    /// <summary>图片缩略图四角的半径。图片格是 44px 的方块，8 和别的卡片是同一档。</summary>
+    private const int ThumbRadius = 8;
+
     private readonly List<Attachment> _items = new();
     private readonly List<Image?> _thumbs = new();
     private int _hover = -1;             // 悬浮的是第几张卡片，-1 = 没有
@@ -83,7 +87,7 @@ internal sealed class DraftStrip : Control
         _hover = -1;
         _overX = false;
         foreach (var a in _items)
-            _thumbs.Add(a.Kind == "image" ? a.LoadThumb(ChipH * 3) : null);
+            _thumbs.Add(a.Kind == "image" ? MakeThumb(a) : null);
         Invalidate();
     }
 
@@ -265,7 +269,12 @@ internal sealed class DraftStrip : Control
         var thumb = i < _thumbs.Count ? _thumbs[i] : null;
         if (thumb != null)
         {
-            PaintThumb(g, thumb, c, 8);
+            // 1:1 贴上去。PixelOffsetMode 必须校正：不校正的话整块图会被采样到半个像素上，
+            // 四角的抗锯齿连同一整张图一起糊掉，看着就像「磨圆了但很脏」。
+            var off = g.PixelOffsetMode;
+            g.PixelOffsetMode = PixelOffsetMode.HighQuality;
+            g.DrawImage(thumb, c);
+            g.PixelOffsetMode = off;
             return;
         }
 
@@ -328,30 +337,48 @@ internal sealed class DraftStrip : Control
         TextRenderer.MeasureText(s, f, new Size(int.MaxValue, int.MaxValue), MeasureFlags).Width;
 
     /// <summary>
-    /// 图片缩略图：铺满整个格子并磨圆四角。
+    /// 图片缩略图：铺满整个格子、四角磨圆、**圆角带抗锯齿**。
     ///
     /// 用「铺满」（cover）而不是「装下」（fit）：正方格子里的横图装下会在上下留两条底色边，
     /// 一块 44px 的小格子再被切掉两条边就只剩一条缝了。缩略图要回答的是「这是哪一张」，
     /// 不是「这张图长什么样」，裁掉两端比缩小更划算。所以这里取的是 Max 而不是 Min，
     /// 并把超出的部分居中裁掉 —— 顺手也就不会**拉变形**（头像变宽脸）。
+    ///
+    /// **圆角不能靠 SetClip 裁。** GDI+ 的裁剪区是逐像素的硬掩码，<c>SmoothingMode</c> 对它
+    /// 不生效 —— 裁出来的四角是一格一格的台阶（用户看到的「圆角有锯齿」）。抗锯齿只发生在
+    /// 「画几何图形」那条路上，所以这里分两步：先把原图裁成 44×44 的**不透明**方块，
+    /// 再用**纹理刷**去填一条圆角路径。边缘那一圈像素于是拿到部分覆盖度，alpha 是渐变的，
+    /// 压在卡片底色上就是平滑的圆角。同一个道理，<see cref="RP.Box"/> 也是先铺底色再填路径。
+    ///
+    /// 成品在这一步就做完了（换一次附件只做一遍），重画时只是原样贴上去；
+    /// 贴的时候连 <c>PixelOffsetMode</c> 都要校正，否则整块图会被采样到半个像素上、糊一层。
     /// </summary>
-    private static void PaintThumb(Graphics g, Image img, Rectangle box, int rad)
+    private static Image? MakeThumb(Attachment a)
     {
-        // 用 Save/Restore 而不是存 g.Clip：Clip 的 getter 每次都吐一个新的 Region 出来，
-        // 存下来再赋回去等于每画一张就漏一个 GDI 对象（缩略图是每帧都要重画的）。
-        var state = g.Save();
-        using (var path = RP.Path(box, rad)) g.SetClip(path, CombineMode.Intersect);
-        using (var b = new SolidBrush(Theme.Mix(Theme.InputBg, Theme.TextMuted, 0.10f)))
-            g.FillRectangle(b, box);
+        using var src = a.LoadThumb(ChipImgW * 3);
+        if (src == null) return null;
 
-        double k = Math.Max((double)box.Width / img.Width, (double)box.Height / img.Height);
-        int w = Math.Max(box.Width, (int)Math.Round(img.Width * k));
-        int h = Math.Max(box.Height, (int)Math.Round(img.Height * k));
-        var dst = new Rectangle(box.Left + (box.Width - w) / 2, box.Top + (box.Height - h) / 2, w, h);
+        double k = Math.Max((double)ChipImgW / src.Width, (double)ChipH / src.Height);
+        int w = Math.Max(ChipImgW, (int)Math.Round(src.Width * k));
+        int h = Math.Max(ChipH, (int)Math.Round(src.Height * k));
 
-        g.InterpolationMode = InterpolationMode.HighQualityBicubic;
-        g.DrawImage(img, dst);
-        g.Restore(state);
+        using var flat = new Bitmap(ChipImgW, ChipH, PixelFormat.Format32bppArgb);
+        using (var gf = Graphics.FromImage(flat))
+        {
+            gf.InterpolationMode = InterpolationMode.HighQualityBicubic;
+            gf.PixelOffsetMode = PixelOffsetMode.HighQuality;
+            gf.DrawImage(src, new Rectangle((ChipImgW - w) / 2, (ChipH - h) / 2, w, h));
+        }
+
+        var bmp = new Bitmap(ChipImgW, ChipH, PixelFormat.Format32bppArgb);
+        using (var g = Graphics.FromImage(bmp))
+        {
+            g.SmoothingMode = SmoothingMode.AntiAlias;
+            using var path = RP.Path(new Rectangle(0, 0, ChipImgW, ChipH), ThumbRadius);
+            using var brush = new TextureBrush(flat, WrapMode.Clamp);
+            g.FillPath(brush, path);
+        }
+        return bmp;
     }
 
     /// <summary>

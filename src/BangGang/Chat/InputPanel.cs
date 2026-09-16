@@ -1,3 +1,4 @@
+using System.Diagnostics.CodeAnalysis;
 using System.Drawing.Drawing2D;
 
 namespace BangGang;
@@ -141,7 +142,15 @@ internal sealed class InputPanel : Panel, IMessageFilter
         }
     }
 
-    public string Text { get => _box.Text; set => _box.Text = value; }
+    /// <summary>
+    /// 输入区里的文字。和 <see cref="SearchField.Text"/> 一样，是 <see cref="Control.Text"/>
+    /// 的**重写**而不是新加一个同名的：基类那条路上的调用方看到的应当是用户真正敲进去的字。
+    ///
+    /// <c>[AllowNull]</c> 是为了对上基类 setter 的参数标注（<c>[AllowNull] string?</c>），
+    /// 不标就是 CS8765；文本仍可能是 null，所以下面照旧兜一手。
+    /// </summary>
+    [AllowNull]
+    public override string Text { get => _box.Text; set => _box.Text = value ?? ""; }
     public bool HasContent => _box.Text.Trim().Length > 0 || Draft.Count > 0;
 
     private bool _busy;

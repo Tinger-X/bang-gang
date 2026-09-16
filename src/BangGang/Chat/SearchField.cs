@@ -1,3 +1,4 @@
+using System.Diagnostics.CodeAnalysis;
 using System.Drawing.Drawing2D;
 
 namespace BangGang;
@@ -71,7 +72,18 @@ internal sealed class SearchField : Control
         LayoutBox();
     }
 
-    public string Text
+    /// <summary>
+    /// 搜索框里的文字。**这是 <see cref="Control.Text"/> 的重写，不是新加一个同名的**：
+    /// 走基类那条路的调用方（WinForms 自己的可访问性 / 自动化、<c>Control.ToString()</c>）
+    /// 拿到的才是真正显示着的那串字。写成 <c>new</c> 只是把编译器的 CS0114 堵上，
+    /// 两条路会各说各话。
+    ///
+    /// <c>[AllowNull]</c> 不能省：基类的 setter 参数是 <c>[AllowNull] string?</c>，
+    /// 重写时不标就轮到 CS8765 了。值仍可能为 null（<c>Control.Text</c> 的历史约定），
+    /// 所以下面照旧兜一手。
+    /// </summary>
+    [AllowNull]
+    public override string Text
     {
         get => _tb.Text;
         set { _tb.Text = value ?? ""; UpdateUI(); }

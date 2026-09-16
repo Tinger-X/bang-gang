@@ -63,6 +63,12 @@ function Differs($c, $bg) {
 
 function IsDark($c, [double]$Cut) { return (Lum $c) -lt $Cut }
 
+# Distance between two colours, measured on the channel that differs most. Used for
+# "how far is this pixel from the card fill" where a single channel would understate it.
+function Chan-Diff($a, $b) {
+    return [Math]::Max([Math]::Abs($a.R - $b.R), [Math]::Max([Math]::Abs($a.G - $b.G), [Math]::Abs($a.B - $b.B)))
+}
+
 # The input box: the only EDIT taller than 40px in the window (the sidebar's search
 # pill is 32px, and it is not a multiline EDIT anyway).
 function Get-InputEdit($main) {
@@ -195,7 +201,11 @@ $pngPath = Join-Path $fixDir 'pic.png'
 $bmp = New-Object System.Drawing.Bitmap 160, 110
 $g = [System.Drawing.Graphics]::FromImage($bmp)
 $g.Clear([System.Drawing.Color]::FromArgb(220, 90, 60))
-$g.FillEllipse([System.Drawing.Brushes]::Gold, 30, 15, 100, 80)
+# The gold blob stays in the MIDDLE, clear of all four corners: the corner-antialiasing
+# check below measures the tile's top-left 9x9 box against "the pure photo colour", and
+# an internal edge (orange -> gold) crossing that box would put blends there whether or
+# not the corner itself was antialiased. Corners flat, measurement unambiguous.
+$g.FillEllipse([System.Drawing.Brushes]::Gold, 55, 38, 50, 34)
 $g.Dispose()
 $bmp.Save($pngPath, [System.Drawing.Imaging.ImageFormat]::Png)
 $bmp.Dispose()
@@ -281,6 +291,52 @@ Invoke-BBProbe {
     $chip0 = $runs[0]
     $chipTop = Get-ChipTop ([int](($chip0.L + $chip0.R) / 2)) $rowMid $bg
     Write-Output ("chip 0: x " + $chip0.L + ".." + $chip0.R + ", top y=" + $chipTop + ", mid y=" + $rowMid)
+
+    # ---- B2. the photo chip's rounded corner is ANTIALIASED, not a staircase ----
+    #
+    # The thumbnail is built by filling a rounded GraphicsPath with a TextureBrush under
+    # SmoothingMode.AntiAlias, so the pixels along the arc get PARTIAL coverage and the
+    # bitmap's corners are an alpha ramp. Composite that over the card fill and you get a
+    # ramp of blends between the card colour and the photo colour.
+    #
+    # The wrong way -- which is what shipped before -- is to clip the photo with SetClip:
+    # a GDI+ clip region is a per-pixel hard mask and SmoothingMode does not apply to it,
+    # so every pixel in the corner is either all card fill or all photo with nothing in
+    # between: a staircase. That is what the user reported as "the corners are jagged".
+    #
+    # The test is self-referential on purpose. "Pure photo" is not a hard-coded colour --
+    # it is the largest distance from the card fill found anywhere in the corner box, so
+    # it holds in either theme and survives a change of fixture. A hard clip puts every
+    # pixel at one end of that range or the other and the middle band comes back empty.
+    # (Only the light theme is checked: the tile is built once, before any theme is
+    # consulted, so the arc is identical in both -- only the fill behind it differs.)
+    #
+    # The band is wide (12%..88%) because the arc's ramp is only about two pixels across:
+    # most boundary pixels come out either nearly bare or nearly solid, and a tight
+    # 30%..70% window catches only a handful of them. Measured on this fixture the wide
+    # band finds 10; a hard-clipped corner finds 0, because every pixel there is either
+    # exactly the card fill or exactly the photo.
+    $cornerD = 8
+    $maxd = 0
+    for ($x = $chip0.L; $x -le $chip0.L + $cornerD; $x++) {
+        for ($y = $chipTop; $y -le $chipTop + $cornerD; $y++) {
+            $d = Chan-Diff (Get-Px $x $y) $bg
+            if ($d -gt $maxd) { $maxd = $d }
+        }
+    }
+    $lo = [int]($maxd * 0.12)
+    $hi = [int]($maxd * 0.88)
+    $part = 0
+    for ($x = $chip0.L; $x -le $chip0.L + $cornerD; $x++) {
+        for ($y = $chipTop; $y -le $chipTop + $cornerD; $y++) {
+            $d = Chan-Diff (Get-Px $x $y) $bg
+            if ($d -ge $lo -and $d -le $hi) { $part++ }
+        }
+    }
+    Check 'the photo chip corner is antialiased, not a staircase' `
+          ($maxd -ge 80 -and $part -ge 6) `
+          ($part.ToString() + ' partially covered pixels in the ' + ($cornerD + 1).ToString() + 'x' `
+           + ($cornerD + 1).ToString() + ' corner box (card fill to pure photo spans ' + $maxd + ' levels)')
 
     # ---- C. hover the first chip: a delete button must float at its TOP-RIGHT ----
     # $script:cold is the same window with nothing hovered; every "did the button

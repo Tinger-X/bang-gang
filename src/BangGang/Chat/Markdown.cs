@@ -257,7 +257,6 @@ internal static class Markdown
         var cur = new List<Run>();
         float curW = 0;
         float curH = 0;
-        Font? curFont = null;
 
         void Flush()
         {
