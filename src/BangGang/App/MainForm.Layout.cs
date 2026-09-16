@@ -50,6 +50,7 @@ partial class MainForm
         _chatUI.Bounds = new Rectangle(0, 0, W, bodyH);
 
         _settingsOverlay.Bounds = new Rectangle(0, 0, W, H);
+        _viewer.Bounds = new Rectangle(0, 0, W, H);
         _frame.Bounds = new Rectangle(0, 0, W, H);
 
         // 这几条才是真正露在外面的：左缘跟着侧栏当前宽度走，宽度是 W - sw。

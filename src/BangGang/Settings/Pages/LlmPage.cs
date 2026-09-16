@@ -18,7 +18,7 @@ internal sealed class LlmPage : SettingsPage
     private sealed class Block
     {
         public required GroupCard Card;
-        public required DropdownSelect Provider;
+        public required ProviderPicker Provider;
         public readonly List<SettingRow> Rows = new();
         public readonly Dictionary<string, InputField> Inputs = new();
         public SettingRow? VisionRow;
@@ -55,10 +55,11 @@ internal sealed class LlmPage : SettingsPage
     {
         b.Chat = chat;
         b.Presets = presets;
-        b.Provider = new DropdownSelect(presets.Select(p => p.Name).ToArray(), FieldW, 0);
+        // 下拉框与「打开官网接入指引」的图标按钮合成一件，宽度正好等于同排的输入框。
+        b.Provider = new ProviderPicker(presets, FieldW);
         b.Provider.Chosen += i => SwitchProvider(b, i);
 
-        AddRow(b, providerRow: true, new SettingRow("服务商", "选择后自动带出需要的参数", b.Provider));
+        AddRow(b, providerRow: true, new SettingRow("服务商", "参数自动带出，右侧可开官网指引", b.Provider));
 
         foreach (var key in AllKeys)
         {

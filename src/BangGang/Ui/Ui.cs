@@ -1,3 +1,5 @@
+using System.Diagnostics;
+
 namespace BangGang;
 
 /// <summary>
@@ -7,6 +9,33 @@ namespace BangGang;
 /// </summary>
 internal static class Ui
 {
+    /// <summary>
+    /// 用系统默认浏览器打开一个链接。
+    ///
+    /// **只放行 http / https**：<c>UseShellExecute = true</c> 是把整个字符串交给 ShellExecute，
+    /// 别的协议等于让外部字符串决定执行什么（<c>file:///C:/…/x.exe</c> 会被直接跑起来）。
+    /// 今天这个入参是程序里写死的常量表，一行白名单看着多余；但「打开外部链接」这个动作
+    /// 早晚会被接到别的地方去（配置里的自定义地址、消息里的链接），封在这里只要一行。
+    ///
+    /// 失败不抛异常、只返回 false：没有默认浏览器、被组策略拦下都是环境问题，
+    /// 不该让消息循环崩掉，由调用方决定要不要说一句。
+    /// </summary>
+    public static bool OpenLink(string url)
+    {
+        if (!Uri.TryCreate(url, UriKind.Absolute, out var u)) return false;
+        if (u.Scheme != Uri.UriSchemeHttp && u.Scheme != Uri.UriSchemeHttps) return false;
+        try
+        {
+            Process.Start(new ProcessStartInfo(u.AbsoluteUri) { UseShellExecute = true });
+            return true;
+        }
+        catch (Exception ex)
+        {
+            Trace.Log("open link failed: " + ex.Message);
+            return false;
+        }
+    }
+
     /// <summary>
     /// 递归把整棵控件树的光标设为默认箭头，并订阅 ControlAdded，
     /// 使之后新加入的控件也自动沿用该规则（对未来新增元素同样有效）。

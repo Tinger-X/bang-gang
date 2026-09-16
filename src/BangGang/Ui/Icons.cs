@@ -3,7 +3,7 @@ using System.Drawing.Drawing2D;
 namespace BangGang;
 
 /// <summary>线框图标（统一 1.6px 圆头线条，风格与主界面一致）。</summary>
-internal enum Glyph { Sliders, Spark, Palette, Eye, EyeOff, Close, Reset, Check }
+internal enum Glyph { Sliders, Spark, Palette, Bubble, Link, Eye, EyeOff, Close, Reset, Check }
 
 internal static class Gfx
 {
@@ -67,6 +67,30 @@ internal static class Gfx
                 g.FillEllipse(br, cx - s * 0.46f, cy - s * 0.46f, s * 0.34f, s * 0.34f);
                 g.FillEllipse(br, cx + s * 0.12f, cy - s * 0.46f, s * 0.34f, s * 0.34f);
                 g.FillEllipse(br, cx - s * 0.17f, cy + s * 0.06f, s * 0.34f, s * 0.34f);
+                break;
+
+            case Glyph.Bubble:
+                // 对话气泡：一个圆角方框 + 左下角伸出去的小尾巴。
+                // 方框整体偏上，尾巴才有地方画 —— 尾巴和框必须**连着**，否则 14px 下读成两个东西。
+                using (var bubble = RP.Path(
+                    new Rectangle((int)Math.Round(cx - s * 0.96f), (int)Math.Round(cy - s * 0.86f),
+                                  (int)Math.Round(s * 1.92f), (int)Math.Round(s * 1.44f)),
+                    (int)Math.Round(s * 0.44f)))
+                    g.DrawPath(pen, bubble);
+                g.DrawLine(pen, cx - s * 0.42f, cy + s * 0.56f, cx - s * 0.46f, cy + s * 0.98f);
+                g.DrawLine(pen, cx - s * 0.46f, cy + s * 0.98f, cx + s * 0.06f, cy + s * 0.56f);
+                break;
+
+            case Glyph.Link:
+                // 外部链接：一个**开口朝右上**的方框 + 一支从框里指到框外的斜箭头。
+                // 三条边留下缺口是它的读法所在 —— 画成闭合方框就成了「复制」之类的另一个图标。
+                g.DrawLine(pen, cx - s * 0.92f, cy - s * 0.28f, cx - s * 0.92f, cy + s * 0.92f);   // 左边
+                g.DrawLine(pen, cx - s * 0.92f, cy + s * 0.92f, cx + s * 0.28f, cy + s * 0.92f);   // 下边
+                g.DrawLine(pen, cx + s * 0.28f, cy + s * 0.92f, cx + s * 0.28f, cy + s * 0.24f);   // 右边（半截）
+                g.DrawLine(pen, cx - s * 0.92f, cy - s * 0.28f, cx - s * 0.34f, cy - s * 0.28f);   // 上边（半截）
+                g.DrawLine(pen, cx - s * 0.06f, cy + s * 0.06f, cx + s * 0.92f, cy - s * 0.92f);   // 斜箭头
+                g.DrawLine(pen, cx + s * 0.28f, cy - s * 0.92f, cx + s * 0.92f, cy - s * 0.92f);   // 箭头两撇
+                g.DrawLine(pen, cx + s * 0.92f, cy - s * 0.92f, cx + s * 0.92f, cy - s * 0.28f);
                 break;
 
             case Glyph.Eye:

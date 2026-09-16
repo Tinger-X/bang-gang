@@ -251,7 +251,7 @@ try {
         function Open-AppearancePage($main, $gear) {
             Invoke-MouseClick ($gear.Left + 14) ($gear.Top + 14)   # the gear itself = open settings
             Start-Sleep -Milliseconds 1400
-            $nav = Find-NavRow $main 2                              # 3rd rail row = the appearance page
+            $nav = Find-NavRow $main 3                              # 4th rail row = the appearance page
             Invoke-MouseClick ($nav.Left + 20) ($nav.Top + 21)
             Start-Sleep -Milliseconds 900
         }

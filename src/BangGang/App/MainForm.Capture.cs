@@ -46,9 +46,9 @@ partial class MainForm
 
     private static string SaveTempPng(Image img)
     {
-        string dir = Path.Combine(Path.GetTempPath(), "BangGang");
-        Directory.CreateDirectory(dir);
-        string p = Path.Combine(dir, $"shot_{DateTime.Now:yyyyMMdd_HHmmssfff}.png");
+        // 落盘目录从 %TEMP% 挪到了 <see cref="ChatStore.ImageDir"/>：这张截图会作为附件
+        // 留在一条消息里，而 %TEMP% 的文件随时可能被清掉 —— 重启后历史还在、图没了。
+        string p = ChatStore.NewImagePath("shot");
         img.Save(p, System.Drawing.Imaging.ImageFormat.Png);
         return p;
     }

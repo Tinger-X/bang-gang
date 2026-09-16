@@ -51,9 +51,14 @@ partial class MainForm
         else { Show(); Activate(); }
     }
 
-    /// <summary>设置浮窗打开时，Esc 在任何位置都能收起它（浮窗非模态，焦点可能不在浮窗内）。</summary>
+    /// <summary>设置浮窗 / 图片放大浮层打开时，Esc 在任何位置都能收起它（两者都非模态，焦点可能不在里面）。</summary>
     protected override bool ProcessCmdKey(ref Message msg, Keys keyData)
     {
+        if (keyData == Keys.Escape && _viewer.IsOpen)
+        {
+            _viewer.Close();
+            return true;
+        }
         if (keyData == Keys.Escape && _settingsOverlay.Visible)
         {
             _settingsOverlay.CloseByEscape();

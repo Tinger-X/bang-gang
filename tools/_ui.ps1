@@ -239,6 +239,36 @@ public static class BB {
             SendInput(4, a, 28);
         }
     }
+
+    // One bare key, no modifier. Chord() above is Ctrl+<vk> and Ctrl is not optional
+    // there -- so reaching for it to press Esc actually sends Ctrl+Esc, which is the
+    // Start menu. That overlay then covers the bottom left of the screen and takes
+    // focus: every click after it goes to the Start menu and every pixel read comes
+    // back dark. It looks exactly like "the dialog ignored Esc AND the mouse", and the
+    // dark scrim the probe was sampling made it look like the dialog never closed.
+    //
+    // Delivers to the FOCUSED window, like Chord -- click the target first.
+    public static void Key(ushort vk) {
+        if (IntPtr.Size == 8) {
+            var a = new INPUT64[2];
+            for (int i = 0; i < 2; i++) {
+                a[i].type = 1;                       // INPUT_KEYBOARD
+                a[i].ki.wVk = vk;
+                a[i].ki.wScan = 0;
+                a[i].ki.dwFlags = (i == 1) ? KEYEVENTF_KEYUP : 0;
+            }
+            SendInput(2, a, 40);
+        } else {
+            var a = new INPUT32[2];
+            for (int i = 0; i < 2; i++) {
+                a[i].type = 1;
+                a[i].ki.wVk = vk;
+                a[i].ki.wScan = 0;
+                a[i].ki.dwFlags = (i == 1) ? KEYEVENTF_KEYUP : 0;
+            }
+            SendInput(2, a, 28);
+        }
+    }
 }
 '@
 

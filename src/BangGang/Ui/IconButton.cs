@@ -5,7 +5,7 @@ namespace BangGang;
 /// <summary>小型图标按钮（放大镜 / 齿轮 / 加号 / 发送 / 关闭 / 回形针等），不改变鼠标指针。</summary>
 internal sealed class IconButton : Control, IThemed
 {
-    public enum Kind { Search, Gear, Plus, Send, Stop, Record, Close, Paperclip, Maximize, Restore, Collapse, Expand }
+    public enum Kind { Search, Gear, Plus, Send, Stop, Record, Close, Paperclip, Maximize, Restore, Collapse, Expand, Link }
 
     /// <summary>
     /// 底衬的三种画法。
@@ -157,12 +157,18 @@ internal sealed class IconButton : Control, IThemed
             // 常驻浅底圆钮（Chrome），或只在悬浮时才浮出来的圆底（Ghost）。
             // 底色必须取**自己**的 BackColor：这枚圆盖在卡片上，取 Theme.SideBg 会在卡片上
             // 留一个异色圆斑 —— 和 BackdropSource 那段注释是同一个坑。
-            if (Skin == Look.Chrome || _hover)
+            if ((Skin == Look.Chrome && _clickable) || _hover)
             {
                 using var bg = new SolidBrush(Theme.Mix(BackColor, Theme.TextMuted, _hover ? 0.20f : 0.11f));
                 g.FillEllipse(bg, 1, 1, Width - 2, Width - 2);
             }
-            ink = _hover ? Theme.Accent : Theme.Mix(Theme.TextMuted, Theme.TextMain, 0.35f);
+            // 不可点时图标要**看得出**不可点。Clickable 的注释里说它只管「悬浮 + 点得动」，
+            // 那是为发送键写的 —— 发送键的三种状态由 Solid 那支自己画（底色就在表达能不能发）。
+            // 别处（模型接入页那枚「打开官网指引」）没有第二层表达，只剩这个图标，
+            // 不灰掉的话它对「自定义」服务商就是一枚看着能点、点了没反应的按钮。
+            ink = !_clickable ? Theme.Mix(BackColor, Theme.TextMuted, 0.30f)
+                : _hover ? Theme.Accent
+                : Theme.Mix(Theme.TextMuted, Theme.TextMain, 0.35f);
         }
 
         using var pen = new Pen(ink, 1.8f) { StartCap = LineCap.Round, EndCap = LineCap.Round };
@@ -225,6 +231,11 @@ internal sealed class IconButton : Control, IThemed
                 break;
             case Kind.Paperclip:
                 DrawPaperclip(g, c, c, 20f, ink);
+                break;
+            case Kind.Link:
+                // 「打开外部链接」：复用同一套线框图标，别在这里另画一遍 ——
+                // 设置页的导航图标（Glyph.Link）和这里必须是同一个形状。
+                Gfx.DrawGlyph(g, Glyph.Link, new RectangleF(0, 0, Width, Height), ink, 1.6f);
                 break;
         }
         base.OnPaint(e);

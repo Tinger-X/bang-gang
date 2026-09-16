@@ -69,6 +69,16 @@ public class AppSettings
     public string SttProvider { get; set; } = "自定义";
     public Dictionary<string, Dictionary<string, string>> SttProfiles { get; set; } = new();
 
+    // ---------- 对话参数（每次请求都带上，见 ChatPage） ----------
+    /// <summary>采样温度，0–2。越低越确定，越高越发散。</summary>
+    public double ChatTemperature { get; set; } = 0.7;
+    /// <summary>单次回复的 token 上限。</summary>
+    public int ChatMaxTokens { get; set; } = 2048;
+    /// <summary>系统提示词（每次对话都放在最前面）。留空表示不发送这一段。</summary>
+    public string ChatSystemPrompt { get; set; } = "";
+    /// <summary>强化信息：附在每次提问之后，用来把模型拉回当前话题。留空表示不发送。</summary>
+    public string ChatReinforce { get; set; } = "";
+
     /// <summary>录音方式："hold" 按住录音 / "toggle" 按一下开始、再按一下停止。</summary>
     public string RecordMode { get; set; } = "hold";
 
@@ -260,6 +270,8 @@ public class AppSettings
         SttProfiles = o.SttProfiles.ToDictionary(kv => kv.Key, kv => new Dictionary<string, string>(kv.Value));
         ChatApiUrl = o.ChatApiUrl; ChatApiKey = o.ChatApiKey; ChatModel = o.ChatModel;
         SttApiUrl = o.SttApiUrl; SttAppId = o.SttAppId; SttApiKey = o.SttApiKey; SttModel = o.SttModel;
+        ChatTemperature = o.ChatTemperature; ChatMaxTokens = o.ChatMaxTokens;
+        ChatSystemPrompt = o.ChatSystemPrompt; ChatReinforce = o.ChatReinforce;
         RecordMode = o.RecordMode;
         ThemeMode = o.ThemeMode; WindowBorder = o.WindowBorder;
         Accent = o.Accent; Opacity = o.Opacity;

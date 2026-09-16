@@ -6,7 +6,7 @@
 #   rail is 208 wide; nav rows start at y=96, step 48, x=14, 180x42
 #
 # Usage:  powershell -File tools\open-settings.ps1 [-Page 1] [-Dump] [-Out <name or path>]
-#   -Page 0 = shortcuts, 1 = model access, 2 = appearance
+#   -Page 0 = shortcuts, 1 = model access, 2 = chat, 3 = appearance
 
 param(
     [int]$Page = 1,

@@ -13,7 +13,7 @@ namespace BangGang;
 public partial class MainForm : Form, IMessageFilter
 {
     public const string WindowTitle = "帮帮";
-    public const string AppVersion = "v0.7.35";
+    public const string AppVersion = "v0.8.1";
 
     private const uint Affinity = Native.WDA_EXCLUDEFROMCAPTURE;
 
@@ -56,6 +56,7 @@ public partial class MainForm : Form, IMessageFilter
     private readonly ChatView _chatView;
     private readonly InputPanel _input;
     private readonly SettingsOverlay _settingsOverlay;
+    private readonly ImageViewer _viewer = new();
     private readonly WindowFrame _frame = new();
 
     // 定时器
@@ -137,6 +138,7 @@ public partial class MainForm : Form, IMessageFilter
         _input.LayoutChanged += ApplyLayout;
         // 拒收文件之类的提示走顶栏那条 3 秒状态条 —— 全应用就这一个「临时说一句」的出口。
         _input.Notice += FlashStatus;
+        _chatView.ImagePressed += OpenImage;
         _chatUI.Controls.Add(_convTitle);
         _chatUI.Controls.Add(_chatView);
         _chatUI.Controls.Add(_input);
@@ -186,6 +188,11 @@ public partial class MainForm : Form, IMessageFilter
         // ---- 布局 ----
         ApplyLayout();
 
+        // ---- 上次的会话（放在布局之后：恢复要按已排好的尺寸摆气泡、滚到底） ----
+        RestoreConversations();
+
+        // ---- 图片放大查看（盖在所有内容之上，含窗口边框） ----
+        Controls.Add(_viewer);
         _guardTimer = new System.Windows.Forms.Timer { Interval = 3000 };
         _guardTimer.Tick += (_, _) => { EnsureAffinity(); WatchSystemTheme(); };
         _guardTimer.Start();
@@ -257,6 +264,19 @@ public partial class MainForm : Form, IMessageFilter
 
 
     // ---------------- 设置（固定居中的浮窗） ----------------
+
+    // ---------------- 图片放大查看 ----------------
+
+    /// <summary>
+    /// 点开了对话里的某张图。读不出原图（临时文件被清掉了）就什么都不做 ——
+    /// 不许弹一个空白蒙版把用户关在里面。
+    /// </summary>
+    private void OpenImage(Attachment a)
+    {
+        string? path = a.Path;
+        if (path == null) return;
+        if (!_viewer.Open(path, a.Name ?? "")) FlashStatus("这张图打不开了：源文件已不在原位");
+    }
 
     private void OpenSettings()
     {
@@ -331,7 +351,7 @@ public partial class MainForm : Form, IMessageFilter
         _pttTimer.Stop();
         _statusTimer.Stop();
         _sideTimer.Stop();
-        StopReplyTimer();
+        CancelStream();
         UnregisterHotkeys();
         _recorder?.Stop();
         base.OnFormClosed(e);

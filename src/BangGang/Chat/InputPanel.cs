@@ -682,9 +682,8 @@ internal sealed class InputPanel : Panel, IMessageFilter
 
     private static string SaveClipboardImage(Image img)
     {
-        string dir = Path.Combine(Path.GetTempPath(), "BangGang");
-        Directory.CreateDirectory(dir);
-        string p = Path.Combine(dir, $"clip_{DateTime.Now:yyyyMMdd_HHmmssfff}.png");
+        // 同 MainForm 的截图：不再丢进 %TEMP%，否则重启后这条消息的图就没了
+        string p = ChatStore.NewImagePath("clip");
         img.Save(p, System.Drawing.Imaging.ImageFormat.Png);
         return p;
     }
