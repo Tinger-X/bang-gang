@@ -3,7 +3,8 @@ using System.Drawing.Drawing2D;
 namespace BangGang;
 
 /// <summary>
-/// 输入卡片里的附件列表区：一行小卡片，每张是「缩略图 / 类型图标 + 文件名 + PDF · 625KB」。
+/// 输入卡片里的附件列表区：一行小卡片。图片是一块 44×44 的方图块（只有图，不写文件名 ——
+/// 缩略图比名字好认），别的文件是「类别色块 + 扩展名 + 文件名 + PDF · 625KB」。
 /// 鼠标悬浮在哪一张上，就在**那一张的右上角**浮出一个删除按钮。
 ///
 /// 为什么是一整块自绘的条，而不是「FlowLayoutPanel + 每张一个控件」：
@@ -23,28 +24,38 @@ internal sealed class DraftStrip : Control
 {
     // ---------- 几何。动任何一个都要重跑 tools/draft-strip.ps1 看一眼 ----------
 
-    /// <summary>本区域自身的高度。<c>InputPanel</c> 的卡片高度按它让位。</summary>
-    public const int RowH = 56;
+    /// <summary>本区域自身的高度 = 卡片 + 上边给删除按钮让出的那半个。<c>InputPanel</c> 按它让位。</summary>
+    public const int RowH = TopPad + ChipH;
 
     private const int ChipH = 44;
+
+    /// <summary>图片卡片的宽度 = 它自己的高度：一个正方形格子，整格就是那张图。</summary>
+    private const int ChipImgW = ChipH;
+
     private const int ChipGap = 8;
-    private const int ChipNatW = 236;    // 一张卡片的自然宽度（名字长一点就到这里为止）
-    private const int ChipMinW = 132;    // 挤到这个宽度就不再缩，再多就交给「+N」
-    private const int IconSize = 32;
-    private const int IconPad = 6;       // 图标离卡片左缘
-    private const int TextGap = 8;       // 图标与文字之间
+
+    /// <summary>文件卡片的自然宽度。文字区 = 118 − 7 − 28 − 7 − 8 = 68px，够放「notes.txt」。</summary>
+    private const int ChipNatW = 118;
+
+    /// <summary>挤到这个宽度就不再缩，再多就交给「+N」（此时文字已经放不下，只剩图标）。</summary>
+    private const int ChipMinW = 66;
+
+    private const int IconSize = 28;
+    private const int IconPad = 7;       // 图标离卡片左缘
+    private const int TextGap = 7;       // 图标与文字之间
     private const int TextRight = 8;     // 文字离卡片右缘
 
     /// <summary>
-    /// 卡片离条带上缘的距离。**删除按钮有一半探在卡片上面**（圆心正好压在卡片的右上角上），
-    /// 所以卡片必须往下让开半个按钮，否则它会被条带的上边缘裁掉一半。
+    /// 卡片离条带上缘的距离 = 半个删除按钮 + 2px 余量。**删除按钮有一半探在卡片上面**
+    /// （圆心正好压在卡片的右上角上），所以卡片必须往下让开半个按钮，否则它会被条带的上边缘裁掉一半。
+    /// 它和 <see cref="ChipH"/> 一起凑成 <see cref="RowH"/>，改一个就得连着核另一个。
     /// </summary>
-    private const int TopPad = 11;
+    private const int TopPad = 10;
 
     /// <summary>同上，最后一张卡片右边让开半个按钮。</summary>
-    private const int RightPad = 11;
+    private const int RightPad = 10;
 
-    private const int XSize = 20;        // 删除按钮的直径
+    private const int XSize = 17;        // 删除按钮的直径
 
     private readonly List<Attachment> _items = new();
     private readonly List<Image?> _thumbs = new();
@@ -72,7 +83,7 @@ internal sealed class DraftStrip : Control
         _hover = -1;
         _overX = false;
         foreach (var a in _items)
-            _thumbs.Add(a.Kind == "image" ? a.LoadImage(IconSize * 2, IconSize * 2) : null);
+            _thumbs.Add(a.Kind == "image" ? a.LoadThumb(ChipH * 3) : null);
         Invalidate();
     }
 
@@ -96,29 +107,60 @@ internal sealed class DraftStrip : Control
 
     // ---------------- 几何 ----------------
 
-    /// <summary>一张卡片的宽度：一行放得下就保持自然宽度，放不下就一起压窄。</summary>
-    private int ChipW()
+    /// <summary>
+    /// 一张卡片有多宽。图片是正方形的图块，文件按文字量取自然宽度 —— 所以**宽度是按张算的**，
+    /// 不能像以前那样整行共用一个数。
+    ///
+    /// 「有没有缩略图」既是这里认图片的依据，也是 <see cref="PaintChip"/> 画图的依据：
+    /// 两处必须问同一个问题，否则图没读出来时（<c>LoadImage</c> 返回 null）会按图块的窄宽度
+    /// 去排文件名，文字整段被切掉。
+    /// </summary>
+    private int ChipWOf(int i) => IsImg(i) ? ChipImgW : FileW();
+
+    private bool IsImg(int i) => i < _thumbs.Count && _thumbs[i] != null;
+
+    /// <summary>文件卡片的宽度：一行放得下就保持自然宽度，放不下就一起压窄。</summary>
+    private int FileW()
     {
-        int n = _items.Count;
-        if (n <= 0) return ChipNatW;
-        int avail = Math.Max(ChipMinW, Width - RightPad);
-        int w = (avail - (n - 1) * ChipGap) / n;
-        return Math.Clamp(w, ChipMinW, ChipNatW);
+        int files = 0, imgs = 0;
+        for (int i = 0; i < _items.Count; i++)
+        {
+            if (IsImg(i)) imgs++; else files++;
+        }
+        if (files == 0) return ChipNatW;
+
+        int left = Width - RightPad - imgs * ChipImgW - Math.Max(0, _items.Count - 1) * ChipGap;
+        return Math.Clamp(left / files, ChipMinW, ChipNatW);
+    }
+
+    /// <summary>第 i 张卡片的左边缘：前面每一张的宽度加上间距，累出来。</summary>
+    private int ChipX(int i)
+    {
+        int x = 0;
+        for (int k = 0; k < i; k++) x += ChipWOf(k) + ChipGap;
+        return x;
     }
 
     /// <summary>实际画得下的张数。挤到 <see cref="ChipMinW"/> 还放不下的，交给「+N」。</summary>
     private int FitCount()
     {
-        int w = ChipW();
-        int avail = Math.Max(w, Width - RightPad);
-        return Math.Max(1, Math.Min(_items.Count, (avail + ChipGap) / (w + ChipGap)));
+        int avail = Width - RightPad;
+        int x = 0, n = 0;
+        for (int i = 0; i < _items.Count; i++)
+        {
+            int w = ChipWOf(i);
+            if (n > 0 && x + w > avail) break;
+            x += w + ChipGap;
+            n++;
+        }
+        return Math.Max(1, n);
     }
 
     /// <summary>第 i 张卡片的矩形。删除按钮的圆心就压在它的右上角上。</summary>
     private Rectangle ChipRect(int i)
     {
-        int w = ChipW();
-        return new Rectangle(i * (w + ChipGap), TopPad, w, ChipH);
+        int w = ChipWOf(i);
+        return new Rectangle(ChipX(i), TopPad, w, ChipH);
     }
 
     /// <summary>第 i 张卡片那个删除按钮的矩形：圆心 = 卡片的右上角。</summary>
@@ -185,8 +227,7 @@ internal sealed class DraftStrip : Control
         // 「还有几张没画出来」。只报数不做交互：卡片挤到这个份上，用户该做的是先发出去或删几张。
         if (_fit < _items.Count)
         {
-            int w = ChipW();
-            var tail = new Rectangle(_fit * (w + ChipGap), TopPad, Math.Max(28, w / 3), ChipH);
+            var tail = new Rectangle(ChipX(_fit), TopPad, Math.Max(28, ChipNatW / 3), ChipH);
             if (tail.Right > Width) tail.Width = Math.Max(0, Width - tail.X);
             if (tail.Width > 20)
             {
@@ -201,16 +242,36 @@ internal sealed class DraftStrip : Control
         PaintRemove(g);
     }
 
+    /// <summary>
+    /// 文件卡片的底色。跟着主题走，而且**必须和它身下的输入卡片拉开距离**。
+    ///
+    /// 这张卡片画在输入卡片上（= <see cref="Theme.InputBg"/>），所以「看得见」取决于
+    /// 卡片色与 <c>InputBg</c> 的差，不是它与 <c>ChatBg</c> 的差。亮色下 <c>AsstBubble</c>
+    /// 正好够（12 级）；暗色下它是 (40,44,50)、<c>InputBg</c> 是 (43,47,54) —— 只差 3 级，
+    /// 卡片等于没画，一行附件看上去就是一圈图标浮在输入框上。所以暗色下另取一个
+    /// 朝 <see cref="Theme.TextMain"/> 走的混色（≈(60,64,71)，差 17 级），
+    /// 与亮色下的对比度相当。
+    /// </summary>
+    private static Color ChipFill() =>
+        Theme.Dark ? Theme.Mix(Theme.InputBg, Theme.TextMain, 0.09f) : Theme.AsstBubble;
+
     private void PaintChip(Graphics g, int i)
     {
         var a = _items[i];
         var c = ChipRect(i);
-        RP.Box(g, c, 8, Theme.AsstBubble, BackColor);
 
-        var icon = new Rectangle(c.Left + IconPad, c.Top + (ChipH - IconSize) / 2, IconSize, IconSize);
+        // 图片：整张卡片就是那张图，不写名字也不写大小。缩略图本身比文件名好认 ——
+        // 「pic.png」和「pic-2.png」看不出区别，两张缩略图一眼就分得开。
         var thumb = i < _thumbs.Count ? _thumbs[i] : null;
-        if (thumb != null) PaintThumb(g, thumb, icon);
-        else PaintFileIcon(g, a, icon);
+        if (thumb != null)
+        {
+            PaintThumb(g, thumb, c, 8);
+            return;
+        }
+
+        RP.Box(g, c, 8, ChipFill(), BackColor);
+        var icon = new Rectangle(c.Left + IconPad, c.Top + (ChipH - IconSize) / 2, IconSize, IconSize);
+        PaintFileIcon(g, a, icon);
 
         // 文字区：右边留出删除按钮探进来的那一小块，名字才不会顶到圆钮上。
         int tx = icon.Right + TextGap;
@@ -267,26 +328,27 @@ internal sealed class DraftStrip : Control
         TextRenderer.MeasureText(s, f, new Size(int.MaxValue, int.MaxValue), MeasureFlags).Width;
 
     /// <summary>
-    /// 图片缩略图：等比缩放到图标框里再居中，四角磨圆。
+    /// 图片缩略图：铺满整个格子并磨圆四角。
     ///
-    /// 直接 <c>DrawImage(img, rect)</c> 会把非正方形的图**拉变形**（头像变宽脸），
-    /// 所以先算一个保持长宽比的目标矩形。底下垫一层淡底，图比框小时四周不会露出卡片色差。
+    /// 用「铺满」（cover）而不是「装下」（fit）：正方格子里的横图装下会在上下留两条底色边，
+    /// 一块 44px 的小格子再被切掉两条边就只剩一条缝了。缩略图要回答的是「这是哪一张」，
+    /// 不是「这张图长什么样」，裁掉两端比缩小更划算。所以这里取的是 Max 而不是 Min，
+    /// 并把超出的部分居中裁掉 —— 顺手也就不会**拉变形**（头像变宽脸）。
     /// </summary>
-    private static void PaintThumb(Graphics g, Image img, Rectangle box)
+    private static void PaintThumb(Graphics g, Image img, Rectangle box, int rad)
     {
-        using (var path = RP.Path(box, 6))
-        using (var b = new SolidBrush(Theme.Mix(Theme.InputBg, Theme.TextMuted, 0.10f)))
-            g.FillPath(b, path);
-
-        double k = Math.Min((double)box.Width / img.Width, (double)box.Height / img.Height);
-        int w = Math.Max(1, (int)Math.Round(img.Width * k));
-        int h = Math.Max(1, (int)Math.Round(img.Height * k));
-        var dst = new Rectangle(box.Left + (box.Width - w) / 2, box.Top + (box.Height - h) / 2, w, h);
-
         // 用 Save/Restore 而不是存 g.Clip：Clip 的 getter 每次都吐一个新的 Region 出来，
         // 存下来再赋回去等于每画一张就漏一个 GDI 对象（缩略图是每帧都要重画的）。
         var state = g.Save();
-        using (var path = RP.Path(box, 6)) g.SetClip(path, CombineMode.Intersect);
+        using (var path = RP.Path(box, rad)) g.SetClip(path, CombineMode.Intersect);
+        using (var b = new SolidBrush(Theme.Mix(Theme.InputBg, Theme.TextMuted, 0.10f)))
+            g.FillRectangle(b, box);
+
+        double k = Math.Max((double)box.Width / img.Width, (double)box.Height / img.Height);
+        int w = Math.Max(box.Width, (int)Math.Round(img.Width * k));
+        int h = Math.Max(box.Height, (int)Math.Round(img.Height * k));
+        var dst = new Rectangle(box.Left + (box.Width - w) / 2, box.Top + (box.Height - h) / 2, w, h);
+
         g.InterpolationMode = InterpolationMode.HighQualityBicubic;
         g.DrawImage(img, dst);
         g.Restore(state);
@@ -319,13 +381,40 @@ internal sealed class DraftStrip : Control
             | TextFormatFlags.NoPrefix | TextFormatFlags.NoPadding);
     }
 
-    /// <summary>悬浮时那张卡片右上角的删除按钮。压在最上层画 —— 它会盖住卡片的一个角。</summary>
+    /// <summary>
+    /// 悬浮时那张卡片右上角的删除按钮。压在最上层画 —— 它会盖住卡片的一个角。
+    ///
+    /// 四层叠出来，缺一层都会「糊」：底色光圈把它从卡片（或照片）上切下来；投影给一点厚度，
+    /// 否则看着像一张贴纸；圆面**悬浮时转成危险色** —— 删除不可逆，手指搭上去就该变红；
+    /// 最后才是那个 ×，内缩 5px、线宽比常规图标粗一档，22px 的圆里才不发虚。
+    /// </summary>
     private void PaintRemove(Graphics g)
     {
         var xr = XRect();
         if (xr.IsEmpty) return;
-        using (var b = new SolidBrush(Color.FromArgb(_overX ? 240 : 190, 40, 44, 52)))
-            g.FillEllipse(b, xr);
-        Gfx.DrawGlyph(g, Glyph.Close, xr, Color.White, 1.5f);
+
+        // 光圈用**条带自己的底色**画，所以它压在照片上也是「挖掉一个圆」的效果，
+        // 而不是一圈白边 —— 深浅两套主题下都跟着走。2px 就够：再宽就从照片上咬掉一大口，
+        // 看着像画坏了，而不是像一枚浮在上面的按钮。
+        using (var halo = new SolidBrush(BackColor))
+            g.FillEllipse(halo, Rectangle.Inflate(xr, 2, 2));
+
+        // 圆面在深浅两套主题下**反过来**：亮色主题是灰蓝，暗色主题是浅灰。
+        // 固定用一个色的话，暗色主题下它和卡片底色（43,47,54）只差十几级，等于一枚看不见的按钮 ——
+        // 「浮起来的按钮」靠的正是它和底色的差，所以这个色必须跟着主题走。
+        //
+        // 灰蓝而不是近黑：这是个 17px 的小圆，压得很重时比它盖住的那张照片还抢眼，
+        // 整个附件区看着就「花」。它要的是看得见、点得着，不是存在感。
+        Color face = _overX ? Theme.Danger
+                   : Theme.Dark ? Color.FromArgb(255, 214, 220, 228)
+                                : Color.FromArgb(255, 112, 119, 132);
+        Color ink = (_overX || !Theme.Dark) ? Color.White : Color.FromArgb(255, 32, 36, 42);
+
+        using (var sh = new SolidBrush(Color.FromArgb(Theme.Dark ? 14 : 20, 0, 0, 0)))
+            g.FillEllipse(sh, Rectangle.Inflate(new Rectangle(xr.X, xr.Y + 1, xr.Width, xr.Height), 1, 1));
+
+        using (var b = new SolidBrush(face)) g.FillEllipse(b, xr);
+
+        Gfx.DrawGlyph(g, Glyph.Close, Rectangle.Inflate(xr, -3, -3), ink, 1.5f);
     }
 }

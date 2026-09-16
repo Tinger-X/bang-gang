@@ -75,14 +75,24 @@ function Get-InputEdit($main) {
 }
 
 # Walk a column up from $Bottom and report the contiguous run of non-background rows.
-function Get-BandAbove([int]$x, [int]$Bottom, $bg, [int]$MaxUp = 200) {
+# Several columns, and a row counts if ANY of them is off-background: a single column
+# lands in the 8px gap between two chips (background) or, on a photo chip, on a patch
+# that happens to match the card fill -- both would report "no strip" for a row that is
+# plainly there. The columns only have to cover SOME chip each; the union does the rest.
+function Get-BandAbove([int[]]$Cols, [int]$Bottom, $bg, [int]$MaxUp = 200) {
     $top = -1
     for ($y = $Bottom; $y -gt $Bottom - $MaxUp; $y--) {
-        if (Differs (Get-Px $x $y) $bg) { $top = $y } else { break }
+        $hit = $false
+        foreach ($x in $Cols) { if (Differs (Get-Px $x $y) $bg) { $hit = $true; break } }
+        if ($hit) { $top = $y } else { break }
     }
     if ($top -lt 0) { return $null }
     return @{ Top = $top; Bottom = $Bottom; H = $Bottom - $top + 1 }
 }
+
+# The columns used for the band walk, derived from the text box (chips start at its
+# left edge): inside the first chip whatever its kind, then two further along the row.
+function Get-BandCols($r) { return @(($r.Left + 12), ($r.Left + 60), ($r.Left + 200)) }
 
 # Count the chips along a row through their middle: each chip is one contiguous run
 # of non-background pixels, separated from the next by the layout gap.
@@ -93,16 +103,19 @@ function Get-ChipRuns([int]$x0, [int]$x1, [int]$y, $bg) {
         $on = Differs (Get-Px $x $y) $bg
         if ($on -and $start -lt 0) { $start = $x }
         elseif (-not $on -and $start -ge 0) {
-            if (($x - $start) -ge 40) { $runs += , @{ L = $start; R = $x - 1 } }
+            if (($x - $start) -ge 30) { $runs += , @{ L = $start; R = $x - 1 } }
             $start = -1
         }
     }
-    if ($start -ge 0 -and ($x1 - $start) -ge 40) { $runs += , @{ L = $start; R = $x1 } }
+    if ($start -ge 0 -and ($x1 - $start) -ge 30) { $runs += , @{ L = $start; R = $x1 } }
     return $runs
 }
 
-# The topmost row of a chip, read off its own fill at a column that clears the icon
-# (the icon square is 32px wide, inset 6px from the chip's left edge).
+# The topmost row of a chip. Sample at the chip's own horizontal centre: for a file chip
+# that column is its fill between the two text lines, for a photo chip it is the photo --
+# either way it is off-background for the whole height of the chip. Sampling near an edge
+# does not work any more: a photo chip is only 44px across, so a column 44px in lands in
+# the gap between two chips and the walk starts on background.
 function Get-ChipTop([int]$x, [int]$yMid, $bg) {
     for ($y = $yMid; $y -gt $yMid - 60; $y--) {
         if (-not (Differs (Get-Px $x $y) $bg)) { return $y + 1 }
@@ -223,7 +236,7 @@ Invoke-BBProbe {
     $bg = Get-Px ($r0.Left + 44) ($r0.Top - 1)
 
     # ---- A. with nothing attached there must be no band above the box ----
-    $band0 = Get-BandAbove ($r0.Left + 44) ($r0.Top - 3) $bg
+    $band0 = Get-BandAbove (Get-BandCols $r0) ($r0.Top - 3) $bg
     Check 'no attachment strip before anything is added' ($null -eq $band0) `
           ($(if ($null -eq $band0) { 'nothing but card fill above the box' } else { 'band of ' + $band0.H + 'px found' }))
     Save-WindowShot $main (Get-ShotPath 'draft-0-empty.png')
@@ -248,19 +261,25 @@ Invoke-BBProbe {
           ($r1.Top -lt $r0.Top) `
           ('text box top moved ' + ($r0.Top - $r1.Top) + 'px up (was y=' + $r0.Top + ', now y=' + $r1.Top + ')')
 
-    $band1 = Get-BandAbove ($r1.Left + 44) ($r1.Top - 3) $bg
-    $bandOk = ($null -ne $band1) -and ($band1.H -ge 45) -and ($band1.H -le 62)
+    # The band is the CHIP, not the strip: the strip's top 12px are card fill (the room
+    # the delete button needs when it pokes above a chip), so the walk stops there. Its
+    # height is therefore ChipH (44), give or take the odd antialiased row.
+    $band1 = Get-BandAbove (Get-BandCols $r1) ($r1.Top - 3) $bg
+    $bandOk = ($null -ne $band1) -and ($band1.H -ge 40) -and ($band1.H -le 62)
     Check 'a chip row appeared directly above the text box' $bandOk `
           ($(if ($null -eq $band1) { 'no band found' } else { 'band ' + $band1.H + 'px tall, top y=' + $band1.Top }))
     if ($null -eq $band1) { throw 'no strip: the rest of the probe has nothing to measure' }
 
     $rowMid = $band1.Top + [int]($band1.H / 2)
-    $runs = Get-ChipRuns $r1.Left ($r1.Right - 1) $rowMid $bg
+    # @() around every Get-ChipRuns call: a function that returns a one-element array
+    # hands back the element itself, and a hashtable's .Count is its KEY count (2) --
+    # so "one run left" would satisfy a `-eq 2` check that reads as two chips.
+    $runs = @(Get-ChipRuns $r1.Left ($r1.Right - 1) $rowMid $bg)
     Check 'three chips drawn, one per attachment' ($runs.Count -eq 3) ($runs.Count.ToString() + ' run(s)')
     if ($runs.Count -lt 1) { throw 'no chips: cannot test the delete button' }
 
     $chip0 = $runs[0]
-    $chipTop = Get-ChipTop ($chip0.L + 44) $rowMid $bg
+    $chipTop = Get-ChipTop ([int](($chip0.L + $chip0.R) / 2)) $rowMid $bg
     Write-Output ("chip 0: x " + $chip0.L + ".." + $chip0.R + ", top y=" + $chipTop + ", mid y=" + $rowMid)
 
     # ---- C. hover the first chip: a delete button must float at its TOP-RIGHT ----
@@ -293,7 +312,7 @@ Invoke-BBProbe {
               ($chipTop -gt 0 -and $hot.Y -lt $chipTop) `
               ('button top y=' + $hot.Y + ' vs chip top=' + $chipTop)
         Check 'the button is a round badge, roughly one chip-icon across' `
-              (($hot.R - $hot.X) -ge 14 -and ($hot.B - $hot.Y) -ge 14 -and ($hot.R - $hot.X) -le 26) `
+              (($hot.R - $hot.X) -ge 14 -and ($hot.B - $hot.Y) -ge 14 -and ($hot.R - $hot.X) -le 30) `
               (($hot.R - $hot.X + 1).ToString() + 'x' + ($hot.B - $hot.Y + 1).ToString() + 'px')
     }
 
@@ -312,6 +331,12 @@ Invoke-BBProbe {
     Take-Snapshot $main
     $hot2 = Get-NewDark $script:cold $bg $rx0 $ry0 $rx1 $ry1
     if ($null -eq $hot2) { throw 'the delete button did not come back for the click test' }
+    # Park the cursor ON the badge and shoot it: the button's hover state (it turns into the
+    # danger colour) is not something any check above would notice -- they all measure the
+    # resting badge -- so the shot is the only record of it.
+    [void][BB]::SetCursorPos($hot2.CX, $hot2.CY)
+    Start-Sleep -Milliseconds 400
+    Save-WindowShot $main (Get-ShotPath 'draft-2b-hover-button.png')
 
     Invoke-MouseClick $hot2.CX $hot2.CY
     Start-Sleep -Milliseconds 700
@@ -322,10 +347,10 @@ Invoke-BBProbe {
     Save-WindowShot $main (Get-ShotPath 'draft-3-removed.png')
 
     $r2 = Get-WinRect $edit
-    $band2 = Get-BandAbove ($r2.Left + 44) ($r2.Top - 3) $bg
+    $band2 = Get-BandAbove (Get-BandCols $r2) ($r2.Top - 3) $bg
     if ($null -eq $band2) { throw 'the whole strip vanished: expected two chips left' }
     $rowMid2 = $band2.Top + [int]($band2.H / 2)
-    $runs2 = Get-ChipRuns $r2.Left ($r2.Right - 1) $rowMid2 $bg
+    $runs2 = @(Get-ChipRuns $r2.Left ($r2.Right - 1) $rowMid2 $bg)
     Check 'clicking the delete button removes that chip' ($runs2.Count -eq 2) ($runs2.Count.ToString() + ' chip(s) left')
     Check 'the text box is untouched by the removal' (($r2.Bottom - $r2.Top) -eq $h0) `
           (($r2.Bottom - $r2.Top).ToString() + 'px vs ' + $h0 + 'px')
@@ -340,9 +365,9 @@ Invoke-BBProbe {
     Send-FilesPaste $edit @($badPath)
     Start-Sleep -Milliseconds 400
     $er2 = Get-WinRect $edit
-    $band3 = Get-BandAbove ($er2.Left + 44) ($er2.Top - 3) $bg
+    $band3 = Get-BandAbove (Get-BandCols $er2) ($er2.Top - 3) $bg
     $rowMid3 = $band3.Top + [int]($band3.H / 2)
-    $runs3 = Get-ChipRuns $er2.Left ($er2.Right - 1) $rowMid3 $bg
+    $runs3 = @(Get-ChipRuns $er2.Left ($er2.Right - 1) $rowMid3 $bg)
     Check 'a .zip is not added to the strip' ($runs3.Count -eq $runs2.Count) `
           ($runs2.Count.ToString() + ' -> ' + $runs3.Count.ToString())
     Check 'the refused file did not shrink the text box either' (($er2.Bottom - $er2.Top) -eq $h0) `
@@ -372,9 +397,9 @@ Invoke-BBProbe {
     Take-Snapshot $main
 
     $er3 = Get-WinRect $edit
-    $band4 = Get-BandAbove ($er3.Left + 44) ($er3.Top - 3) $bg
+    $band4 = Get-BandAbove (Get-BandCols $er3) ($er3.Top - 3) $bg
     $rowMid4 = $band4.Top + [int]($band4.H / 2)
-    $runs4 = Get-ChipRuns $er3.Left ($er3.Right - 1) $rowMid4 $bg
+    $runs4 = @(Get-ChipRuns $er3.Left ($er3.Right - 1) $rowMid4 $bg)
     Check 'the long-named file landed in its own chip' ($runs4.Count -eq 3) `
           ($runs4.Count.ToString() + ' chip(s)')
 
@@ -391,7 +416,7 @@ Invoke-BBProbe {
 
     # NOTE: build scan rects with Rect-Of. Writing the four numbers space-separated into
     # New-Object binds them as four positional parameters and dies at parse time.
-    $there = Count-Ink (Rect-Of ($lc.L + 50) $y0 ($lc.L + 140) $y1) $fill 40
+    $there = Count-Ink (Rect-Of ($lc.L + 44) $y0 ($lc.R - 8) $y1) $fill 40
     Check 'the long name is drawn at all' ($there -ge 30) ($there.ToString() + ' ink pixels across the name')
 
     $over = Count-Ink (Rect-Of ($lc.R - 7) $y0 ($lc.R - 2) $y1) $fill 40

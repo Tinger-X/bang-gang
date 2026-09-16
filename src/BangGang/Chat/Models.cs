@@ -70,4 +70,27 @@ public class Attachment
         double k = Math.Min((double)maxW / w, (double)maxH / h);
         return new Size(Math.Max(1, (int)(w * k)), Math.Max(1, (int)(h * k)));
     }
+
+    /// <summary>
+    /// 列表缩略图：按**铺满**缩放 —— 短边也至少有 <paramref name="box"/> 那么长。
+    ///
+    /// 和 <see cref="LoadImage"/> 的「装下」正好相反，因为用途不同：气泡里要看清整张图，
+    /// 附件格子里只回答「这是哪一张」。装下的话一张 2000×200 的全景会被压成 176×17，
+    /// 再铺进 44px 的方格就得放大 2.5 倍 —— 糊成一片。这里保证短边够长，由画的那一头裁。
+    ///
+    /// 原图本来就比格子小就不放大：那时糊是必然的，但至少不额外损失一次重采样。
+    /// </summary>
+    public Image? LoadThumb(int box)
+    {
+        try
+        {
+            if (Path == null || !System.IO.File.Exists(Path)) return null;
+            using var full = Image.FromFile(Path);
+            double k = (double)box / Math.Min(full.Width, full.Height);
+            if (k >= 1) return new Bitmap(full);
+            return new Bitmap(full, new Size(Math.Max(1, (int)Math.Round(full.Width * k)),
+                                             Math.Max(1, (int)Math.Round(full.Height * k))));
+        }
+        catch { return null; }
+    }
 }
