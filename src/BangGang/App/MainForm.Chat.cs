@@ -23,12 +23,13 @@ partial class MainForm
         _welcome.Visible = false;
         RebindConversations();
         _input.FocusInput();
-        PersistChats();
+        RememberActive();
     }
 
     private void DeleteConversation(Conversation c)
     {
         _conversations.Remove(c);
+        ChatStore.Delete(c.Id);          // 会话文件跟着删；它的附件不删，见 ChatStore.ImageDir
         if (_active == c)
         {
             _active = null;
@@ -38,12 +39,25 @@ partial class MainForm
             EnsureSidebarOpen();     // 顶栏（连同收起按钮）没了，侧栏就得自己回来
         }
         RebindConversations();
-        PersistChats();
+        RememberActive();
     }
 
-    /// <summary>把当前这些会话写回磁盘。调用点是「发消息 / 回复收尾 / 删会话 / 切会话」，
-    /// 不在流式刷新的每一帧上 —— 见 <see cref="ChatStore.Save"/>。</summary>
-    private void PersistChats() => ChatStore.Save(_conversations, _active?.Id);
+    /// <summary>把一条会话写进它自己的文件。调用点是「内容定稿」的几处，见 <see cref="ChatStore.Save"/>。</summary>
+    private void PersistChat(Conversation c) => ChatStore.Save(c);
+
+    /// <summary>
+    /// 记住「用户现在开的是哪条」，下次启动直接回到它。
+    ///
+    /// 没变就不写：切会话是常事，每次重写一遍 settings.json 没必要。启动时
+    /// <see cref="RestoreConversations"/> 也会走到这儿，那时值本来就是对的，等于不写。
+    /// </summary>
+    private void RememberActive()
+    {
+        string id = _active?.Id ?? "";
+        if (_settings.ActiveChatId == id) return;
+        _settings.ActiveChatId = id;
+        _settings.Save();
+    }
 
     /// <summary>
     /// 启动时把上次的会话读回来，并直接回到当时那一条上（找不到就挑最近更新的那条）。
@@ -53,10 +67,13 @@ partial class MainForm
     /// </summary>
     private void RestoreConversations()
     {
-        var (list, activeId) = ChatStore.Load();
+        var (list, legacyActive) = ChatStore.Load();
         if (list.Count == 0) return;
         _conversations.AddRange(list);
-        var c = activeId == null ? null : _conversations.FirstOrDefault(x => x.Id == activeId);
+        // 刚从 0.8.1 的单文件存档搬过来时，当时开着哪条是老文件一起带回来的；
+        // 平时这个指针在 settings.json 里。
+        string want = _settings.ActiveChatId.Length > 0 ? _settings.ActiveChatId : (legacyActive ?? "");
+        var c = want.Length == 0 ? null : _conversations.FirstOrDefault(x => x.Id == want);
         c ??= _conversations.OrderByDescending(x => x.UpdatedAt).FirstOrDefault();
         if (c != null) ActivateConversation(c);
     }
@@ -91,7 +108,7 @@ partial class MainForm
         _convTitle.Text = _active.Title;
         // 用户这句先落盘，再等回复：回复要跑好几秒（还可能中途暂停、被杀），
         // 不能让刚打出来的问题跟着那一轮一起悬着。
-        PersistChats();
+        PersistChat(_active);
         StartReply();
     }
 
@@ -180,7 +197,7 @@ partial class MainForm
             }
             conv.RefreshTitle();
             if (ReferenceEquals(_active, conv)) RebindConversations();
-            PersistChats();      // 这一轮的正文（含暂停/出错留下的那半截）到此定稿
+            PersistChat(conv);      // 这一轮的正文（含暂停/出错留下的那半截）到此定稿
         }
     }
 
@@ -226,7 +243,7 @@ partial class MainForm
             _chatView.AddMessage(m);
             RebindConversations();
         }
-        PersistChats();
+        PersistChat(conv);
     }
 
     /// <summary>用户在输入框的「暂停」上点了：掐掉网络读取，已经收到的部分留在气泡里。</summary>

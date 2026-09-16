@@ -82,6 +82,15 @@ public class AppSettings
     /// <summary>录音方式："hold" 按住录音 / "toggle" 按一下开始、再按一下停止。</summary>
     public string RecordMode { get; set; } = "hold";
 
+    /// <summary>
+    /// 上次开着的那条会话的 id，下次启动直接回到它（空串 = 没有，随便挑最近更新的那条）。
+    ///
+    /// 放这儿而不是 <see cref="ChatStore.Dir"/>：那个目录的约定是「一个文件一条会话」，
+    /// 混一个不是会话的文件进去，读的时候就得给它开个特例。而这东西和主题、透明度一样，
+    /// 属于「应用自己的状态」，settings.json 本来就是放这个的。
+    /// </summary>
+    public string ActiveChatId { get; set; } = "";
+
     // 旧版扁平字段：仅用于兼容旧 settings.json，加载时会迁移到“自定义”档位
     public string ChatApiUrl { get; set; } = "";
     public string ChatApiKey { get; set; } = "";
@@ -261,6 +270,12 @@ public class AppSettings
         catch { /* 目录只读时忽略 */ }
     }
 
+    /// <summary>
+    /// 用设置界面里那份改好的设置覆盖当前这份。
+    ///
+    /// <see cref="ActiveChatId"/> **故意不在这里**：设置界面里没有这一项，浮窗手上那份是
+    /// 打开浮窗那一刻抄的快照。照抄回来就等于「用户开着浮窗切了个会话，一点保存又被拽回去」。
+    /// </summary>
     public void CopyFrom(AppSettings o)
     {
         Shortcuts = o.Shortcuts.Select(x => new ShortcutSetting { Action = x.Action, Ctrl = x.Ctrl, Alt = x.Alt, Shift = x.Shift, Vk = x.Vk }).ToList();
