@@ -50,6 +50,7 @@ public static class BB {
     [DllImport("user32.dll", CharSet=CharSet.Unicode)] public static extern IntPtr SendMessage(IntPtr h, int m, int w, StringBuilder l);
     [DllImport("user32.dll", CharSet=CharSet.Unicode)] public static extern IntPtr SendMessage(IntPtr h, int m, IntPtr w, string l);
     [DllImport("user32.dll")] public static extern IntPtr SendMessage(IntPtr h, int m, IntPtr w, IntPtr l);
+    [DllImport("user32.dll")] public static extern bool PostMessage(IntPtr h, int m, IntPtr w, IntPtr l);
     [DllImport("user32.dll")] public static extern bool SetCursorPos(int x, int y);
     [DllImport("user32.dll")] public static extern void mouse_event(uint f, uint dx, uint dy, uint d, IntPtr e);
     [StructLayout(LayoutKind.Sequential)] public struct RECT { public int Left, Top, Right, Bottom; }
@@ -122,6 +123,23 @@ public static class BB {
 
     // The exe path is resolved by the caller; keep it out of here.
     public static IntPtr SendText(IntPtr h, string s) { return SendMessage(h, 0x000C, IntPtr.Zero, s); }
+
+    // Type into a foreign EDIT the way a user does -- one WM_CHAR per character.
+    //
+    // Do NOT reach for SendText (WM_SETTEXT) here. It does put the string into
+    // the native edit, but it does not drive WinForms' TextChanged, so anything
+    // the app hangs off that event (hiding a placeholder, enabling a button)
+    // never runs: you get a "typed" screenshot that is really still the empty
+    // state, with the placeholder drawn on top of the text. WM_CHAR goes
+    // through the edit's own proc and raises EN_CHANGE like real typing does.
+    //
+    // Returns the text the control actually reports afterwards, so the caller
+    // can assert instead of hoping.
+    public static string Type(IntPtr h, string s) {
+        foreach (char c in s) PostMessage(h, 0x0102, (IntPtr)c, IntPtr.Zero);
+        System.Threading.Thread.Sleep(250);
+        return Tx(h);
+    }
 }
 '@
 

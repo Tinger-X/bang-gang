@@ -60,9 +60,9 @@ partial class MainForm
         _btnSideToggle.Location = new Point(sw + 10, 10);
         // 输入面板也铺满整窗、不随动画移动，内容靠 ContentInset 让开侧栏：
         // 它一移动，右下角那两个按钮就得跟着重摆一次，那正是上面要消掉的东西。
-        _input.Bounds = new Rectangle(0, bodyH - 150, W, 150);
+        _input.Bounds = new Rectangle(0, bodyH - InputPanel.PanelH, W, InputPanel.PanelH);
         _input.ContentInset = sw;
-        _chatView.Bounds = new Rectangle(sw, 48, mw, bodyH - 48 - 150);
+        _chatView.Bounds = new Rectangle(sw, 48, mw, bodyH - 48 - InputPanel.PanelH);
     }
 
     protected override void OnResize(EventArgs e)

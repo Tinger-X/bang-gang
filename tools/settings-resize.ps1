@@ -16,9 +16,20 @@
 # at the SAME size -- once with the settings open, once with them closed -- and requires
 # everything outside the settings card to agree. A first round runs at the original size as
 # a baseline, because the two shots are not bit-identical for reasons that have nothing to
-# do with this bug (the chrome bar's status line is rewritten on open/close, and a native
-# EDIT contributes its text but not its background to a WM_PRINT snapshot). Baseline noise
-# is subtracted; a stale snapshot is orders of magnitude larger than it.
+# do with this bug. Baseline noise is subtracted; a stale snapshot is orders of magnitude
+# larger than it.
+#
+# Three sources of that noise, all state differences between the two moments rather than
+# drawing differences -- know them before chasing a rise in the baseline number:
+#   1. the chrome bar's status line is rewritten on open/close (hence skipTop).
+#   2. a native EDIT contributes its text but not its background to a WM_PRINT snapshot.
+#   3. the input card's border is theme-ACCENT while its TextBox holds focus and plain
+#      Theme.Border otherwise. Opening the settings does not move focus off the box, so the
+#      backdrop is a faithful picture of a focused card; by the time the live shot is taken
+#      the settings close button has taken focus and the border is grey. The card's edges
+#      stick out past the settings card, so this lands inside the compared area.
+# The measured baseline at 1200x800 is ~1500 px, which is why the tolerance below is a
+# margin over the baseline rather than a fixed small number.
 #
 # Usage:  powershell -File tools\settings-resize.ps1
 
