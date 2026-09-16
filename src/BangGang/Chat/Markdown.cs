@@ -12,6 +12,19 @@ internal static class Markdown
         public List<PhysLine> Lines { get; } = new();
         public float Width;   // 内容宽（含 padding 之后使用）
         public float Height;
+
+        /// <summary>
+        /// 这段内容**被 capWidth 折过行**（或者里面有代码块，代码块按满宽算）。
+        ///
+        /// <see cref="Width"/> 一个人说不清这件事：折行之后它是「最长的那条物理行有多宽」，
+        /// 而那一条总是比 capWidth 窄着一点 —— 贪心折行在放下下一个词之前就换行了，
+        /// 差的那一点是那个放不下的词的宽度，从 40 到 200 都有可能。所以
+        /// 「Width 到没到 capWidth」根本判不出「这段文字还想更宽」，
+        /// 差着半个词的超长正文会被读成「内容就想要这么宽」。
+        /// 气泡那边（<c>MessageBubble.SetMaxInner</c>）的早退判据要的正是这个判断，
+        /// 由折行的那一处**当场**记下来，不留给别人从宽度上反推。
+        /// </summary>
+        public bool Wrapped;
     }
 
     internal sealed class PhysLine
@@ -122,6 +135,7 @@ internal static class Markdown
                 {
                     var pl = MakeCodeLine(codeLine, capWidth);
                     pl.CodeBlock = true;
+                    lay.Wrapped = true;      // 代码块按满宽算，同下面的注释
                     pl.SpaceBefore = y == 0 ? 0 : 4;
                     y += pl.SpaceBefore + pl.LineHeight * 1.18f;
                     lay.Lines.Add(pl);
@@ -137,7 +151,8 @@ internal static class Markdown
 
             var (runs, font) = p.Kind.StartsWith("h") ? Heading(p) : BodyRuns(p);
             float maxW = 0;
-            var wrap = WrapRuns(runs, capWidth);
+            var wrap = WrapRuns(runs, capWidth, out bool didWrap);
+            if (didWrap) lay.Wrapped = true;
             foreach (var wl in wrap)
             {
                 maxW = Math.Max(maxW, wl.Width);
@@ -249,11 +264,13 @@ internal static class Markdown
         return list;
     }
 
-    /// <summary>把一串片段折行成物理行。</summary>
+    /// <summary>把一串片段折行成物理行。<paramref name="wrapped"/> 见 <see cref="Layout.Wrapped"/>：
+    /// 只有「本来还想放、但放不下才换的行」才算折行，循环结束时的那一次收尾不算。</summary>
     private static List<(List<Run> Runs, float Width, float LineHeight)> WrapRuns(
-        List<(string t, Font f, bool code, bool mark)> segs, float capWidth)
+        List<(string t, Font f, bool code, bool mark)> segs, float capWidth, out bool wrapped)
     {
         var result = new List<(List<Run>, float, float)>();
+        wrapped = false;
         var cur = new List<Run>();
         float curW = 0;
         float curH = 0;
@@ -277,14 +294,14 @@ internal static class Markdown
                 string piece = last ? w : w + " ";
                 if (piece.Length == 0) continue;
                 float ww = TextRenderer.MeasureText(piece, f).Width;
-                if (curW + ww > capWidth && cur.Count > 0) Flush();
+                if (curW + ww > capWidth && cur.Count > 0) { Flush(); wrapped = true; }
                 // 单词本身超宽：硬切
                 if (ww > capWidth)
                 {
                     foreach (string sub in HardSplit(piece, f, capWidth))
                     {
                         float sw = TextRenderer.MeasureText(sub, f).Width;
-                        if (curW + sw > capWidth) Flush();
+                        if (curW + sw > capWidth && cur.Count > 0) { Flush(); wrapped = true; }
                         cur.Add(new Run { Text = sub, Font = f, Color = cc, Width = sw });
                         curW += sw; curH = Math.Max(curH, f.Height);
                     }

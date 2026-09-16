@@ -28,23 +28,28 @@ internal sealed class DraftStrip : Control
     /// <summary>本区域自身的高度 = 卡片 + 上边给删除按钮让出的那半个。<c>InputPanel</c> 按它让位。</summary>
     public const int RowH = TopPad + ChipH;
 
-    private const int ChipH = 44;
+    /// <summary>
+    /// 卡片高度 = 图片格子的边长。**这一族几何常量只有这一处定义**：对话区气泡里的附件
+    /// （<see cref="MessageBubble"/>）画的是同一套卡片，它按这里的数排版，不自己再存一份 ——
+    /// 存两份的下场是改了一处、另一处静默地差几像素。
+    /// </summary>
+    internal const int ChipH = 44;
 
     /// <summary>图片卡片的宽度 = 它自己的高度：一个正方形格子，整格就是那张图。</summary>
-    private const int ChipImgW = ChipH;
+    internal const int ChipImgW = ChipH;
 
-    private const int ChipGap = 8;
+    internal const int ChipGap = 8;
 
     /// <summary>文件卡片的自然宽度。文字区 = 118 − 7 − 28 − 7 − 8 = 68px，够放「notes.txt」。</summary>
-    private const int ChipNatW = 118;
+    internal const int ChipNatW = 118;
 
     /// <summary>挤到这个宽度就不再缩，再多就交给「+N」（此时文字已经放不下，只剩图标）。</summary>
     private const int ChipMinW = 66;
 
-    private const int IconSize = 28;
-    private const int IconPad = 7;       // 图标离卡片左缘
-    private const int TextGap = 7;       // 图标与文字之间
-    private const int TextRight = 8;     // 文字离卡片右缘
+    internal const int IconSize = 28;
+    internal const int IconPad = 7;      // 图标离卡片左缘
+    internal const int TextGap = 7;      // 图标与文字之间
+    internal const int TextRight = 8;    // 文字离卡片右缘
 
     /// <summary>
     /// 卡片离条带上缘的距离 = 半个删除按钮 + 2px 余量。**删除按钮有一半探在卡片上面**
@@ -59,7 +64,7 @@ internal sealed class DraftStrip : Control
     private const int XSize = 17;        // 删除按钮的直径
 
     /// <summary>图片缩略图四角的半径。图片格是 44px 的方块，8 和别的卡片是同一档。</summary>
-    private const int ThumbRadius = 8;
+    internal const int ThumbRadius = 8;
 
     private readonly List<Attachment> _items = new();
     private readonly List<Image?> _thumbs = new();
@@ -280,7 +285,7 @@ internal sealed class DraftStrip : Control
 
         RP.Box(g, c, 8, ChipFill(), BackColor);
         var icon = new Rectangle(c.Left + IconPad, c.Top + (ChipH - IconSize) / 2, IconSize, IconSize);
-        PaintFileIcon(g, a, icon);
+        PaintFileIcon(g, a, icon, BackColor);
 
         // 文字区：右边留出删除按钮探进来的那一小块，名字才不会顶到圆钮上。
         int tx = icon.Right + TextGap;
@@ -300,7 +305,7 @@ internal sealed class DraftStrip : Control
     }
 
     /// <summary>卡片上显示的文件名，空的时候给个占位。</summary>
-    private static string DisplayName(Attachment a)
+    internal static string DisplayName(Attachment a)
     {
         string n = string.IsNullOrWhiteSpace(a.Name) ? Path.GetFileName(a.Path ?? "") : a.Name;
         return n.Length == 0 ? "(文件)" : n;
@@ -319,7 +324,7 @@ internal sealed class DraftStrip : Control
     /// 明明右边还有大片空白。二分一次量得准，代价是每个卡片多几次 MeasureText，
     /// 而卡片只在悬浮变化时才重画。
     /// </summary>
-    private static string Ellipsize(string s, Font f, int avail)
+    internal static string Ellipsize(string s, Font f, int avail)
     {
         if (avail <= 0 || s.Length == 0) return "";
         if (TextW(s, f) <= avail) return s;
@@ -353,7 +358,7 @@ internal sealed class DraftStrip : Control
     /// 成品在这一步就做完了（换一次附件只做一遍），重画时只是原样贴上去；
     /// 贴的时候连 <c>PixelOffsetMode</c> 都要校正，否则整块图会被采样到半个像素上、糊一层。
     /// </summary>
-    private static Image? MakeThumb(Attachment a)
+    internal static Image? MakeThumb(Attachment a)
     {
         using var src = a.LoadThumb(ChipImgW * 3);
         if (src == null) return null;
@@ -386,8 +391,12 @@ internal sealed class DraftStrip : Control
     ///
     /// 用扩展名当图标，是因为白名单里几十种类型画不出几十个图标，而用户认的正是后缀那几个字母。
     /// 字号按字母个数收一收，四个字母（DOCX）也能塞进 32px 的方块。
+    ///
+    /// <paramref name="backdrop"/> 是这块图标**底下真正显示的颜色**。图标本身是半透明的混色，
+    /// 底色取错就会在卡片上留一块异色的补丁 —— 输入卡片和对话气泡是两种底色，
+    /// 所以这个值必须由调用方给，不能在这里写死成 <see cref="Theme.InputBg"/>。
     /// </summary>
-    private static void PaintFileIcon(Graphics g, Attachment a, Rectangle box)
+    internal static void PaintFileIcon(Graphics g, Attachment a, Rectangle box, Color backdrop)
     {
         var cat = AttachTypes.CatOf(a.Path);
         Color tint = cat switch
@@ -397,7 +406,7 @@ internal sealed class DraftStrip : Control
             AttachCat.Audio => Theme.Mix(Theme.Accent, Theme.Danger, 0.5f),
             _ => Theme.TextMuted,
         };
-        RP.Fill(g, box, 7, Theme.Mix(Theme.InputBg, tint, Theme.Dark ? 0.30f : 0.14f));
+        RP.Fill(g, box, 7, Theme.Mix(backdrop, tint, Theme.Dark ? 0.30f : 0.14f));
 
         string label = AttachTypes.ExtLabel(a.Path);
         if (label.Length == 0) label = AttachTypes.CatName(cat);

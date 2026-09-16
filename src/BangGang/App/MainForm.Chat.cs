@@ -99,6 +99,20 @@ partial class MainForm
     private void SendFromInput()
     {
         if (_active == null) return;
+
+        // 还没配好模型就一个字都不发，只在顶栏说一句「差什么」。
+        //
+        // 守卫放在 **Flush() 之前**：拦下来之后用户刚敲的字必须原样留在输入框里。
+        // 先清空再报错，等于把他打的一段话吃掉，比「点了没反应」更糟。
+        //
+        // 「还差什么」只有 LlmConfig.Problem 一处判断（Providers/LlmClient.cs），
+        // 那句话本来就是写给用户看的，顶栏直接照用 —— 在这里另拼一句，
+        // 两处说法早晚会分叉（改了校验规则、提示还在说老的那一条）。
+        //
+        // 发送按钮此时仍然是可点的（InputPanel 只在输入框为空时才让它失效）：
+        // 按钮点不动的话，「企图发送」这个动作根本无从发生，这句提示也就永远不会出现。
+        if (LlmConfig.From(_settings).Problem is { } problem) { FlashStatus(problem); return; }
+
         var m = _input.Flush();
         if (m == null) return;
         _active.Messages.Add(m);

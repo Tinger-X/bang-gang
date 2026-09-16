@@ -202,7 +202,13 @@ $script:filesAfterDelete = -1
 $script:activeCleared = $false
 
 try {
-    Set-Content -Path $settings -Value '{"ThemeMode":"light"}' -Encoding utf8
+    # A provider is required for round 2 below to be able to send at all: since 0.8.5 the
+    # send gate refuses outright when no model is configured, and a send that never
+    # happens writes no file -- which would read as "persistence is broken". The endpoint
+    # is a dead port; the reply lands as an error bubble, which is fine here because both
+    # sides of the restart see the same two messages.
+    Set-Content -Path $settings -Encoding utf8 `
+        -Value '{"ThemeMode":"light","ChatProvider":"custom","ChatProfiles":{"custom":{"url":"http://127.0.0.1:9/v1","key":"probe","model":"probe-model"}}}'
     if (Test-Path $chatsDir) { Remove-Item (Join-Path $chatsDir '*') -Force }
 
     Invoke-BBProbe {
@@ -257,7 +263,27 @@ try {
         [void](Invoke-TypeKeys $box.H $title)
         $ib = Get-InputButtons $main $box.H
         Invoke-MouseClick ([int](($ib.Send.Left + $ib.Send.Right) / 2)) ([int](($ib.Send.Top + $ib.Send.Bottom) / 2))
-        Start-Sleep -Milliseconds 1200
+
+        # Poll for the round to FINISH; do not sleep a fixed 1200ms.
+        #
+        # With the provider above the reply is a real HTTP attempt, and against that dead
+        # port it fails after ~2.1s (read off the trace log: 18:35:25.835 request ->
+        # 18:35:27.951 error). The conversation is written twice -- once at send time with
+        # the user's message alone, once when the round ends with the reply appended -- so
+        # a fixed 1200ms lands in between: the file holds one message and the chat view
+        # holds an empty placeholder bubble, which is indistinguishable from "persistence
+        # dropped the reply". Wait for the file to say two, not for the clock to say enough.
+        $waited = 0
+        while ($waited -lt 20000) {
+            $seen = @(List-ChatFiles)
+            if ($seen.Count -eq 1) {
+                $j = Read-ChatFile $seen[0]
+                if ($null -ne $j -and @($j.Conversation.Messages).Count -ge 2) { break }
+            }
+            Start-Sleep -Milliseconds 250
+            $waited += 250
+        }
+        Write-Output ('  round finished after ' + $waited + 'ms')
 
         $chat = Get-ChatPanel $main
         if ($null -eq $chat) { throw 'chat panel not found' }

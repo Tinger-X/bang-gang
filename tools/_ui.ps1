@@ -240,6 +240,20 @@ public static class BB {
         }
     }
 
+    // One wheel notch, at wherever the cursor happens to be. There is no managed way to
+    // do this from a console host, and mouse_event is the one that puts a real
+    // WM_MOUSEEVENTF_WHEEL on the queue addressed to the focused window with the
+    // cursor's screen position in lParam -- which is exactly what this app's
+    // IMessageFilter reads. It decides by cursor position, so put the cursor where the
+    // scroll should go BEFORE calling this (see Invoke-WheelAt), and make sure the app
+    // is foreground or the wheel is delivered to whatever is.
+    //
+    // Positive = one notch up (away from the user), matching the WinForms delta sign.
+    public static void Wheel(int notches) {
+        mouse_event(0x0800, 0, 0, unchecked((uint)(notches * 120)), IntPtr.Zero);
+        System.Threading.Thread.Sleep(250);
+    }
+
     // One bare key, no modifier. Chord() above is Ctrl+<vk> and Ctrl is not optional
     // there -- so reaching for it to press Esc actually sends Ctrl+Esc, which is the
     // Start menu. That overlay then covers the bottom left of the screen and takes
@@ -481,6 +495,18 @@ function Get-InkBoxAt([int]$x, [int]$y, [int]$w, [int]$h) {
 }
 
 function Invoke-MouseClick([int]$x, [int]$y) { [BB]::Click($x, $y) }
+
+# Scroll the wheel at a screen point. $Notches is signed: +1 = one notch up.
+#
+# The cursor has to be there first, and it has to MOVE there -- a SetCursorPos that
+# does not move anything produces no WM_MOUSEMOVE, which for a hover test reads as
+# "the app ignored the hover". That is why callers park the cursor somewhere else
+# before asking for a hover.
+function Invoke-WheelAt([int]$x, [int]$y, [int]$Notches) {
+    [void][BB]::SetCursorPos($x, $y)
+    Start-Sleep -Milliseconds 200
+    [BB]::Wheel($Notches)
+}
 
 # Type a string into a control the way a real user does, CJK included.
 #

@@ -9,17 +9,22 @@
 # What it pins down:
 #   A. the image is really painted inside the bubble -- not "a bubble appeared" but
 #      "the fixture's colour is on screen at the spot the layout says it should be",
-#      plus a pixel count over the bubble's rect (a cropped or blank image fails both)
-#   B. clicking it opens the viewer -- the window goes dark everywhere (the scrim), and
-#      the picture is redrawn at the window's centre
+#      plus a pixel count over the chip (a cropped or blank thumbnail fails both)
+#   B. clicking it opens the viewer -- and the scrim is TRANSLUCENT, which takes three
+#      checks to say (see the note further down; two of them can be satisfied by an
+#      opaque scrim, and the third is the one that cannot)
 #   C. Esc closes it, and so does a click on the scrim outside the picture
-#   D. a FILE attachment takes its own row in the bubble: the same message with and
-#      without one differs in height by exactly the row it occupies (34) + the gap (4)
+#   D. attachments are 44px thumbnails on ONE row, and only the image is clickable:
+#      clicking the file chip must not open anything, and the image chip right next to
+#      it must -- the pair is what rules out "clicks just do not work in that corner"
 #
 # D is why there are two conversations below rather than one message with two sends:
-# a single bubble per conversation means nothing can scroll, and the height is read off
-# the same "right-aligned row, empty chat" geometry both times, so the difference is
-# the one thing that changed.
+# a single bubble per conversation means nothing can scroll, and both heights are read
+# off the same "right-aligned row, empty chat" geometry, so the comparison is clean.
+#
+# The settings fixture carries a provider pointing at 127.0.0.1:9 (discard). Not for a
+# reply -- the port refuses instantly -- but because the send gate refuses outright when
+# no model is configured, and a probe that cannot send cannot measure a SENT message.
 #
 # ASCII ONLY (PowerShell 5.1 reads a BOM-less file as ANSI). The fixture colour is
 # magenta deliberately: nothing in either theme is anywhere near it, so counting it
@@ -29,6 +34,17 @@
 . "$PSScriptRoot\_ui.ps1"
 
 $settings = Join-Path (Split-Path $script:BBExe -Parent) 'settings.json'
+
+# The chat view's own thumbnail geometry, mirrored from DraftStrip: a chip is 44px square
+# (an image chip is exactly ChipH wide, a file chip ChipNatW), chips sit ChipGap apart,
+# and MessageBubble lays the first one at (PadX, PadY) = (14, 11) inside the bubble.
+# Hard-coded here on purpose -- if any of these move, the click point lands on the wrong
+# pixel and A/D fail, which is the whole point of not deriving them from the app.
+$CHIP = 44
+$PADX = 14
+$PADY = 11
+$GAP = 8
+$FILEW = 118
 
 # ---- fixtures, under shoots\ (gitignored), never the system temp -----------------
 
@@ -60,8 +76,8 @@ function Check([bool]$ok, [string]$label, [string]$detail) {
     Write-Output ('  [' + $tag + '] ' + $label + '  ' + $detail)
 }
 
-# One screen pixel, read back through a 1x1 grab. Not BB::PxAt: that one answers black
-# for a point outside the window, and a black answer reads as "very different from the
+# Reads a pixel back through a 1x1 grab. Not BB::PxAt: that one answers black for a
+# point outside the window, and a black answer reads as "very different from the
 # background" -- an out-of-window sample point would pass a difference test.
 function Get-Px([int]$x, [int]$y) {
     $b = Get-Crop $x $y 1 1
@@ -74,6 +90,15 @@ function Test-Magenta($c) {
     return ($c.R -ge 170 -and $c.G -le 70 -and $c.B -ge 110)
 }
 
+function Lum($c) { return 0.299 * $c.R + 0.587 * $c.G + 0.114 * $c.B }
+
+# "Not a black hole." The scrim is (12,14,18) at alpha 150, so what comes back through it
+# is a washed-out version of the UI underneath -- well above 40 in every channel, while an
+# opaque scrim of the same colour would answer (12,14,18) and fail this.
+function Test-NotBlack($c) { return ([Math]::Max($c.R, [Math]::Max($c.G, $c.B)) -ge 40) }
+
+function Lum($c) { return 0.299 * $c.R + 0.587 * $c.G + 0.114 * $c.B }
+
 function Count-Magenta($b) {
     $n = 0
     for ($y = 0; $y -lt $b.Height; $y++) {
@@ -84,8 +109,6 @@ function Count-Magenta($b) {
     }
     return $n
 }
-
-function Test-Dark($c) { return ($c.R -lt 70 -and $c.G -lt 70 -and $c.B -lt 70) }
 
 function Get-InputEdit($main) {
     foreach ($h in Get-WinKids $main) {
@@ -154,9 +177,9 @@ function Invoke-Send($main, $box) {
     Start-Sleep -Milliseconds 1000
 }
 
-# The settings file is replaced so the app runs with NO endpoint: this probe is about
-# the bubble, and a real provider would turn every send into a network call to a key
-# this machine may or may not have. Backed up and restored -- it holds the user's.
+# The settings file is replaced so the app runs against a dead endpoint: this probe is
+# about the bubble, and a real provider would turn every send into a network call to a
+# key this machine may or may not have. Backed up and restored -- it holds the user's.
 $existed = Test-Path $settings
 $backup = $null
 if ($existed) { $backup = Get-Content $settings -Raw }
@@ -165,14 +188,21 @@ $script:hImg = 0
 $script:hBoth = 0
 $script:inBubble = 0
 $script:onClick = $null
-$script:beforePx = $null
-$script:scrimPx = $null
+$script:bgBefore = $null
+$script:bgScrim = $null
+$script:chipScrim = $null
 $script:centerPx = $null
 $script:afterEscPx = $null
 $script:afterOutPx = $null
+$script:midBefore = $null
+$script:midAfterFile = $null
+$script:midAfterImg = $null
 
 try {
-    Set-Content -Path $settings -Value '{"ThemeMode":"light"}' -Encoding utf8
+    # url + model, so the send gate lets the message through. No key: a local server
+    # needs none and LlmConfig.Problem does not ask for one.
+    Set-Content -Path $settings -Encoding utf8 `
+        -Value '{"ThemeMode":"light","ChatProvider":"custom","ChatProfiles":{"custom":{"url":"http://127.0.0.1:9/v1","key":"probe","model":"probe-model"}}}'
 
     Invoke-BBProbe {
         $main = Start-BangGang 5
@@ -199,18 +229,24 @@ try {
         $script:inBubble = Count-Magenta $b
         $b.Dispose()
 
-        # MessageBubble places the first image at (PadX, PadY) = (14, 11); a user bubble
-        # has no "help" header above it. Same numbers the paint code uses.
-        $ix = $ub.Left + 14 + [int]($ImgW / 2)
-        $iy = $ub.Top + 11 + [int]($ImgH / 2)
+        # MessageBubble lays the first chip at (PadX, PadY) = (14, 11), and a user bubble
+        # has no "help" header above it, so this lands on the chip's centre.
+        $ix = $ub.Left + $PADX + [int]($CHIP / 2)
+        $iy = $ub.Top + $PADY + [int]($CHIP / 2)
         $script:onClick = Get-Px $ix $iy
 
-        # ---- B. click it open ----
-        $script:beforePx = Get-Px ($mr.Left + 60) ($mr.Top + 300)
-        Invoke-MouseClick $ix $iy
-        Start-Sleep -Milliseconds 600
+        # The pair the scrim checks are built on: the chip, and the chat background 24px
+        # to its left (the user bubble is right-aligned and one chip wide, so that strip
+        # is empty chat). Both are outside the picture the viewer draws at the centre.
+        $bgX = $ub.Left - 24
+        $script:bgBefore = Get-Px $bgX $iy
 
-        $script:scrimPx = Get-Px ($mr.Left + 60) ($mr.Top + 300)
+        # ---- B. click it open ----
+        Invoke-MouseClick $ix $iy
+        Start-Sleep -Milliseconds 700
+
+        $script:bgScrim = Get-Px $bgX $iy
+        $script:chipScrim = Get-Px $ix $iy
         $script:centerPx = Get-Px ([int](($mr.Left + $mr.Right) / 2)) ([int](($mr.Top + $mr.Bottom) / 2))
         Save-WindowShot $main (Get-ShotPath 'attachment-zoom.png')
 
@@ -219,16 +255,22 @@ try {
         # overlay then eats the rest of the run (see the note on BB.Key).
         [BB]::Key(0x1B)            # VK_ESCAPE
         Start-Sleep -Milliseconds 500
-        $script:afterEscPx = Get-Px ($mr.Left + 60) ($mr.Top + 300)
+        $script:afterEscPx = Get-Px $bgX $iy
 
         # ---- C2. a click on the scrim, well outside the picture ----
+        # Park the pointer first. The last click was on that exact pixel, and two clicks
+        # at one spot inside the double-click interval arrive as a DoubleClick -- WinForms
+        # raises Click for the first only, so the viewer would never reopen and the next
+        # assertion would fail for a reason that has nothing to do with the app.
+        [void][BB]::SetCursorPos(($bgX), ($iy))
+        Start-Sleep -Milliseconds 700
         Invoke-MouseClick $ix $iy
-        Start-Sleep -Milliseconds 500
-        Invoke-MouseClick ($mr.Left + 30) ($mr.Top + 300)
-        Start-Sleep -Milliseconds 500
-        $script:afterOutPx = Get-Px ($mr.Left + 60) ($mr.Top + 300)
+        Start-Sleep -Milliseconds 600
+        Invoke-MouseClick ($bgX - 4) $iy
+        Start-Sleep -Milliseconds 600
+        $script:afterOutPx = Get-Px $bgX $iy
 
-        # ---- D. the same message, plus a file ----
+        # ---- D. image + file in one message ----
         Invoke-NewConversation $main
         $box2 = Get-InputEdit $main
         if ($null -eq $box2) { throw 'input text box not found (2nd conversation)' }
@@ -245,6 +287,24 @@ try {
         $ub2 = Get-UserBubble $main $chat2
         if ($null -eq $ub2) { throw 'no user bubble after sending image + file' }
         $script:hBoth = $ub2.Bottom - $ub2.Top
+
+        # The window centre is plain chat background here -- the picture is only ever
+        # drawn there BY THE VIEWER, so "is it magenta" is a clean "did it open".
+        $midX = [int](($mr.Left + $mr.Right) / 2)
+        $midY = [int](($mr.Top + $mr.Bottom) / 2)
+        $chipY = $ub2.Top + $PADY + [int]($CHIP / 2)
+        $imgX = $ub2.Left + $PADX + [int]($CHIP / 2)
+        $fileX = $ub2.Left + $PADX + $CHIP + $GAP + [int]($FILEW / 2)
+
+        $script:midBefore = Get-Px $midX $midY
+        Invoke-MouseClick $fileX $chipY        # the file chip: nothing may happen
+        Start-Sleep -Milliseconds 700
+        $script:midAfterFile = Get-Px $midX $midY
+        Invoke-MouseClick $imgX $chipY         # the image chip 82px away: must open
+        Start-Sleep -Milliseconds 700
+        $script:midAfterImg = Get-Px $midX $midY
+        [BB]::Key(0x1B)
+        Start-Sleep -Milliseconds 400
     }
 } finally {
     if ($existed) { Set-Content -Path $settings -Value $backup -Encoding utf8 -NoNewline }
@@ -254,32 +314,48 @@ try {
 Write-Output ''
 
 Write-Output '--- A. the image is painted inside the sent bubble ---'
-Write-Output ('  bubble height ' + $script:hImg + 'px   (expected ' + (11 + $ImgH + 11) + 'px + one text line)')
-Check ($script:hImg -gt ($ImgH + 20)) 'bubble is at least as tall as the image' ($script:hImg.ToString() + 'px')
-# 160x110 = 17600 pixels; the rounded corners and their antialiasing take a few hundred.
-Check ($script:inBubble -gt 15000) 'fixture colour fills the bubble area' ($script:inBubble.ToString() + ' px of 17600')
+Write-Output ('  bubble height ' + $script:hImg + 'px   (one 44px chip row = ' + ($PADY + $CHIP + 12 + $PADY) + 'px)')
+Check ($script:hImg -ge 70 -and $script:hImg -le 92) 'bubble is one chip row tall' ($script:hImg.ToString() + 'px')
+# 44x44 = 1936 pixels; the rounded corners and their antialiasing take the rest.
+Check ($script:inBubble -gt 1500) 'fixture colour fills the chip' ($script:inBubble.ToString() + ' px of 1936')
 $clickOk = $false
 if ($null -ne $script:onClick) { $clickOk = Test-Magenta $script:onClick }
-Check $clickOk 'image sits where the layout says it does' ('pixel at the image centre = ' + $script:onClick.R + ',' + $script:onClick.G + ',' + $script:onClick.B)
+Check $clickOk 'the chip sits where the layout says it does' ('pixel at the chip centre = ' + $script:onClick.R + ',' + $script:onClick.G + ',' + $script:onClick.B)
 
 Write-Output ''
-Write-Output '--- B. clicking it opens the viewer ---'
-Write-Output ('  sidebar pixel: closed ' + $script:beforePx.R + ',' + $script:beforePx.G + ',' + $script:beforePx.B +
-              '   open ' + $script:scrimPx.R + ',' + $script:scrimPx.G + ',' + $script:scrimPx.B)
-Check (-not (Test-Dark $script:beforePx)) 'the sample point starts on the light UI' ($script:beforePx.R.ToString() + ',' + $script:beforePx.G + ',' + $script:beforePx.B)
-Check (Test-Dark $script:scrimPx) 'the scrim covers it once open' ($script:scrimPx.R.ToString() + ',' + $script:scrimPx.G + ',' + $script:scrimPx.B)
+Write-Output '--- B. clicking it opens the viewer, behind a translucent scrim ---'
+Write-Output ('  background: closed ' + $script:bgBefore.R + ',' + $script:bgBefore.G + ',' + $script:bgBefore.B +
+              '   open ' + $script:bgScrim.R + ',' + $script:bgScrim.G + ',' + $script:bgScrim.B +
+              '   chip under the scrim ' + $script:chipScrim.R + ',' + $script:chipScrim.G + ',' + $script:chipScrim.B)
+Check ((Lum $script:bgBefore) -gt 150) 'the sample point starts on the light UI' ((Lum $script:bgBefore).ToString('0.0') + ' luminance')
+Check (Test-NotBlack $script:bgScrim) 'the scrim is not black -- the UI shows through' ($script:bgScrim.R.ToString() + ',' + $script:bgScrim.G + ',' + $script:bgScrim.B)
+Check (((Lum $script:bgBefore) - (Lum $script:bgScrim)) -ge 60) 'and it is clearly darker than it was' `
+    ((Lum $script:bgBefore).ToString('0.0') + ' -> ' + (Lum $script:bgScrim).ToString('0.0'))
+# The one an opaque scrim cannot pass: it would paint every pixel underneath it the same
+# colour, so the chip and the background beside it would come back equal. Keeping them
+# apart is what "translucent" means and nothing else here measures it.
+Check ([Math]::Abs((Lum $script:chipScrim) - (Lum $script:bgScrim)) -ge 30) `
+    'two points that differed before still differ under it' `
+    ((Lum $script:chipScrim).ToString('0.0') + ' vs ' + (Lum $script:bgScrim).ToString('0.0'))
 Check (Test-Magenta $script:centerPx) 'the picture is redrawn at the window centre' ($script:centerPx.R.ToString() + ',' + $script:centerPx.G + ',' + $script:centerPx.B)
 
 Write-Output ''
 Write-Output '--- C. closing it ---'
-Check (-not (Test-Dark $script:afterEscPx)) 'Esc closes' ($script:afterEscPx.R.ToString() + ',' + $script:afterEscPx.G + ',' + $script:afterEscPx.B)
-Check (-not (Test-Dark $script:afterOutPx)) 'a click on the scrim closes' ($script:afterOutPx.R.ToString() + ',' + $script:afterOutPx.G + ',' + $script:afterOutPx.B)
+Check ((Lum $script:afterEscPx) -gt 150) 'Esc closes' ((Lum $script:afterEscPx).ToString('0.0') + ' luminance')
+Check ((Lum $script:afterOutPx) -gt 150) 'a click on the scrim closes' ((Lum $script:afterOutPx).ToString('0.0') + ' luminance')
 
 Write-Output ''
-Write-Output '--- D. a file attachment takes its own row ---'
+Write-Output '--- D. one row of chips, and only the image is clickable ---'
 $d = $script:hBoth - $script:hImg
 Write-Output ('  bubble height: image alone ' + $script:hImg + 'px   image + file ' + $script:hBoth + 'px   delta ' + $d + 'px')
-Check ($d -gt 30 -and $d -lt 46) 'file row is inside the bubble' ('delta ' + $d + 'px, expected 34 row + 4 gap = 38')
+Check ([Math]::Abs($d) -le 3) 'the file chip shares the row instead of adding one' `
+    ('delta ' + $d + 'px; a per-file row would have made it 38')
+Check (-not (Test-Magenta $script:midBefore)) 'the window centre starts on plain chat background' `
+    ($script:midBefore.R.ToString() + ',' + $script:midBefore.G + ',' + $script:midBefore.B)
+Check (-not (Test-Magenta $script:midAfterFile)) 'clicking the FILE chip opens nothing' `
+    ($script:midAfterFile.R.ToString() + ',' + $script:midAfterFile.G + ',' + $script:midAfterFile.B)
+Check (Test-Magenta $script:midAfterImg) 'and the image chip beside it does open' `
+    ($script:midAfterImg.R.ToString() + ',' + $script:midAfterImg.G + ',' + $script:midAfterImg.B)
 
 Write-Output ''
 if ($script:fail -eq 0) { Write-Output 'ALL CHECKS PASSED' } else { Write-Output ('' + $script:fail + ' CHECK(S) FAILED') }

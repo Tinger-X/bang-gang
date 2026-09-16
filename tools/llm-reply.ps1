@@ -342,15 +342,53 @@ try {
 
         # The strip to watch: just under where the bubble ends NOW. It is bare chat
         # background at this instant, and the rest of the reply is going to land in it.
-        $sx = $script:b1.Left + 14
-        $sy = $script:b1.Bottom + 6
+        #
+        # Two things make this harder than "read the rect, crop below it", both of them
+        # the probe's own doing rather than the app's:
+        #
+        #   * the bubble grows ~28px every 40ms (MainForm's flush timer), while reading its
+        #     rect means enumerating every window under the main window and the crop is a
+        #     screen blit -- so the rect and the pixels can be a line apart. Measured:
+        #     "296..420" from the read, "296..448" as soon as the crop came back. A strip
+        #     pinned 6px under that bottom was then INSIDE the newly painted line, and the
+        #     check read 157px of glyph bottoms as "this was not bare chat background".
+        #   * so the strip sits a GUARD band below instead of 6px, and the sample is only
+        #     kept if the bubble held still across the crop. The guard alone would be a
+        #     guess about timing; the re-read is what makes it a fact.
+        #
+        # The guard cannot quietly weaken the check: the final bubble is 265px tall where
+        # this one is 124, so the strip is still deep inside where the reply lands -- and
+        # the assertion below needs ink in it at the end, which fails if it is not.
+        $GUARD = 40
         $sw = 220
         $sh = 20
-        if ($sy + $sh -gt $chat.R.Bottom) { throw 'the watched strip would fall outside the chat view' }
+        $sx = 0; $sy = 0; $bmp = $null; $still = $false
+        for ($try = 0; $try -lt 20; $try++) {
+            $bb = Get-AsstBubble $main $chat
+            if ($null -eq $bb) { throw 'the assistant bubble went away mid-measurement' }
+            $sx = $bb.Left + 14
+            $sy = $bb.Bottom + $GUARD
+            if ($sy + $sh -gt $chat.R.Bottom) { throw 'the watched strip would fall outside the chat view' }
+            $bmp = Get-Crop $sx $sy $sw $sh
+            $after = Get-AsstBubble $main $chat
+            if ($null -ne $after -and $after.Bottom -eq $bb.Bottom) { $still = $true; break }
+            $bmp.Dispose()
+            $bmp = $null
+        }
+        if ($null -eq $bmp) { throw 'the assistant bubble never held still long enough to sample it' }
+        # 20 tries at ~60ms each is longer than the stub's whole reply, so getting here
+        # with $still false would mean the reply ended mid-loop -- say so rather than
+        # letting the numbers below be read as a measurement of something.
+        Write-Output ('  strip sampled with the bubble still: ' + $still)
+
         $script:strip = @{ X = $sx; Y = $sy; W = $sw; H = $sh }
-        $bmp = Get-Crop $sx $sy $sw $sh
+        $script:stripWin = ('' + $mr.Left + ',' + $mr.Top)
+        $script:stripB1 = ('' + $script:b1.Left + ',' + $script:b1.Top + ' ' +
+                           ($script:b1.Right - $script:b1.Left) + 'x' + ($script:b1.Bottom - $script:b1.Top))
         $script:midInk = Get-InkBoxNum $bmp
+        $bmp.Save((Get-ShotPath 'llm-reply-midstrip.png'))
         $bmp.Dispose()
+        if (-not $Reasoning) { Save-WindowShot $main (Get-ShotPath 'llm-reply-mid.png') }
 
         Start-Sleep -Milliseconds 3000
         $script:b2 = Get-AsstBubble $main $chat
@@ -462,6 +500,7 @@ if ($null -eq $strip -or $null -eq $b2) {
     $en = 0
     if ($null -ne $endInk) { $en = $endInk.N }
     Write-Output ('  watched rect: ' + $strip.X + ',' + $strip.Y + ' ' + $strip.W + 'x' + $strip.H)
+    Write-Output ('  window at ' + $script:stripWin + '   bubble was ' + $script:stripB1)
     Write-Output ('  ink mid-stream: ' + $mn + ' px      ink at the end: ' + $en + ' px')
     Check ($mn -eq 0) 'bare chat background mid-stream' ($mn.ToString() + ' px of ink')
     Check ($en -gt 40) 'reply text painted in it' ($en.ToString() + ' px of ink')

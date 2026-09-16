@@ -87,12 +87,17 @@ function Get-ShotBitmap([int]$x, [int]$y, [int]$w, [int]$h) {
     return $bmp
 }
 
-# Bounding box of the pixels that differ, in the coordinates of the crop. Sampled every
-# $Step columns; the artefacts this looks for are whole border strokes, not single pixels.
-function Compare-Bitmaps($a, $b, [int]$Step = 2, [int]$Tol = 10) {
+# Bounding box of the pixels that differ, in the coordinates of the crop.
+#
+# X is read every 2px and Y every 4px, and the asymmetry is deliberate: every artefact
+# this looks for is a VERTICAL stroke -- the card's rounded left edge, a bubble outline
+# at the x its row used to sit at, the scroll bar's thumb down the right-hand column --
+# because the animation moves things sideways. X is what has to be sampled tightly, and
+# halving the Y samples is what keeps a full-window sweep from taking minutes.
+function Compare-Bitmaps($a, $b, [int]$Step = 2, [int]$Tol = 10, [int]$StepY = 4) {
     $minX = -1; $maxX = -1; $minY = -1; $maxY = -1; $n = 0
     for ($x = 0; $x -lt $a.Width; $x += $Step) {
-        for ($y = 0; $y -lt $a.Height; $y += $Step) {
+        for ($y = 0; $y -lt $a.Height; $y += $StepY) {
             $p = $a.GetPixel($x, $y); $q = $b.GetPixel($x, $y)
             $d = [Math]::Max([Math]::Abs($p.R - $q.R),
                  [Math]::Max([Math]::Abs($p.G - $q.G), [Math]::Abs($p.B - $q.B)))
@@ -108,40 +113,55 @@ function Compare-Bitmaps($a, $b, [int]$Step = 2, [int]$Tol = 10) {
     return "$minX..$maxX x $minY..$maxY (n=$n)"
 }
 
+function Band-Of($bmp, [int]$x, [int]$y, [int]$w, [int]$h) {
+    return $bmp.Clone((New-Object System.Drawing.Rectangle $x, $y, $w, $h), $bmp.PixelFormat)
+}
+
 # Bumps $script:fail rather than returning a count: Write-Output feeds the success stream,
 # so a function that both prints and returns would hand back a string ARRAY.
-function Test-AfterAnim($main, [string]$Tag) {
+#
+# The three grabs are taken ONCE for the whole window and then cropped per band: grabbing
+# is a screen blit plus a settle delay, and doing it per band would triple that for nothing.
+function Test-AfterAnim($main, [string]$Tag, $Bands) {
     $r = Get-WinRect $main
     $w = $r.Right - $r.Left
-    $bandY = $r.Bottom - 150                      # the input panel is the bottom 150px
+    $h = $r.Bottom - $r.Top
     Write-Output ("  " + $Tag.PadRight(12) + " sidebar width now " + (Get-SidebarW $main))
-    $a = Get-ShotBitmap $r.Left $bandY $w 150
+
+    $a = Get-ShotBitmap $r.Left $r.Top $w $h
     [void][BBT]::RedrawWindow($main, [IntPtr]::Zero, [IntPtr]::Zero, $RDW)
     Start-Sleep -Milliseconds 600
-    $b = Get-ShotBitmap $r.Left $bandY $w 150
+    $b = Get-ShotBitmap $r.Left $r.Top $w $h
     [void][BBT]::RedrawWindow($main, [IntPtr]::Zero, [IntPtr]::Zero, $RDW)
     Start-Sleep -Milliseconds 600
-    $c = Get-ShotBitmap $r.Left $bandY $w 150
+    $c = Get-ShotBitmap $r.Left $r.Top $w $h
 
-    $ab = Compare-Bitmaps $a $b
-    $bc = Compare-Bitmaps $b $c
+    foreach ($band in $Bands) {
+        $ca = Band-Of $a $band.X $band.Y $band.W $band.H
+        $cb = Band-Of $b $band.X $band.Y $band.W $band.H
+        $cc = Band-Of $c $band.X $band.Y $band.W $band.H
+        $ab = Compare-Bitmaps $ca $cb $band.StepX 10 $band.StepY
+        $bc = Compare-Bitmaps $cb $cc $band.StepX 10 $band.StepY
+        $name = $Tag + '-' + $band.Name
 
-    # Always keep the pair: when this passes but the picture is still wrong, the images
-    # are the only way to see which of the two was wrong.
-    $a.Save((Get-ShotPath ("tear-" + $Tag + "-a.png")))
-    $b.Save((Get-ShotPath ("tear-" + $Tag + "-b.png")))
+        # Always keep the pair: when this passes but the picture is still wrong, the images
+        # are the only way to see which of the two was wrong.
+        $ca.Save((Get-ShotPath ("tear-" + $name + "-a.png")))
+        $cb.Save((Get-ShotPath ("tear-" + $name + "-b.png")))
 
-    if ($null -ne $bc) {
-        Write-Output ("  " + $Tag.PadRight(12) + " SKIP -- renderer not deterministic, test says nothing")
-    }
-    elseif ($null -eq $ab) {
-        Write-Output ("  " + $Tag.PadRight(12) + " OK -- no stale pixels left on screen")
-    }
-    else {
-        Write-Output ("  " + $Tag.PadRight(12) + " FAIL -- screen keeps stale pixels " + $ab)
-        $b.Save((Get-ShotPath ("tear-" + $Tag + "-repaint.png")))
-        $c.Save((Get-ShotPath ("tear-" + $Tag + "-repaint2.png")))
-        $script:fail++
+        if ($null -ne $bc) {
+            Write-Output ("  " + $name.PadRight(20) + " SKIP -- renderer not deterministic, test says nothing")
+        }
+        elseif ($null -eq $ab) {
+            Write-Output ("  " + $name.PadRight(20) + " OK -- no stale pixels left on screen")
+        }
+        else {
+            Write-Output ("  " + $name.PadRight(20) + " FAIL -- screen keeps stale pixels " + $ab)
+            $cb.Save((Get-ShotPath ("tear-" + $name + "-repaint.png")))
+            $cc.Save((Get-ShotPath ("tear-" + $name + "-repaint2.png")))
+            $script:fail++
+        }
+        $ca.Dispose(); $cb.Dispose(); $cc.Dispose()
     }
     $a.Dispose(); $b.Dispose(); $c.Dispose()
 }
@@ -161,6 +181,22 @@ Invoke-BBProbe {
 
     if ($null -eq (Get-SideToggle $main)) { throw 'sidebar toggle not found' }
 
+    # Two bands, because "the sidebar animation left a mark" has two different victims.
+    #   chat   -- between the chat title strip (ends at 86 from the top) and the input
+    #             panel (the bottom 158px). This is the band the user reported: the
+    #             bubbles move sideways with the width every frame, and so does the
+    #             scroll bar's thumb down its right edge.
+    #   input  -- the self-painted card whose left edge follows the sidebar, which is
+    #             where this probe started. Kept side by side with the chat band rather
+    #             than instead of it: they are separate controls with separate paint
+    #             paths, and a fix for one has no reason to cover the other.
+    $winH = $mr.Bottom - $mr.Top
+    $winW = $mr.Right - $mr.Left
+    $bands = @(
+        @{ Name = 'chat';  X = 0; Y = 86;           W = $winW; H = $winH - 86 - 158; StepX = 2; StepY = 4 },
+        @{ Name = 'input'; X = 0; Y = $winH - 150;  W = $winW; H = 150;              StepX = 2; StepY = 2 }
+    )
+
     # The toggle's rect does not survive the collapse -- collapsed it sits at the window's
     # left edge -- so look it up again before every click instead of caching it.
     Write-Output '--- collapse ---'
@@ -171,7 +207,7 @@ Invoke-BBProbe {
     $w1 = Get-SidebarW $main
     Write-Output ("  click      : sidebar " + $w0 + " -> " + $w1)
     if ($w1 -ne 0) { Write-Output '  click      : FAIL -- the click did not collapse the sidebar, the pixel test below proves nothing'; $script:fail++ }
-    else { Test-AfterAnim $main 'collapse' }
+    else { Test-AfterAnim $main 'collapse' $bands }
 
     Write-Output ''
     Write-Output '--- expand ---'
@@ -181,7 +217,7 @@ Invoke-BBProbe {
     $w2 = Get-SidebarW $main
     Write-Output ("  click      : sidebar " + $w1 + " -> " + $w2)
     if ($w2 -ne 256) { Write-Output '  click      : FAIL -- the click did not expand the sidebar, the pixel test below proves nothing'; $script:fail++ }
-    else { Test-AfterAnim $main 'expand' }
+    else { Test-AfterAnim $main 'expand' $bands }
 
     Write-Output ''
     if ($script:fail -eq 0) { Write-Output 'PASS: the input card leaves no trail behind the sidebar animation.' }
