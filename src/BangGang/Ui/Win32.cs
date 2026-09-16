@@ -60,4 +60,29 @@ internal static class Win32
 
     public const int SRCCOPY = 0x00CC0020;
     public const int CAPTUREBLT = 0x40000000;
+
+    [DllImport("gdi32.dll")]
+    public static extern IntPtr CreateCompatibleDC(IntPtr hdc);
+
+    [DllImport("gdi32.dll")]
+    public static extern IntPtr SelectObject(IntPtr hdc, IntPtr h);
+
+    [DllImport("gdi32.dll")]
+    public static extern bool DeleteDC(IntPtr hdc);
+
+    [DllImport("gdi32.dll")]
+    public static extern bool DeleteObject(IntPtr h);
+
+    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+    public struct TEXTMETRICW
+    {
+        public int tmHeight, tmAscent, tmDescent, tmInternalLeading, tmExternalLeading;
+        public int tmAveCharWidth, tmMaxCharWidth, tmWeight, tmOverhang;
+        public int tmDigitizedAspectX, tmDigitizedAspectY;
+        public char tmFirstChar, tmLastChar, tmDefaultChar, tmBreakChar;
+        public byte tmItalic, tmUnderlined, tmStruckOut, tmPitchAndFamily, tmCharSet;
+    }
+
+    [DllImport("gdi32.dll", EntryPoint = "GetTextMetricsW")]
+    public static extern bool GetTextMetrics(IntPtr hdc, out TEXTMETRICW tm);
 }

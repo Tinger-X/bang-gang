@@ -257,6 +257,14 @@ function Get-WinRect($h) { $r = New-Object BB+RECT; [void][BB]::GetWindowRect($h
 function Get-ClientRect($h) { $r = New-Object BB+RECT; [void][BB]::GetClientRect($h, [ref]$r); return $r }
 function Get-WinKids($h) { return [BB]::Kids($h) }
 function Get-WinClass($h) { return [BB]::Cls($h) }
+
+# 'WindowsForms10.STATIC.app.0.141b42a_r6_ad1' -> 'Static'. The mangled name carries a
+# per-process hash, so matching on the raw class name is never portable.
+function Get-ShortClass($h) {
+    $c = Get-WinClass $h
+    if ($c.StartsWith('WindowsForms10.')) { $c = $c.Substring(0, $c.IndexOf('.app')) -replace '^WindowsForms10\.', '' }
+    return $c
+}
 function Get-WinText($h) { return [BB]::Tx($h) }
 function Get-WinFont($h) { return [BB]::FontOf($h) }
 function Get-TextExtent($h, [string]$s) { return [BB]::TextExtent($h, $s) }

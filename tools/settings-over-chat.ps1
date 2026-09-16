@@ -30,12 +30,6 @@ public static class SCO {
 
 $script:fail = 0
 
-function Get-ShortClass($h) {
-    $c = Get-WinClass $h
-    if ($c.StartsWith('WindowsForms10.')) { $c = $c.Substring(0, $c.IndexOf('.app')) -replace '^WindowsForms10\.', '' }
-    return $c
-}
-
 function Get-Desc($h) {
     $r = Get-WinRect $h
     return ((Get-ShortClass $h) + " " + $r.Left + "," + $r.Top + " " +

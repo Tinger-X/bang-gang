@@ -75,6 +75,9 @@ internal sealed class InputPanel : Panel, IMessageFilter
 
     private int _contentInset;
     private bool _focused;
+    private int _hintW = -1;
+    private int _lineH = -1;
+    private Font? _lineHFont;   // 量 _lineH 时用的那个 Font 实例，换字体就得重量
 
     // 滑条状态。几何在 LayoutCard 里算，行数 / 首行每次都要现读 EDIT（见 UpdateBar）。
     private Rectangle _barRect;
@@ -101,8 +104,21 @@ internal sealed class InputPanel : Panel, IMessageFilter
         set
         {
             if (_contentInset == value) return;
+            var before = CardRect();
             _contentInset = value;
+            var after = CardRect();
             LayoutCard();
+
+            // 卡片是自己画的，又跟着内缩走，所以**旧位置也得由自己作废**。
+            //
+            // 不作废会怎样：侧栏动画期间子控件每帧都被重新摆位，系统于是只把「子控件腾出来的
+            // 那几条带」标成脏区，面板的 WM_PAINT 就被裁在那几条带里 —— 卡片只在带子里重画，
+            // 而带子外面留着上一帧、上上帧的卡片描边。收起 / 展开一次，卡片左缘就攒下一串
+            // 套在一起的圆角弧线（用户看到的「输入框左侧破损」），而且动画停下后不会自己消失。
+            // 把新旧两个卡片矩形并起来作废，每帧画的就是整张卡片，弧线没有落脚的地方。
+            var dirty = Rectangle.Union(before, after);
+            dirty.Inflate(2, 2);      // 描边带抗锯齿，会往外糊半像素
+            Invalidate(dirty);
         }
     }
 
@@ -301,10 +317,17 @@ internal sealed class InputPanel : Panel, IMessageFilter
         if (boxBottom - boxTop < 24) boxTop = Math.Max(card.Top + 2, boxBottom - 24);
 
         // 高度封在三行上：超出的部分 EDIT 自己会滚（它会一直把光标所在行拉进可视区），
-        // 我们只负责把它滚到哪儿画出来 —— 见 PaintBar。用 Font.Height 而不是拍一个像素数，
-        // 行高就是 EDIT 排版时用的那一个，换字号 / 换 DPI 都不用跟着改。
-        int lineH = Math.Max(1, _box.Font.Height);
-        int boxH = Math.Min(MaxLines * lineH, boxBottom - boxTop);
+        // 我们只负责把它滚到哪儿画出来 —— 见 PaintBar。
+        //
+        // 这里有三处必须咬合：**行距**取 EDIT 排版真正用的那一个（Ui.EditLinePitch，
+        // 不是 Font.Height，两者差 1px）、**高度取行距的整数倍**（多行 EDIT 只画完整装得下
+        // 的行，矮 1px 就整整少一行）、**可见行数由同一个行距算**（见 UpdateBar）。
+        // 任一处对不上，「盒子里能看见几行」和「代码以为能看见几行」就会分家 —— 表现出来
+        // 就是用户报的「才两行就开始往上滚、底部明明还放得下一行却空着、也不出滚动条」。
+        // 实测见 tools/edit-lines.ps1。
+        int lineH = LineH();
+        int lines = Math.Clamp((boxBottom - boxTop) / lineH, 1, MaxLines);
+        int boxH = lines * lineH;
         _box.Bounds = new Rectangle(card.Left + CardPadX, boxTop,
                                     card.Width - 2 * CardPadX, boxH);
 
@@ -316,16 +339,48 @@ internal sealed class InputPanel : Panel, IMessageFilter
         _attach.Location = new Point(card.Left + BtnInset, btnY);
         _send.Location = new Point(card.Right - BtnInset - BtnSize, btnY);
 
-        // 提示文字占满两个按钮之间，居中显示；窗口太窄时靠 AutoEllipsis 收尾。
+        // 提示文字居中显示 —— 但**宽度必须是个常量**，不能跟着卡片走。
+        //
+        // 以前这里是 hRight - hLeft，于是侧栏动画的每一帧都在改这个 Label 的宽度。宽度一变，
+        // 整串字就得重新居中、重画一遍，而这个 Label 的 WM_PAINT 与父面板那一次重画是**两条
+        // 独立的路径**（两个窗口各自的队列），谁先谁后不定：屏幕上于是交替出现「文字已经按新
+        // 宽度居中了」和「文字还停在按旧宽度算出来的位置」两种帧 —— 用户报的
+        // 「展开 / 收起时底部提示信息左右抖动、不是平滑过渡」就是它。0.7.31 之前量到的那一帧
+        // 反向位移（tools/sidebar-anim.ps1 量的是字形墨迹的重心，一帧退回 5px）也是它。
+        //
+        // 固定宽度之后，这个 Label 在动画里**只平移、不变尺寸**：居中偏移成了常量，
+        // 内容跟尺寸无关，于是无论 Windows 是直接搬像素还是让它自己重画，屏幕上的结果都一样 ——
+        // 没有可以抖的地方。文字仍然居中在卡片中间，因为按钮之间的中点就是卡片的中心。
+        //
         // 下边缘让开卡片描边那条带（见 CardEdgeBand），否则它会把下边框整段刷平。
         int hLeft = _attach.Right + 8;
         int hRight = _send.Left - 8;
         if (hRight - hLeft < 40) { hLeft = card.Left; hRight = card.Right; }
-        _hint.Bounds = new Rectangle(hLeft, rowTop, hRight - hLeft,
+        int hintW = Math.Min(HintWidth(), Math.Max(40, hRight - hLeft));
+        int hCenter = (hLeft + hRight) / 2;
+        _hint.Bounds = new Rectangle(hCenter - hintW / 2, rowTop, hintW,
                                      Math.Max(16, card.Bottom - CardEdgeBand - rowTop));
 
         UpdatePh();
         UpdateBar();
+    }
+
+    /// <summary>
+    /// 文本框里一行的行距 —— EDIT 排版真正用的那一个（见 <see cref="Ui.EditLinePitch"/>）。
+    ///
+    /// **盒子高度和可见行数必须共用这个数**：LayoutCard 拿它算盒子高度，UpdateBar 拿它算
+    /// 「能看见几行」，两者用的若不是同一个行距，滑条就会在该出现的时候不出现。
+    /// 量一次就够（字体在本面板里是常量），先记住量的是哪个字体实例。
+    /// </summary>
+    private int LineH()
+    {
+        var f = _box.Font;
+        if (_lineH < 0 || !ReferenceEquals(f, _lineHFont))
+        {
+            _lineH = Ui.EditLinePitch(f);
+            _lineHFont = f;
+        }
+        return _lineH;
     }
 
     protected override void OnResize(EventArgs e)
@@ -333,6 +388,32 @@ internal sealed class InputPanel : Panel, IMessageFilter
         base.OnResize(e);
         LayoutCard();
     }
+
+    /// <summary>
+    /// 底部提示文字那个 Label 的宽度：**只由文字本身决定，与卡片宽度无关**
+    /// （为什么必须是常量，见 <c>LayoutCard</c> 里那段）。量一次就够 —— 字符串是常量，
+    /// 字号也不会中途变。
+    /// </summary>
+    private int HintWidth()
+    {
+        if (_hintW < 0)
+            _hintW = TextRenderer.MeasureText(_hint.Text, _hint.Font).Width + 2 * HintPadX;
+        return _hintW;
+    }
+
+    /// <summary>
+    /// 提示文字离标签左右边缘的留白。**这个数有下限，不是排版口味**。
+    ///
+    /// 标签在侧栏动画里只平移，而**平移腾出来的那一条**（往左移就是右侧那条）要等父面板重画
+    /// 才被擦掉；在擦掉之前，屏幕上留着的是标签原来压在那儿的像素。文字居中时它离标签边缘
+    /// 只有十几像素，那条带子就直接压在字形的尾巴上 —— 于是有一帧能看到「字的尾巴拖在后面」
+    /// （tools/sidebar-anim.ps1 量到的墨迹宽度从 320 变成 356，多出来的部分正好止于旧文字
+    /// 的右端）。
+    ///
+    /// 侧栏动画一帧最多挪 <c>SideW * SideAnimEase</c> = 72px，文字只走一半即 36px；
+    /// 留白取 48 就永远够不着。留白之外的宽度由 <c>LayoutCard</c> 按两个按钮之间的距离收窄。
+    /// </summary>
+    private const int HintPadX = 48;
 
     protected override void OnPaintBackground(PaintEventArgs e)
     {
@@ -393,7 +474,9 @@ internal sealed class InputPanel : Panel, IMessageFilter
     {
         if (_box == null || !_box.IsHandleCreated || _barRect.Height <= 0) return;
         // 行数与可见行从这里现读，不缓存：LayoutCard 也调本方法，那时 _barVis 才是新的。
-        _barVis = Math.Max(1, _box.Height / Math.Max(1, _box.Font.Height));
+        // 可见行用 LineH()（= LayoutCard 算盒高用的那个行距），除下来正好是整数行 ——
+        // 盒子高度已经是行距的整数倍，这里再截一次零不会有误差。
+        _barVis = Math.Max(1, _box.Height / Math.Max(1, LineH()));
         _barTotal = Math.Max(1, (int)Win32.SendMessage(_box.Handle, EM_GETLINECOUNT, IntPtr.Zero, IntPtr.Zero));
         bool show = _barTotal > _barVis;
         int first = show ? FirstVisible() : 0;

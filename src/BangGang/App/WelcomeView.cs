@@ -49,10 +49,14 @@ internal sealed class WelcomeView : Panel
     {
         if (e.Button == MouseButtons.Left)
         {
+            // 只有真正点了预设入口才开新对话。以前这里最后还有一句无条件的
+            // StartRequested?.Invoke()，于是「点空白处」也等于「新建对话」——
+            // 用户想先把窗口挪一挪、或者只是随手点一下，就凭空多出一个会话。
+            // 开新对话的入口现在只有：这几张预设卡片、下面的新建按钮、侧栏的 +，
+            // 以及截图 / 录音快捷键与拖放文件（那几条走 MainForm 的 EnsureActive）。
             for (int i = 0; i < _chipRects.Length; i++)
                 if (_chipRects[i].Contains(e.Location)) { SuggestionRequested?.Invoke(Chips[i].prompt); return; }
             if (_startBtn.Contains(e.Location)) { StartRequested?.Invoke(); return; }
-            StartRequested?.Invoke();
         }
         base.OnMouseUp(e);
     }

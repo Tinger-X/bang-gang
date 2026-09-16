@@ -59,6 +59,33 @@ internal static class Ui
     public const int EditBoxPadY = 6;
 
     /// <summary>
+    /// 多行 EDIT 排版时**两行之间的真实行距** —— <c>tmHeight + tmExternalLeading</c>，
+    /// 不是 GDI+ 的 <c>Font.Height</c>。
+    ///
+    /// 本程序的字号下两者差 1px（22 vs 23），看着无所谓，但多行 EDIT 只画**完整装得下**的行：
+    /// 它按 23 算「这一行放不放得下」，我们按 22 算盒子高度，于是 3 * 22 = 66 的盒子它只画
+    /// 2 行，剩下二十多像素空着 —— 就是「才两行就开始往上滚、底部明明还放得下一行却空着」。
+    /// 盒子高度取成行距的整数倍，两个数才对得上（实测见 tools/edit-lines.ps1）。
+    ///
+    /// 也不要用 <c>Font.GetHeight()</c>：那是 GDI+ 按 DPI 折算的行高，同样不等于 GDI 的
+    /// tmHeight（换字号 / 换 DPI 时会再分家）。这里问的就是 EDIT 自己排版用的那个 DC。
+    /// </summary>
+    public static int EditLinePitch(Font f)
+    {
+        IntPtr dc = Win32.CreateCompatibleDC(IntPtr.Zero);
+        if (dc == IntPtr.Zero) return Math.Max(1, f.Height);
+        IntPtr hf = f.ToHfont();
+        IntPtr old = Win32.SelectObject(dc, hf);
+        int pitch = Math.Max(1, f.Height);
+        if (Win32.GetTextMetrics(dc, out var tm))
+            pitch = tm.tmHeight + tm.tmExternalLeading;
+        Win32.SelectObject(dc, old);
+        Win32.DeleteObject(hf);
+        Win32.DeleteDC(dc);
+        return Math.Max(1, pitch);
+    }
+
+    /// <summary>
     /// 盒子下边缘与容器下边缘之间至少留出的空隙。输入框的圆角描边画在容器的最后两行像素上，
     /// 而 EDIT 会用不透明的底色铺满自己的客户区 —— 盒子一直顶到容器底部就会把那道边盖掉半截。
     /// </summary>
