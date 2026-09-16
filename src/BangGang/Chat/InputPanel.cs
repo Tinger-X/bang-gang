@@ -8,10 +8,13 @@ internal sealed class InputPanel : Panel, IMessageFilter
     private readonly FlowLayoutPanel _draft;
     private readonly TextBox _box;
     private readonly Label _hint;
-    private readonly Label _ph;
+    private readonly HintText _ph;
     private readonly IconButton _send, _attach;
     public List<Attachment> Draft { get; } = new();
     public event Action? SendRequested;
+
+    /// <summary>模型正在回复时用户按了「暂停」。</summary>
+    public event Action? StopRequested;
 
     /// <summary>
     /// 输入区面板自身的高度。<c>MainForm.ApplyLayout</c> 摆它、卡片按它算内部余量，
@@ -32,6 +35,34 @@ internal sealed class InputPanel : Panel, IMessageFilter
     private const int DraftH = 60;
 
     /// <summary>
+    /// 卡片下缘那圈描边占掉的带宽，工具行里的控件要让开它。
+    ///
+    /// 底部工具行的提示文字是**不透明的 Label**（必须是 Static，见下面 <c>_hint</c> 的注释），
+    /// 而行高是从 <c>card.Bottom</c> 往上量的 —— 矩形一直接到底，就会用填充色把卡片的下边框
+    /// 整段刷平，只在两个圆角处剩两小截。用户报的「提示信息遮挡了输入框底部边框」就是它。
+    /// 描边画在 <c>card.Bottom</c> 内缩 1px 处、笔宽 1~1.6px，抗锯齿还会往外糊半像素，
+    /// 所以让开 4px。
+    /// </summary>
+    private const int CardEdgeBand = 4;
+
+    // ---------- 文本框：最多三行，超出部分走右侧那条自绘滑条 ----------
+
+    /// <summary>文本框最多显示的行数。超出的部分靠 <see cref="PaintBar"/> 那条滑条滚。</summary>
+    private const int MaxLines = 3;
+
+    /// <summary>
+    /// 滑条：滑块宽 / 离卡片右缘 / 滑块最短长度 / 横向额外抓取范围。
+    ///
+    /// 位置落在卡片给文本框留的右侧内边距里（<see cref="CardPadX"/> 有 14px，滑条只吃掉靠外的
+    /// 10px），**刻意不与文字重叠**：滑条一旦占掉文本框的宽度，它的出现就会改变换行、
+    /// 从而改变行数，于是「行数够不够触发滑条」自己把自己推翻，一闪一闪。
+    /// </summary>
+    private const int BarW = 6;
+    private const int BarRight = 4;
+    private const int BarMinThumb = 24;
+    private const int BarGrab = 4;
+
+    /// <summary>
     /// 卡片内左右留白。**写成由 <see cref="CardRadius"/> 推出、不给独立数字**，是因为它有硬下限：
     /// 必须不小于半径。
     ///
@@ -44,6 +75,16 @@ internal sealed class InputPanel : Panel, IMessageFilter
 
     private int _contentInset;
     private bool _focused;
+
+    // 滑条状态。几何在 LayoutCard 里算，行数 / 首行每次都要现读 EDIT（见 UpdateBar）。
+    private Rectangle _barRect;
+    private int _barTotal = 1;
+    private int _barVis = MaxLines;
+    private int _barFirst;
+    private bool _barVisible;
+    private bool _barHot;
+    private bool _barDrag;
+    private int _barGrab;      // 按下时鼠标相对滑块上边缘的偏移，拖动时保持这个手感
 
     /// <summary>
     /// 内容左边要为左侧栏让出多少像素。面板本身铺满整窗、**不随侧栏动画移动**
@@ -67,6 +108,23 @@ internal sealed class InputPanel : Panel, IMessageFilter
 
     public string Text { get => _box.Text; set => _box.Text = value; }
     public bool HasContent => _box.Text.Trim().Length > 0 || Draft.Count > 0;
+
+    private bool _busy;
+
+    /// <summary>
+    /// 模型正在回复。为真时发送键变成「暂停」，并且**无论有没有草稿都可点**
+    /// （它已经不是「发送」了，拿「没内容」去禁用它只会把用户困住）。
+    /// </summary>
+    public bool Busy
+    {
+        get => _busy;
+        set
+        {
+            if (_busy == value) return;
+            _busy = value;
+            UpdateSendState();
+        }
+    }
 
     public InputPanel()
     {
@@ -99,27 +157,35 @@ internal sealed class InputPanel : Panel, IMessageFilter
             Font = Theme.UI(12.5f),
             BackColor = Theme.InputBg,
             ForeColor = Theme.TextMain,
-            // 不用 ScrollBars.Vertical：那样会在卡片里常驻一条系统灰滚动条，和卡片不是一套配色，
-            // 一眼就能看出是贴上去的。改成自己接鼠标滚轮 -> EM_LINESCROLL（见 PreFilterMessage），
-            // 滚动能力不丢，画面上干净。
+            // 不用 ScrollBars.Vertical：那样会在卡片里常驻一条系统灰滚动条（而且 EDIT 一有滚动条
+            // 就**永远**画着它，哪怕只有一行字），和卡片不是一套配色，一眼就能看出是贴上去的。
+            // 改成滚动能力照旧、滑条自己画：滚轮走 PreFilterMessage -> EM_LINESCROLL，
+            // 视觉那一条见 PaintBar。
             ScrollBars = ScrollBars.None,
             WordWrap = true,
             AcceptsReturn = true,
             AcceptsTab = false,
         };
         _box.KeyDown += OnBoxKeyDown;
-        _box.TextChanged += (_, _) => { UpdatePh(); UpdateSendState(); };
+        _box.KeyUp += (_, _) => UpdateBar();      // 方向键 / Home / End 会让 EDIT 自己滚
+        _box.MouseUp += (_, _) => UpdateBar();    // 点一下放光标同理
+        _box.TextChanged += (_, _) => { UpdatePh(); UpdateSendState(); UpdateBar(); };
         _box.Enter += (_, _) => { _focused = true; Invalidate(); };
         _box.Leave += (_, _) => { _focused = false; Invalidate(); };
+        // 句柄重建（字体 / DPI 变化）会把 EDIT 的边距打回默认，所以挂在事件上重钉一次。
+        _box.HandleCreated += (_, _) => Ui.PinEditTextLeft(_box);
         Controls.Add(_box);
+        Ui.PinEditTextLeft(_box);
 
-        _ph = new Label
+        // 占位层用 HintText 而不是 Label：Label 走 TextRenderer 时自带字体的 glyph overhang
+        // 内边距，起点和 EDIT 对不齐（见 Ui.HintText 的注释）。配合 Ui.PinEditTextLeft 把 EDIT
+        // 自己的左边距清零，两边共用同一个起点，**矩形也共用** —— 于是换字号时不会各调各的。
+        _ph = new HintText
         {
-            AutoSize = true,
+            Font = _box.Font,               // 同一个 Font 实例，字号不可能再飘
             BackColor = Theme.InputBg,
-            Font = Theme.UI(12f),
             ForeColor = Theme.TextMuted,
-            Text = "发消息给帮帮…",
+            Hint = "发消息给帮帮…",
         };
         _ph.MouseDown += (_, _) => { _box.Focus(); };
         Controls.Add(_ph);
@@ -141,7 +207,7 @@ internal sealed class InputPanel : Panel, IMessageFilter
         Controls.Add(_hint);
 
         // 左：添加附件。平时不画底衬，悬浮才浮出一个圆 —— 参考产品里那个「+」就是这个手感。
-        _attach = new IconButton(IconButton.Kind.Paperclip)
+        _attach = new IconButton(IconButton.Kind.Plus)
         {
             Skin = IconButton.Look.Ghost,
             Size = new Size(BtnSize, BtnSize),
@@ -150,15 +216,23 @@ internal sealed class InputPanel : Panel, IMessageFilter
         _attach.Click += (_, _) => PickFiles();
         Controls.Add(_attach);
 
-        // 右：发送。永远是一枚实心圆，有内容才点亮成强调色。
+        // 右：一枚实心圆，三种状态一个控件：
+        //   不可点击  —— 没内容也不忙：中性灰 + Clickable = false（连悬浮都不亮）
+        //   可点击    —— 有内容：强调色 + 上箭头
+        //   暂停回复  —— 模型正在回复：强调色 + 方块，点它冒 StopRequested
         _send = new IconButton(IconButton.Kind.Send)
         {
             Skin = IconButton.Look.Solid,
             Size = new Size(BtnSize, BtnSize),
             BackdropSource = () => Theme.InputBg,
             Active = false,
+            Clickable = false,
         };
-        _send.Click += (_, _) => { if (HasContent) SendRequested?.Invoke(); };
+        _send.Click += (_, _) =>
+        {
+            if (_busy) { StopRequested?.Invoke(); return; }
+            if (HasContent) SendRequested?.Invoke();
+        };
         Controls.Add(_send);
 
         AllowDrop = true;
@@ -226,20 +300,32 @@ internal sealed class InputPanel : Panel, IMessageFilter
         }
         if (boxBottom - boxTop < 24) boxTop = Math.Max(card.Top + 2, boxBottom - 24);
 
+        // 高度封在三行上：超出的部分 EDIT 自己会滚（它会一直把光标所在行拉进可视区），
+        // 我们只负责把它滚到哪儿画出来 —— 见 PaintBar。用 Font.Height 而不是拍一个像素数，
+        // 行高就是 EDIT 排版时用的那一个，换字号 / 换 DPI 都不用跟着改。
+        int lineH = Math.Max(1, _box.Font.Height);
+        int boxH = Math.Min(MaxLines * lineH, boxBottom - boxTop);
         _box.Bounds = new Rectangle(card.Left + CardPadX, boxTop,
-                                    card.Width - 2 * CardPadX, boxBottom - boxTop);
+                                    card.Width - 2 * CardPadX, boxH);
+
+        // 滑条摆在卡片给文本框留的右侧内边距里，不与文字重叠（见 BarW 的注释）。
+        _barRect = new Rectangle(card.Right - BarRight - BarW, boxTop, BarW, boxH);
+        _barVis = Math.Max(1, boxH / lineH);
 
         int btnY = rowTop + (BottomRowH - BtnSize) / 2;
         _attach.Location = new Point(card.Left + BtnInset, btnY);
         _send.Location = new Point(card.Right - BtnInset - BtnSize, btnY);
 
         // 提示文字占满两个按钮之间，居中显示；窗口太窄时靠 AutoEllipsis 收尾。
+        // 下边缘让开卡片描边那条带（见 CardEdgeBand），否则它会把下边框整段刷平。
         int hLeft = _attach.Right + 8;
         int hRight = _send.Left - 8;
         if (hRight - hLeft < 40) { hLeft = card.Left; hRight = card.Right; }
-        _hint.Bounds = new Rectangle(hLeft, rowTop, hRight - hLeft, BottomRowH);
+        _hint.Bounds = new Rectangle(hLeft, rowTop, hRight - hLeft,
+                                     Math.Max(16, card.Bottom - CardEdgeBand - rowTop));
 
         UpdatePh();
+        UpdateBar();
     }
 
     protected override void OnResize(EventArgs e)
@@ -258,6 +344,139 @@ internal sealed class InputPanel : Panel, IMessageFilter
         var body = new Rectangle(card.X, card.Y, card.Width - 1, card.Height - 1);
         RP.Box(g, body, CardRadius, Theme.InputBg, BackColor);
         RP.Stroke(g, body, CardRadius, _focused ? Theme.Accent : Theme.Border, _focused ? 1.6f : 1f);
+        PaintBar(g);
+    }
+
+    // ---------------- 竖向滑条 ----------------
+
+    /// <summary>滑块的矩形：长度按「可见行 / 总行数」的比例，位置按「首行 / 可滚行数」。</summary>
+    private Rectangle ThumbRect()
+    {
+        int h = _barRect.Height;
+        if (h <= 0) return Rectangle.Empty;
+        int thumb = (int)Math.Round((double)h * _barVis / Math.Max(1, _barTotal));
+        thumb = Math.Clamp(thumb, Math.Min(BarMinThumb, h), h);
+        int span = h - thumb;
+        int maxFirst = Math.Max(1, _barTotal - _barVis);
+        int y = _barRect.Y + (int)Math.Round((double)span * Math.Clamp(_barFirst, 0, maxFirst) / maxFirst);
+        return new Rectangle(_barRect.X, y, _barRect.Width, thumb);
+    }
+
+    /// <summary>滑块反推行的行号：鼠标在 y 处按下时，滑块上边缘该落在哪儿。</summary>
+    private int LineAt(int thumbTop)
+    {
+        int span = _barRect.Height - ThumbRect().Height;
+        int maxFirst = Math.Max(1, _barTotal - _barVis);
+        if (span <= 0) return 0;
+        int rel = Math.Clamp(thumbTop - _barRect.Y, 0, span);
+        return (int)Math.Round((double)rel * maxFirst / span);
+    }
+
+    /// <summary>滑条的命中区：6px 宽直接去点太费劲，横向放宽一点。</summary>
+    private Rectangle BarHit() =>
+        _barVisible && _barRect.Height > 0
+            ? Rectangle.Inflate(_barRect, BarGrab, 2)
+            : Rectangle.Empty;
+
+    private int FirstVisible() => _box.IsHandleCreated
+        ? Math.Max(0, (int)Win32.SendMessage(_box.Handle, EM_GETFIRSTVISIBLELINE, IntPtr.Zero, IntPtr.Zero))
+        : 0;
+
+    /// <summary>
+    /// 重新读一遍 EDIT 的行数 / 首行，决定滑条显不显示、滑块画在哪。
+    ///
+    /// EDIT 自己滚动（打字、方向键、点一下放光标、滚轮）**不会发任何 WinForms 事件**，
+    /// 所以调用点只能挂在「会造成滚动的那几个动作」上：TextChanged / KeyUp / MouseUp /
+    /// 滚轮 / 拖动滑条本身。定时轮询也能做，但那是拿一个常驻定时器换几行回调。
+    /// </summary>
+    private void UpdateBar()
+    {
+        if (_box == null || !_box.IsHandleCreated || _barRect.Height <= 0) return;
+        // 行数与可见行从这里现读，不缓存：LayoutCard 也调本方法，那时 _barVis 才是新的。
+        _barVis = Math.Max(1, _box.Height / Math.Max(1, _box.Font.Height));
+        _barTotal = Math.Max(1, (int)Win32.SendMessage(_box.Handle, EM_GETLINECOUNT, IntPtr.Zero, IntPtr.Zero));
+        bool show = _barTotal > _barVis;
+        int first = show ? FirstVisible() : 0;
+        if (show == _barVisible && first == _barFirst) return;
+        _barVisible = show;
+        _barFirst = first;
+        Invalidate(BarHit());
+    }
+
+    /// <summary>把 EDIT 滚到「首行 = first」。</summary>
+    private void BarScrollTo(int first)
+    {
+        if (!_box.IsHandleCreated) return;
+        int cur = FirstVisible();
+        int want = Math.Clamp(first, 0, Math.Max(0, _barTotal - _barVis));
+        if (want == cur) return;
+        // 没有 EM_SETFIRSTVISIBLELINE 这种绝对定位的消息，只能按差值滚。
+        Win32.SendMessage(_box.Handle, EM_LINESCROLL, IntPtr.Zero, (IntPtr)(want - cur));
+        _barFirst = want;
+        Invalidate(BarHit());
+    }
+
+    /// <summary>
+    /// 画滑条。轨道不画 —— 只在需要时浮出一枚圆角滑块，这也是现代滚动条的做法：
+    /// 卡片上永远不多一条灰槽。颜色由卡片的填充色混出来，深浅两套主题都自动跟。
+    /// </summary>
+    private void PaintBar(Graphics g)
+    {
+        if (!_barVisible) return;
+        var thumb = ThumbRect();
+        if (thumb.Width <= 0 || thumb.Height <= 0) return;
+        float k = _barDrag ? 0.62f : _barHot ? 0.48f : 0.30f;
+        RP.Fill(g, thumb, BarW / 2, Theme.Mix(Theme.InputBg, Theme.TextMuted, k));
+    }
+
+    protected override void OnMouseDown(MouseEventArgs e)
+    {
+        base.OnMouseDown(e);
+        if (e.Button != MouseButtons.Left || !BarHit().Contains(e.Location)) return;
+        var thumb = ThumbRect();
+        if (thumb.Contains(e.Location))
+        {
+            _barGrab = e.Y - thumb.Y;            // 抓住滑块本身：保持按下时的相对位置
+        }
+        else
+        {
+            _barGrab = thumb.Height / 2;
+            BarScrollTo(LineAt(e.Y - _barGrab)); // 点在空白处：滑块直接跳过来
+        }
+        _barDrag = true;
+        Capture = true;                          // 拖出滑条范围（压到文本框上）也要收得到移动
+        Invalidate(BarHit());
+    }
+
+    protected override void OnMouseMove(MouseEventArgs e)
+    {
+        base.OnMouseMove(e);
+        if (_barDrag)
+        {
+            BarScrollTo(LineAt(e.Y - _barGrab));
+            return;
+        }
+        bool hot = BarHit().Contains(e.Location);
+        if (hot == _barHot) return;
+        _barHot = hot;
+        Invalidate(BarHit());
+    }
+
+    protected override void OnMouseUp(MouseEventArgs e)
+    {
+        base.OnMouseUp(e);
+        if (!_barDrag) return;
+        _barDrag = false;
+        Capture = false;
+        Invalidate(BarHit());
+    }
+
+    protected override void OnMouseLeave(EventArgs e)
+    {
+        base.OnMouseLeave(e);
+        if (!_barHot) return;
+        _barHot = false;
+        Invalidate(BarHit());
     }
 
     private void PickFiles()
@@ -271,6 +490,8 @@ internal sealed class InputPanel : Panel, IMessageFilter
 
     private const int WM_MOUSEWHEEL = 0x020A;
     private const int EM_LINESCROLL = 0x00B6;
+    private const int EM_GETLINECOUNT = 0x00BA;
+    private const int EM_GETFIRSTVISIBLELINE = 0x00CE;
 
     /// <summary>
     /// 文本框没有滚动条，滚轮就没人管了（那个 WS_VSCROLL 本来会让 EDIT 自己处理）。
@@ -286,13 +507,16 @@ internal sealed class InputPanel : Panel, IMessageFilter
 
         long lp = m.LParam.ToInt64();
         var screen = new Point((short)(lp & 0xFFFF), (short)((lp >> 16) & 0xFFFF));
-        if (!_box.ClientRectangle.Contains(_box.PointToClient(screen))) return false;
+        var client = _box.PointToClient(screen);
+        // 压在滑条上也得算数：它和文本框是同一块文本区，滚轮落在哪半边都该滚。
+        if (!_box.ClientRectangle.Contains(client) && !BarHit().Contains(PointToClient(screen))) return false;
 
         int notches = (short)((long)m.WParam >> 16) / 120;
         if (notches == 0) return false;
         int step = SystemInformation.MouseWheelScrollLines;
         if (step <= 0) step = 3;                    // 0 = 不分行（只有整页），这里不做区分
         Win32.SendMessage(_box.Handle, EM_LINESCROLL, IntPtr.Zero, (IntPtr)(-notches * step));
+        UpdateBar();
         return true;
     }
 
@@ -405,22 +629,34 @@ internal sealed class InputPanel : Panel, IMessageFilter
 
     // ---------------- 状态刷新 ----------------
 
+    /// <summary>
+    /// 占位层与文本框**共用同一个矩形**。
+    ///
+    /// 以前是各自摆的：占位层用 <c>Theme.UI(12f)</c>、文本框用 <c>12.5f</c>，位置再按
+    /// <c>Font.Height * 0.25 + 3</c> 现推一个偏移 —— 字号差了半磅，用户一输入就看见字「缩了一下」，
+    /// 这正是需求里那条「输入的文本和 placeholder 的位置、大小需保持一致」。
+    /// 现在字号取文本框自己的 <c>Font</c>、矩形也整块照搬：位置与大小都由构造保证，
+    /// 不再有第二个可以飘的数字。横向对齐靠 <c>Ui.PinEditTextLeft</c> 把 EDIT 的左边距清零，
+    /// 竖直方向两边都是从矩形上边缘往下排（EDIT 与 HintText 都是顶对齐）。
+    /// </summary>
     private void UpdatePh()
     {
         if (_ph == null || _box == null) return;
         bool show = _box.Text.Length == 0;
         _ph.Visible = show;
-        if (show)
-            _ph.Location = new Point(_box.Left + 4, _box.Top + (int)(_box.Font.Height * 0.25f) + 3);
+        if (show) _ph.Bounds = _box.Bounds;
     }
 
-    /// <summary>发送按钮能不能点：有内容才点亮成强调色，否则是一枚中性灰圆。</summary>
+    /// <summary>
+    /// 发送键的三种状态。忙碌优先：那时它已经是「暂停」了，不该因为草稿被清空而变灰。
+    /// </summary>
     private void UpdateSendState()
     {
         if (_send == null) return;
-        bool on = HasContent;
-        if (_send.Active == on) return;
+        bool on = _busy || HasContent;
+        _send.Icon = _busy ? IconButton.Kind.Stop : IconButton.Kind.Send;
         _send.Active = on;
+        _send.Clickable = on;
         _send.Invalidate();
     }
 

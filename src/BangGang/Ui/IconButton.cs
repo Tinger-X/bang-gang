@@ -5,7 +5,7 @@ namespace BangGang;
 /// <summary>小型图标按钮（放大镜 / 齿轮 / 加号 / 发送 / 关闭 / 回形针等），不改变鼠标指针。</summary>
 internal sealed class IconButton : Control, IThemed
 {
-    public enum Kind { Search, Gear, Plus, Send, Record, Close, Paperclip, Maximize, Restore, Collapse, Expand }
+    public enum Kind { Search, Gear, Plus, Send, Stop, Record, Close, Paperclip, Maximize, Restore, Collapse, Expand }
 
     /// <summary>
     /// 底衬的三种画法。
@@ -27,6 +27,28 @@ internal sealed class IconButton : Control, IThemed
 
     private readonly Color? _backdropHint;
     private bool _hover;
+    private bool _clickable = true;
+
+    /// <summary>
+    /// 按钮当前是否可点（发送键的「不可点击」状态）。
+    ///
+    /// 用自定义标志而不是 <see cref="Control.Enabled"/>：后者给窗口挂上 <c>WS_DISABLED</c>，
+    /// 鼠标消息整个绕开按钮落到父面板上，<c>WindowFromPoint</c> 于是命中面板而不是按钮 ——
+    /// tools/settings-over-chat.ps1 的 A 段（「底行每个控件在自己的中心点上都得被点中」）
+    /// 会因此报假失败，而那条探针守的是真问题（按钮被 Fill 的兄弟控件盖住）。
+    /// 这里只关掉两件事：悬浮高亮，以及点下去有没有反应。
+    /// </summary>
+    public bool Clickable
+    {
+        get => _clickable;
+        set
+        {
+            if (_clickable == value) return;
+            _clickable = value;
+            if (!value) _hover = false;   // 变灰那一刻鼠标可能正悬在上面，留着就是一枚假的悬浮圈
+            Invalidate();
+        }
+    }
 
     /// <summary>
     /// 这个按钮实际盖在谁身上 —— 取底色时用它，而不是 <c>Parent</c>。
@@ -96,8 +118,24 @@ internal sealed class IconButton : Control, IThemed
         Restyle();
     }
 
-    protected override void OnMouseEnter(EventArgs e) { _hover = true; Invalidate(); base.OnMouseEnter(e); }
-    protected override void OnMouseLeave(EventArgs e) { _hover = false; Invalidate(); base.OnMouseLeave(e); }
+    protected override void OnMouseEnter(EventArgs e)
+    {
+        if (_clickable) { _hover = true; Invalidate(); }
+        base.OnMouseEnter(e);
+    }
+
+    protected override void OnMouseLeave(EventArgs e)
+    {
+        if (_hover) { _hover = false; Invalidate(); }
+        base.OnMouseLeave(e);
+    }
+
+    /// <summary>不可点时连 <c>Click</c> 都不冒出去，调用方不必在一个个分支里自己判。</summary>
+    protected override void OnClick(EventArgs e)
+    {
+        if (!_clickable) return;
+        base.OnClick(e);
+    }
 
     protected override void OnPaint(PaintEventArgs e)
     {
@@ -144,6 +182,13 @@ internal sealed class IconButton : Control, IThemed
                 break;
             case Kind.Send:
                 DrawArrowUp(g, c, c, 5.6f, pen);
+                break;
+            case Kind.Stop:
+                // 暂停生成：一枚圆角方块（各处助手通用的「停止」形状）。
+                // 用填充而不是描边 —— 28px 下描边方块中间那块空腔和旁边那圈实心圆一比就显得脏。
+                using (var sq = RP.Path(new Rectangle((int)c - 4, (int)c - 4, 8, 8), 2))
+                using (var sb = new SolidBrush(ink))
+                    g.FillPath(sb, sq);
                 break;
             case Kind.Record:
                 using (var rb = new SolidBrush(Color.Crimson)) g.FillEllipse(rb, c - 4, c - 4, 8, 8);

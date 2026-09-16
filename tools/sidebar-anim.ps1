@@ -4,7 +4,7 @@
 #
 #   send      -- pinned to the CARD's right edge, which is the window's right edge minus a
 #                fixed margin. It must not move on screen at all, in any frame. Exact.
-#   paperclip -- pinned to the CARD's left edge, and the card's left edge follows the
+#   attach    -- pinned to the CARD's left edge, and the card's left edge follows the
 #                sidebar (InputPanel.ContentInset). It is SUPPOSED to travel, so asserting
 #                a fixed position would fail on correct behaviour.
 #
@@ -171,18 +171,18 @@ function Measure-Run($main, [string]$Tag) {
     Write-Output ("  send      : window-right minus its left = " + ($off -join ', ') + "  (want " + $script:baseOffA + ")   " + $(if ($ok) { 'OK -- pinned' } else { 'FAIL -- the button moved on screen' }))
     if (-not $ok) { $script:fail++ }
 
-    #   paperclip -- pinned to the CARD's left edge, which follows the sidebar, so it is
+    #   attach -- pinned to the CARD's left edge, which follows the sidebar, so it is
     #           SUPPOSED to travel and a fixed-offset assertion would fail on correct
     #           behaviour (see the header).
     #
     # An exact offset relative to the sidebar is not measurable from out here either: the app
     # moves both in one ApplyLayout pass, but reading two foreign windows costs two kernel
     # calls, so a sample can land between them and see a torn frame -- sidebar already moved,
-    # button not yet. That reads as clipLeft lagging side by exactly one animation step.
+    # button not yet. That reads as attLeft lagging side by exactly one animation step.
     #
-    # What is both meaningful and tear-proof is the SIGN. The paperclip must always travel the
-    # same way the sidebar does, never against it; a torn frame can only ever show lag, never
-    # opposite-signed motion. Jitter -- the 0.7.27 symptom -- is exactly a reversal.
+    # What is both meaningful and tear-proof is the SIGN. The attach button must always travel
+    # the same way the sidebar does, never against it; a torn frame can only ever show lag,
+    # never opposite-signed motion. Jitter -- the 0.7.27 symptom -- is exactly a reversal.
     $rev = New-Object System.Collections.Generic.List[object]
     for ($i = 1; $i -lt $rows.Count; $i++) {
         $ds = $rows[$i].Side - $rows[$i - 1].Side
@@ -191,12 +191,12 @@ function Measure-Run($main, [string]$Tag) {
             $rev.Add($rows[$i])
         }
     }
-    Write-Output ("  paperclip : frames moving AGAINST the sidebar = " + $rev.Count + "   " +
+    Write-Output ("  attach    : frames moving AGAINST the sidebar = " + $rev.Count + "   " +
                   $(if ($rev.Count -eq 0) { 'OK -- travels with it, no reversal' } else { 'FAIL -- it bounced back mid-animation' }))
     if ($rev.Count -gt 0) {
         $script:fail++
         foreach ($r in ($rev | Select-Object -First 8)) {
-            Write-Output ("    t=" + $r.T + "ms  side=" + $r.Side + "  clipLeft=" + $r.AttL)
+            Write-Output ("    t=" + $r.T + "ms  side=" + $r.Side + "  attLeft=" + $r.AttL)
         }
     }
 
@@ -227,7 +227,7 @@ function Measure-Run($main, [string]$Tag) {
     # only interesting if something moved -- print the frames where it did
     $bad = @($rows | Where-Object { $_.OffA -ne $script:baseOffA })
     foreach ($r in ($bad | Select-Object -First 10)) {
-        Write-Output ("    t=" + $r.T + "ms  side=" + $r.Side + "  clipLeft=" + $r.AttL +
+        Write-Output ("    t=" + $r.T + "ms  side=" + $r.Side + "  attLeft=" + $r.AttL +
                       "  sendOff=" + $r.OffA + "  ink=" + $r.Ink)
     }
 }
@@ -273,7 +273,7 @@ Invoke-BBProbe {
     $script:shgt = ($mr.Bottom - 3) - $script:sy
 
     Write-Output ("window " + $mr.Left + "," + $mr.Top + " " + ($mr.Right - $mr.Left) + "x" + ($mr.Bottom - $mr.Top))
-    Write-Output ("toggle " + $toggle.Left + "," + $toggle.Top + "   send " + $sorted[1][1].Left + "," + $sorted[1][1].Top + "   clip " + $sorted[0][1].Left + "," + $sorted[0][1].Top)
+    Write-Output ("toggle " + $toggle.Left + "," + $toggle.Top + "   send " + $sorted[1][1].Left + "," + $sorted[1][1].Top + "   attach " + $sorted[0][1].Left + "," + $sorted[0][1].Top)
     Write-Output ("strip  " + $script:sx + "," + $script:sy + " " + $script:swid + "x" + $script:shgt)
 
     # a quiet baseline first: nothing is animating, so this is what "correct" looks like

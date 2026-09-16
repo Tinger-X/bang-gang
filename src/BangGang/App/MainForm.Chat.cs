@@ -70,13 +70,19 @@ partial class MainForm
         ScheduleDemoReply();
     }
 
+    /// <summary>正在等回复的那个定时器。用户中途按「暂停」时要能掐掉它。</summary>
+    private System.Windows.Forms.Timer? _replyTimer;
+
     private void ScheduleDemoReply()
     {
+        StopReplyTimer();          // 上一轮还没回完就又发了一条：先把它掐掉，别让两条回复打架
+        _input.Busy = true;        // 发送键变成「暂停模型回复」
         var timer = new System.Windows.Forms.Timer { Interval = 450 };
         timer.Tick += (_, _) =>
         {
             timer.Stop();
             timer.Dispose();
+            if (_replyTimer == timer) { _replyTimer = null; _input.Busy = false; }
             if (_active == null) return;
             var reply = new ChatMessage
             {
@@ -91,7 +97,27 @@ partial class MainForm
             _active.RefreshTitle();
             RebindConversations();
         };
+        _replyTimer = timer;
         timer.Start();
+    }
+
+    /// <summary>用户在输入框的「暂停」上点了：停掉这一轮，输入区回到可以接着发消息的状态。</summary>
+    private void StopReply()
+    {
+        if (_replyTimer == null) return;
+        StopReplyTimer();
+        _input.Busy = false;
+        _chrome.SetStatus("已暂停本次回复");
+        _statusTimer.Stop();
+        _statusTimer.Start();
+    }
+
+    private void StopReplyTimer()
+    {
+        if (_replyTimer == null) return;
+        _replyTimer.Stop();
+        _replyTimer.Dispose();
+        _replyTimer = null;
     }
 
     private void EnsureActive()

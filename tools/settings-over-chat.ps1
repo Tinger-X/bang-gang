@@ -1,4 +1,4 @@
-# The chat input panel's bottom row (hint text + paperclip + send) lives INSIDE the panel,
+# The chat input panel's bottom row (hint text + attach/plus + send) lives INSIDE the panel,
 # and the panel's TextBox is Dock = Fill. WinForms decides z-order by add order -- later
 # added goes further back -- so adding the TextBox before those three makes the TextBox
 # cover them. They are then invisible AND unclickable in normal use, and reappear only

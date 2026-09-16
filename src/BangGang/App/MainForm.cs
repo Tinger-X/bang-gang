@@ -13,7 +13,7 @@ namespace BangGang;
 public partial class MainForm : Form, IMessageFilter
 {
     public const string WindowTitle = "帮帮";
-    public const string AppVersion = "v0.7.30";
+    public const string AppVersion = "v0.7.31";
 
     private const uint Affinity = Native.WDA_EXCLUDEFROMCAPTURE;
 
@@ -132,6 +132,7 @@ public partial class MainForm : Form, IMessageFilter
         _chatView = new ChatView();
         _input = new InputPanel();
         _input.SendRequested += SendFromInput;
+        _input.StopRequested += StopReply;
         _chatUI.Controls.Add(_convTitle);
         _chatUI.Controls.Add(_chatView);
         _chatUI.Controls.Add(_input);
@@ -310,6 +311,7 @@ public partial class MainForm : Form, IMessageFilter
         _pttTimer.Stop();
         _statusTimer.Stop();
         _sideTimer.Stop();
+        StopReplyTimer();
         UnregisterHotkeys();
         _recorder?.Stop();
         base.OnFormClosed(e);
