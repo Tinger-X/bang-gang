@@ -136,9 +136,12 @@ partial class MainForm
     {
         if (!e.Data!.GetDataPresent(DataFormats.FileDrop)) return;
         EnsureActive();
+        // 只按「真收下了几个」报数：被拒的那几个 AddFile 已经各自报过理由了，
+        // 这里再无条件说一句「已添加」，用户就只看得到那句成功（后说的覆盖先说的）。
+        int ok = 0;
         foreach (string f in (string[])e.Data.GetData(DataFormats.FileDrop)!)
-            _input.AddFile(f);
-        _chrome.SetStatus("已添加到输入框");
+            if (_input.AddFile(f)) ok++;
+        if (ok > 0) _chrome.SetStatus(ok == 1 ? "已添加到输入框" : $"已添加 {ok} 个文件到输入框");
     }
 
 }

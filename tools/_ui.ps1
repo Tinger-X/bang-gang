@@ -196,6 +196,49 @@ public static class BB {
         }
         System.Threading.Thread.Sleep(300);
     }
+
+    public const ushort VK_CONTROL = 0x11;
+
+    // Ctrl+<vk> as one keystroke. Both SendKeys entry points are unusable from here:
+    //
+    //   Send()     throws "SendKeys cannot run inside this application because the
+    //              application is not handling Windows messages" -- the PowerShell host
+    //              is a console app with no message pump.
+    //   SendWait() installs a journal hook and then blocks until the TARGET has
+    //              processed the keys. If the target stops pumping -- a modal error
+    //              dialog, a stuck message loop -- it blocks FOREVER while spinning a
+    //              core: a probe that hangs for minutes, leaves the app running, and
+    //              reports nothing at all. That is a very expensive way to find out
+    //              that something threw.
+    //
+    // SendInput goes through the keyboard input queue like a real keyboard and returns
+    // immediately. It delivers to the FOCUSED window, so click the target first, and
+    // give the app a moment afterwards before asserting on the result.
+    public static void Chord(ushort vk) {
+        // ctrl down, key down, key up, ctrl up -- order matters, and the modifier must
+        // be released last or the target sees a bare key.
+        ushort[] keys = { VK_CONTROL, vk, vk, VK_CONTROL };
+        bool[] up = { false, false, true, true };
+        if (IntPtr.Size == 8) {
+            var a = new INPUT64[4];
+            for (int i = 0; i < 4; i++) {
+                a[i].type = 1;                       // INPUT_KEYBOARD
+                a[i].ki.wVk = keys[i];
+                a[i].ki.wScan = 0;
+                a[i].ki.dwFlags = up[i] ? KEYEVENTF_KEYUP : 0;
+            }
+            SendInput(4, a, 40);
+        } else {
+            var a = new INPUT32[4];
+            for (int i = 0; i < 4; i++) {
+                a[i].type = 1;
+                a[i].ki.wVk = keys[i];
+                a[i].ki.wScan = 0;
+                a[i].ki.dwFlags = up[i] ? KEYEVENTF_KEYUP : 0;
+            }
+            SendInput(4, a, 28);
+        }
+    }
 }
 '@
 

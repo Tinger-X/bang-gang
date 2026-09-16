@@ -40,6 +40,13 @@ public class Attachment
     public string? Path { get; set; }          // 源文件路径（录音/拖入等）
     public string? ImageDataPath { get; set; } // 截图临时文件等
 
+    /// <summary>
+    /// 文件大小（字节）。加进来的时候抓一次就**不再跟随磁盘变化** —— 卡片上那半句
+    /// 「PDF · 625KB」只是给用户认文件用的，源文件事后被改 / 被删都不该让界面上的数字跳。
+    /// 拿不到时是 0，此时那半句直接不画（见 <see cref="AttachTypes.MetaOf"/>）。
+    /// </summary>
+    public long Size { get; set; }
+
     public static Attachment ForImage(string name, string path) => new() { Kind = "image", Name = name, Path = path };
     public static Attachment ForFile(string name, string path) => new() { Kind = "file", Name = name, Path = path };
     public static Attachment ForClipboardImage(string name, string path) => new() { Kind = "image", Name = name, Path = path };

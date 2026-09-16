@@ -5,7 +5,7 @@ namespace BangGang;
 /// <summary>消息输入区：附件区 + 一张圆角卡片（文本框 + 底部工具行）。</summary>
 internal sealed class InputPanel : Panel, IMessageFilter
 {
-    private readonly FlowLayoutPanel _draft;
+    private readonly DraftStrip _draft;
     private readonly TextBox _box;
     private readonly Label _hint;
     private readonly HintText _ph;
@@ -17,10 +17,30 @@ internal sealed class InputPanel : Panel, IMessageFilter
     public event Action? StopRequested;
 
     /// <summary>
-    /// 输入区面板自身的高度。<c>MainForm.ApplyLayout</c> 摆它、卡片按它算内部余量，
-    /// 两处必须是同一个数 —— 差一像素卡片就会被窗口下缘切掉一条。
+    /// 面板自身的高度变了（附件区出现 / 消失），要重新占地方了。
+    /// <c>MainForm.ApplyLayout</c> 接这个事件重摆 —— 见 <see cref="PreferredHeight"/>。
+    /// </summary>
+    public event Action? LayoutChanged;
+
+    /// <summary>要跟用户说一句（比如拒收了一个文件）。接到顶栏那条 3 秒的状态提示上。</summary>
+    public event Action<string>? Notice;
+
+    /// <summary>
+    /// 输入区面板自身的高度。**没有附件时的值**；有附件时还要再加一行
+    /// <see cref="DraftStrip.RowH"/>，见 <see cref="PreferredHeight"/>。
     /// </summary>
     public const int PanelH = 150;
+
+    /// <summary>
+    /// 面板此刻该占多高：文本框那三行的份额是固定的，附件区是**在卡片里另加一行**，
+    /// 而不是从文本框身上抠。
+    ///
+    /// 这一点是这个需求里最容易做错的地方：卡片高度是写死的（<see cref="PanelH"/>），
+    /// 附件区一进来就把文本框挤扁，三行变一行 —— 用户刚提的「不足三行要完整显示、
+    /// 超过三行才滚」在加了附件的瞬间就废了，而且他会以为是自己拖了文件才坏的。
+    /// 所以卡片内部**不动**，让整块输入区往上长，长出来的正好是附件那一行。
+    /// </summary>
+    public int PreferredHeight => PanelH + (Draft.Count > 0 ? DraftStrip.RowH : 0);
 
     // ---------- 卡片几何。动任何一个都要重跑 tools/input-check.ps1 看一眼 ----------
 
@@ -32,7 +52,6 @@ internal sealed class InputPanel : Panel, IMessageFilter
     private const int BottomRowH = 38;        // 底部工具行占的高度
     private const int BtnInset = 9;           // 工具行按钮离卡片左右边框
     private const int BtnSize = 28;
-    private const int DraftH = 60;
 
     /// <summary>
     /// 卡片下缘那圈描边占掉的带宽，工具行里的控件要让开它。
@@ -152,14 +171,9 @@ internal sealed class InputPanel : Panel, IMessageFilter
         Height = PanelH;
 
         // 附件区。也在卡片里，所以底色用卡片的填充色而不是面板的。
-        _draft = new FlowLayoutPanel
-        {
-            Padding = new Padding(0, 2, 0, 2),
-            FlowDirection = FlowDirection.LeftToRight,
-            WrapContents = true,
-            AutoScroll = true,
-            BackColor = Theme.InputBg,
-        };
+        // 它是一整块自绘的条（见 DraftStrip 里那段「为什么不是一个附件一个控件」）。
+        _draft = new DraftStrip();
+        _draft.RemoveClicked += Remove;
         _draft.Visible = false;
         Controls.Add(_draft);
 
@@ -305,8 +319,8 @@ internal sealed class InputPanel : Panel, IMessageFilter
         if (Draft.Count > 0)
         {
             _draft.Visible = true;
-            _draft.Bounds = new Rectangle(card.Left + CardPadX, card.Top + 4,
-                                          card.Width - 2 * CardPadX, DraftH);
+            _draft.Bounds = new Rectangle(card.Left + CardPadX, card.Top + 2,
+                                          card.Width - 2 * CardPadX, DraftStrip.RowH);
             boxTop = _draft.Bottom + 2;
         }
         else
@@ -564,7 +578,17 @@ internal sealed class InputPanel : Panel, IMessageFilter
 
     private void PickFiles()
     {
-        using var dlg = new OpenFileDialog { Multiselect = true, Title = "选择要添加的文件 / 图片" };
+        // 过滤器按白名单现拼（AttachTypes.All），**不写死**：白名单以后加类型时，
+        // 对话框里自动就跟上了，不会出现「能拖进来但选不到」。
+        // 留一条「所有文件」：白名单之外的东西也该看得见，选进来会被拒并说清理由，
+        // 比在对话框里凭空消失、让用户以为文件不存在强。
+        string star = string.Join(";", AttachTypes.All().Select(e => "*" + e));
+        using var dlg = new OpenFileDialog
+        {
+            Multiselect = true,
+            Title = "选择要添加的文件 / 图片",
+            Filter = $"支持的文件（图片 / 文本 / 文档 / 音频）|{star}|所有文件|*.*",
+        };
         if (dlg.ShowDialog(FindForm()) == DialogResult.OK)
             foreach (string f in dlg.FileNames) AddFile(f);
     }
@@ -658,18 +682,58 @@ internal sealed class InputPanel : Panel, IMessageFilter
 
     // ---------------- 附件草稿 ----------------
 
-    public void AddFile(string path)
+    /// <summary>
+    /// 按路径加一个附件，返回是否真的收下了。**只收白名单里的类型**（图片 / 明文文本 /
+    /// office 文档 / 音频，见 <see cref="AttachTypes"/>），其余的回一句理由。
+    ///
+    /// 为什么不悄悄收下：附件最终是给模型读的，可执行文件、压缩包收进来，
+    /// 用户只会纳闷「它怎么没看懂这个文件」。拒收 + 说清理由，比收下强。
+    /// 拖入、按钮选、粘贴文件三条路都汇到这里，判一次就够。
+    ///
+    /// 返回值是给调用方用的：拖放一次进来好几个文件时，只能按「收下了几个」决定
+    /// 要不要说那句「已添加到输入框」—— 无条件说的话，会把刚冒出来的拒收理由顶掉，
+    /// 用户就只看到一句成功。
+    /// </summary>
+    public bool AddFile(string path)
     {
-        if (!File.Exists(path)) return;
-        string ext = Path.GetExtension(path).ToLowerInvariant();
-        var img = new[] { ".png", ".jpg", ".jpeg", ".bmp", ".gif", ".webp" };
-        Add(img.Contains(ext)
-            ? Attachment.ForImage(Path.GetFileName(path), path)
-            : Attachment.ForFile(Path.GetFileName(path), path));
+        if (string.IsNullOrWhiteSpace(path) || !File.Exists(path)) return false;
+
+        var cat = AttachTypes.CatOf(path);
+        if (cat == AttachCat.None)
+        {
+            Notice?.Invoke(AttachTypes.RejectReason(path));
+            return false;
+        }
+
+        // 同一个文件拖两次是误操作，不是「想发两份」。按路径去重，并明说一句 ——
+        // 什么都不做的话用户会以为拖拽没生效。
+        string full = Path.GetFullPath(path);
+        var dup = Draft.FirstOrDefault(a =>
+            a.Path != null && string.Equals(SafeFull(a.Path), full, StringComparison.OrdinalIgnoreCase));
+        if (dup != null)
+        {
+            Notice?.Invoke("这张已经在列表里了：" + DisplayNameOf(dup));
+            return false;
+        }
+
+        string name = Path.GetFileName(path);
+        var a = cat == AttachCat.Image ? Attachment.ForImage(name, path) : Attachment.ForFile(name, path);
+        a.Size = AttachTypes.SizeOf(path);   // 抓一次，之后不再跟随磁盘（见 Attachment.Size）
+        Add(a);
+        return true;
     }
+
+    private static string? SafeFull(string p)
+    {
+        try { return Path.GetFullPath(p); } catch { return null; }
+    }
+
+    private static string DisplayNameOf(Attachment a) =>
+        string.IsNullOrWhiteSpace(a.Name) ? (a.Path ?? "(文件)") : a.Name;
 
     public void Add(Attachment a)
     {
+        if (a.Size == 0 && a.Path != null) a.Size = AttachTypes.SizeOf(a.Path);
         Draft.Add(a);
         Sync();
     }
@@ -680,20 +744,33 @@ internal sealed class InputPanel : Panel, IMessageFilter
         Sync();
     }
 
+    /// <summary>
+    /// 把草稿列表同步给附件区。
+    ///
+    /// <c>_draft.Visible</c> 与面板高度是**一起变的**：附件从 0 张变 1 张（或反过来）时，
+    /// 面板要多占（少占）一行，得让 <c>MainForm.ApplyLayout</c> 重摆一次。只在
+    /// 「有 / 没有」翻转的那一刻通知，加第二张时面板高度没变，重摆一次纯属浪费
+    /// —— 那会连带重抓设置界面的底图。
+    ///
+    /// 「有没有」记在 <see cref="_hadDraft"/> 里，**不去读 <c>_draft.Visible</c>**：
+    /// 那个 getter 返回的是「算上祖先的」有效可见性，欢迎页上整个 <c>_chatUI</c> 都是隐藏的，
+    /// 于是赋值成 true 之后读回来还是 false，翻转永远检测不到 —— 表现成「加了附件，
+    /// 输入区不长高，卡片被窗口下缘切掉一条」。
+    /// </summary>
     private void Sync()
     {
-        _draft.SuspendLayout();
-        _draft.Controls.Clear();
-        foreach (var a in Draft)
-        {
-            var chip = new DraftChip(a);
-            chip.RemoveClicked += () => Remove(a);
-            _draft.Controls.Add(chip);
-        }
-        _draft.ResumeLayout();
+        bool has = Draft.Count > 0;
+        _draft.SetItems(Draft);
+        _draft.Visible = has;
         LayoutCard();          // 附件区出现 / 消失会改文本框的上下位置
         UpdateSendState();
+        if (has == _hadDraft) return;
+        _hadDraft = has;
+        LayoutChanged?.Invoke();
     }
+
+    /// <summary>上一次同步时有没有附件。见 <see cref="Sync"/> 里为什么不能读 Visible。</summary>
+    private bool _hadDraft;
 
     /// <summary>取出当前草稿为一条用户消息并清空。</summary>
     public ChatMessage? Flush()
@@ -747,121 +824,14 @@ internal sealed class InputPanel : Panel, IMessageFilter
     public void RefreshTheme()
     {
         BackColor = Theme.ChatBg;
-        _draft.BackColor = Theme.InputBg;
+        _draft.RefreshTheme();
         _box.BackColor = Theme.InputBg;
         _box.ForeColor = Theme.TextMain;
         _hint.BackColor = Theme.InputBg;
         _hint.ForeColor = Theme.TextMuted;
         _ph.BackColor = Theme.InputBg;
         _ph.ForeColor = Theme.TextMuted;
-        foreach (Control c in _draft.Controls)
-        {
-            (c as DraftChip)?.RefreshTheme();
-        }
         UpdateSendState();
         Invalidate();
-    }
-}
-
-/// <summary>草稿附件小卡片（图片缩略图 / 文件图标 + 名称 + 删除）。</summary>
-internal sealed class DraftChip : Control
-{
-    public Attachment A { get; }
-    public event Action? RemoveClicked;
-    private Image? _thumb;
-    private bool _hover;
-    private bool _overX;
-
-    public DraftChip(Attachment a)
-    {
-        A = a;
-        Height = 56;
-        SetStyle(ControlStyles.OptimizedDoubleBuffer | ControlStyles.UserPaint | ControlStyles.AllPaintingInWmPaint | ControlStyles.SupportsTransparentBackColor, true);
-        BackColor = Color.Transparent;
-        _thumb = a.Kind == "image" ? a.LoadImage(44, 44) : null;
-    }
-
-    public void RefreshTheme()
-    {
-        Width = (int)Math.Max(120f, TextRenderer.MeasureText(ShortName(), Theme.UI(10f)).Width + 96);
-        Invalidate();
-    }
-
-    private string ShortName()
-    {
-        string n = string.IsNullOrWhiteSpace(A.Name) ? Path.GetFileName(A.Path ?? "") : A.Name;
-        if (n.Length > 16) n = n[..16] + "…";
-        return n;
-    }
-
-    protected override void OnMouseEnter(EventArgs e) { _hover = true; Invalidate(); }
-    protected override void OnMouseLeave(EventArgs e) { _hover = false; _overX = false; Invalidate(); }
-    protected override void OnMouseMove(MouseEventArgs e)
-    {
-        bool over = XRect().Contains(e.Location);
-        if (over != _overX) { _overX = over; Invalidate(); }
-    }
-    protected override void OnMouseClick(MouseEventArgs e)
-    {
-        if (e.Button == MouseButtons.Left && XRect().Contains(e.Location)) RemoveClicked?.Invoke();
-    }
-
-    private Rectangle XRect() => new(Width - 24, 4, 20, 20);
-
-    protected override void OnPaint(PaintEventArgs e)
-    {
-        RefreshTheme();
-        var g = e.Graphics;
-        g.SmoothingMode = SmoothingMode.AntiAlias;
-        var rc = new Rectangle(0, 0, Width - 1, 26 + 22);
-        using (var path = Rounded(rc, 8))
-        using (var b = new SolidBrush(Theme.AsstBubble))
-            g.FillPath(b, path);
-
-        if (_thumb != null)
-            g.DrawImage(_thumb, 6, 4, 44, 44);
-        else
-        {
-            // 文件图标
-            using var pen = new Pen(Theme.Accent, 1.6f);
-            var fb = new Rectangle(6, 6, 20, 24);
-            using var fbPath = Rounded(fb, 3);
-            g.DrawPath(pen, fbPath);
-            g.DrawLine(pen, fb.Left + 4, fb.Bottom - 8, fb.Right - 4, fb.Bottom - 8);
-            g.DrawLine(pen, fb.Left + 4, fb.Bottom - 12, fb.Right - 4, fb.Bottom - 12);
-        }
-
-        g.DrawString(ShortName(), Theme.UI(10f), new SolidBrush(Theme.TextMain), _thumb != null ? 56 : 32, 8);
-        string kind = A.Kind == "image" ? "图片" : "文件";
-        g.DrawString(kind, Theme.UI(8.5f), new SolidBrush(Theme.TextMuted), _thumb != null ? 56 : 32, 26);
-
-        if (_hover || _overX)
-        {
-            var xr = XRect();
-            using var xb = new SolidBrush(_overX ? Color.FromArgb(210, 200, 40, 40) : Color.FromArgb(120, 120, 120, 120));
-            g.FillEllipse(xb, xr);
-            using var pen = new Pen(Color.White, 1.6f);
-            g.DrawLine(pen, xr.Left + 5, xr.Top + 5, xr.Right - 5, xr.Bottom - 5);
-            g.DrawLine(pen, xr.Right - 5, xr.Top + 5, xr.Left + 5, xr.Bottom - 5);
-        }
-        base.OnPaint(e);
-    }
-
-    protected override void Dispose(bool disposing)
-    {
-        if (disposing) _thumb?.Dispose();
-        base.Dispose(disposing);
-    }
-
-    private static GraphicsPath Rounded(Rectangle r, int rad)
-    {
-        var p = new GraphicsPath();
-        int d = rad * 2;
-        p.AddArc(r.X, r.Y, d, d, 180, 90);
-        p.AddArc(r.Right - d, r.Y, d, d, 270, 90);
-        p.AddArc(r.Right - d, r.Bottom - d, d, d, 0, 90);
-        p.AddArc(r.X, r.Bottom - d, d, d, 90, 90);
-        p.CloseFigure();
-        return p;
     }
 }
