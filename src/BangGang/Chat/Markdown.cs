@@ -32,8 +32,7 @@ namespace BangGang;
 /// 测量和绘制各算一遍「这一块占多高」的话早晚会分叉，而分叉的表现是最后一行
 /// 被气泡下缘裁掉几个像素 —— 谁也看不出是渲染器算错了。
 ///
-/// 不做的事：链接不可点（只上色加下划线 —— 点击要拉默认浏览器，是另一件事）；
-/// 不解析 HTML；代码块超宽时硬折行而不是横向滚动。
+/// 不做的事：不解析 HTML；代码块超宽时硬折行而不是横向滚动。
 /// </summary>
 internal static class Markdown
 {
@@ -61,6 +60,12 @@ internal static class Markdown
         /// 由折行的那一处**当场**记下来，不留给别人从宽度上反推。
         /// </summary>
         public bool Wrapped;
+
+        /// <summary>
+        /// 最后一个**有行**的块的首行下标。流式增量重画的脏区起点：它之前的行属于
+        /// 已经写完的块，逐像素稳定（见 MessageBubble.Paint 的增量那一支）。没有行时是 0。
+        /// </summary>
+        public int TailStart;
     }
 
     /// <summary>一条物理行。位置由「前面所有行的 Advance 之和」决定，自己不存 y。</summary>
@@ -115,6 +120,9 @@ internal static class Markdown
         public float Width;              // 文字本身的宽
         public float PadX;               // 左右各垫多少（行内代码的圆角底）
         public bool Underline, Strike;
+
+        /// <summary>链接的地址（只有链接段有）。排版不读它，命中测试（MessageBubble.LinkAt）读它。</summary>
+        public string? Link;
 
         /// <summary>≥0 时**绝对**定位（列表的项目符号、表格单元格、行间公式），不推进行内的光标。</summary>
         public float X = -1;
@@ -276,6 +284,9 @@ internal static class Markdown
 
         /// <summary>公式语法树（TeX 或 MathML 解析后的同一棵树）。非空时 <see cref="Text"/> 无意义。</summary>
         public MNode? Math;
+
+        /// <summary>链接的地址。<c>[文字](地址)</c> 和裸写的 URL 都有。</summary>
+        public string? Link;
     }
 
     /// <summary>可以反斜杠转义的字符。只对**标点**生效，<c>\n</c> 这种要原样留着。</summary>
@@ -386,8 +397,6 @@ internal static class Markdown
             }
 
             // ---- 链接：[文字](地址) ----
-            //
-            // 地址**只用来确认这确实是个链接**，解析完就丢掉 —— 本期链接不可点（见类注释）。
             if (c == '[')
             {
                 int rb = s.IndexOf(']', i + 1);
@@ -397,13 +406,34 @@ internal static class Markdown
                     if (rp > rb)
                     {
                         Flush();
+                        string? url = NormalizeUrl(s[(rb + 2)..rp].Trim());
+                        int mark = outp.Count;
                         ScanInline(outp, s[(i + 1)..rb], flags | FLink, depth + 1);
+                        // 递归产出的每一段都挂上地址 —— 命中测试按段取。
+                        // 地址不可点（相对地址、别的协议）就留空：照样上色，但点不动。
+                        if (url != null)
+                            for (int k = mark; k < outp.Count; k++) outp[k].Link = url;
                         i = rp + 1;
                         continue;
                     }
                 }
                 lit.Append(c);
                 i++;
+                continue;
+            }
+
+            // ---- 裸 URL：http(s)://… 与 www.… ----
+            //
+            // 模型经常直接甩一个地址出来，不包 []()。认出来上色、加下划线、可点 ——
+            // 不认的话它就是一长串普通文字。前一个字符得是边界（行首 / 空白 / 开口标点），
+            // 不然 `id=abc.html` 这种串的尾巴会被吃成链接。
+            if ((c == 'h' || c == 'H' || c == 'w' || c == 'W')
+                && (i == 0 || IsUrlBoundary(s[i - 1]))
+                && TryBareUrl(s, i, out var urlText, out int urlEnd))
+            {
+                Flush();
+                outp.Add(new Inline { Text = urlText, Flags = flags | FLink, Link = NormalizeUrl(urlText) });
+                i = urlEnd;
                 continue;
             }
 
@@ -456,6 +486,71 @@ internal static class Markdown
             i++;
         }
         Flush();
+    }
+
+    // ---------------- 裸 URL 识别 ----------------
+
+    /// <summary>
+    /// 可点的地址；不可点就返回 null（调用方照样上色，只是点不动）。
+    /// <c>www.</c> 开头的补一个协议头。**只放行 http / https / mailto** ——
+    /// 放行的范围与 <c>Ui.OpenLink</c> 的白名单（http / https）取交集才真正点得开，
+    /// 但别的协议连「看起来像链接」这层暗示都不该给错方向，所以收窄在这里做。
+    /// </summary>
+    private static string? NormalizeUrl(string url)
+    {
+        if (url.Length == 0) return null;
+        if (url.StartsWith("www.", StringComparison.OrdinalIgnoreCase)) return "http://" + url;
+        if (url.StartsWith("http://", StringComparison.OrdinalIgnoreCase)
+            || url.StartsWith("https://", StringComparison.OrdinalIgnoreCase)) return url;
+        return null;
+    }
+
+    /// <summary>裸 URL 的左边界：前一个字符不能是字母数字或地址里会出现的符号。</summary>
+    private static bool IsUrlBoundary(char c) =>
+        !(char.IsLetterOrDigit(c) || c is '@' or '/' or '.' or '-' or '_' or ':');
+
+    /// <summary>裸 URL 在这里终止：空白、引号、尖括号、反引号，以及中文句读。</summary>
+    private static bool IsUrlTerminus(char c) =>
+        char.IsWhiteSpace(c) || "\"'<>`|。，、；：？！（）【】「」『』〈〉《》—…".IndexOf(c) >= 0;
+
+    /// <summary>
+    /// 从 <paramref name="i"/> 处认一个裸写的 URL。认出来交出显示文字与下一个位置。
+    ///
+    /// 结尾的句读要往回吐：「见 https://a.b/c。」里的句号是句子的，不是地址的；
+    /// 收尾括号同理，但**成对的留着** —— 维基百科那类地址里真有括号。
+    /// </summary>
+    private static bool TryBareUrl(string s, int i, out string text, out int end)
+    {
+        text = "";
+        end = i;
+
+        int head;
+        if (s.AsSpan(i).StartsWith("https://", StringComparison.OrdinalIgnoreCase)) head = 8;
+        else if (s.AsSpan(i).StartsWith("http://", StringComparison.OrdinalIgnoreCase)) head = 7;
+        else if (s.AsSpan(i).StartsWith("www.", StringComparison.OrdinalIgnoreCase)) head = 4;
+        else return false;
+
+        // 协议头后面总得有点真东西，光一个头是认不得的
+        if (i + head >= s.Length || !char.IsLetterOrDigit(s[i + head])) return false;
+
+        int j = i + head;
+        while (j < s.Length && !IsUrlTerminus(s[j])) j++;
+        int e = j;
+        while (e > i + head && ".,;:!?".IndexOf(s[e - 1]) >= 0) e--;
+        foreach (var (close, open) in new[] { (')', '('), (']', '['), ('}', '{') })
+            while (e > i + head && s[e - 1] == close && CountOf(s, i, e, open) < CountOf(s, i, e, close))
+                e--;
+        if (e <= i + head) return false;
+        text = s[i..e];
+        end = e;
+        return true;
+    }
+
+    private static int CountOf(string s, int from, int to, char c)
+    {
+        int n = 0;
+        for (int k = from; k < to; k++) if (s[k] == c) n++;
+        return n;
     }
 
     // ---------------- 公式识别 ----------------
@@ -652,8 +747,17 @@ internal static class Markdown
     {
         public bool Ordered;
 
+        /// <summary>有序列表第一项的编号：源文写几就从几数（<c>3.</c> 开头就是 3、4、5…）。</summary>
+        public int Start = 1;
+
         /// <summary>每一项是**一串块**，不是一段文字：列表项里可以放引用、代码块、嵌套列表。</summary>
         public required List<List<Block>> Items;
+
+        /// <summary>
+        /// 任务列表项（<c>- [ ]</c> / <c>- [x]</c>），与 <see cref="Items"/> 一一对应：
+        /// 0 = 普通项、1 = 未完成、2 = 已完成。整张表一个任务项都没有时是 null。
+        /// </summary>
+        public List<int>? Tasks;
     }
 
     private sealed class BTable : Block
@@ -710,6 +814,13 @@ internal static class Markdown
         private readonly string[] _l;
         private int _i;
 
+        /// <summary>
+        /// 每个顶层块的**源文**，与 <see cref="Blocks"/> 的返回值一一对应。
+        /// 块级排版缓存（<see cref="BlockLayoutOf"/>）拿它当键：源文逐字相同、宽度相同的块，
+        /// 排版结果必然相同 —— 流式回复每 40ms 重排全文时，前面所有块都满足这一条。
+        /// </summary>
+        public readonly List<string> Sources = new();
+
         public Parser(string[] lines) { _l = lines; }
 
         public List<Block> Blocks()
@@ -720,8 +831,17 @@ internal static class Markdown
             void FlushPara()
             {
                 if (para.Count == 0) return;
-                outp.Add(new BPara { Inlines = ParseInline(string.Join("\n", para)) });
+                string src = string.Join("\n", para);
+                outp.Add(new BPara { Inlines = ParseInline(src) });
+                Sources.Add(src);
                 para.Clear();
+            }
+
+            // 记一块的源文跨度（从 from 到当前行为止），与块一一对应，见 Sources。
+            void AddSpanned(Block b, int from)
+            {
+                outp.Add(b);
+                Sources.Add(string.Join("\n", _l, from, _i - from));
             }
 
             while (_i < _l.Length)
@@ -732,41 +852,44 @@ internal static class Markdown
                 if (t.Length == 0) { FlushPara(); _i++; continue; }
 
                 var fm = ReFence.Match(line);
-                if (fm.Success) { FlushPara(); outp.Add(ReadFence(fm.Groups[2].Value.Trim())); continue; }
+                if (fm.Success) { FlushPara(); int s0 = _i; AddSpanned(ReadFence(fm.Groups[2].Value.Trim()), s0); continue; }
 
                 var hm = ReHead.Match(t);
                 if (hm.Success)
                 {
                     FlushPara();
+                    int s0 = _i;
                     _i++;
-                    outp.Add(new BHead { Level = hm.Groups[1].Value.Length, Inlines = ParseInline(hm.Groups[2].Value) });
+                    AddSpanned(new BHead { Level = hm.Groups[1].Value.Length, Inlines = ParseInline(hm.Groups[2].Value) }, s0);
                     continue;
                 }
 
-                if (ReRule.IsMatch(t)) { FlushPara(); _i++; outp.Add(new BRule()); continue; }
+                if (ReRule.IsMatch(t)) { FlushPara(); int s0 = _i; _i++; AddSpanned(new BRule(), s0); continue; }
 
                 // 独立成行的公式。必须在段落之前判 —— 落到段落里就变成行内公式了，
                 // 行内公式是**跟着文字走的**，而 `$$…$$` 写法的意思正是「单独占一行」。
                 if (t.StartsWith("$$") || t.StartsWith("\\[") || t.StartsWith("<math", StringComparison.OrdinalIgnoreCase))
                 {
                     FlushPara();
-                    outp.Add(ReadMath());
+                    int s0 = _i;
+                    AddSpanned(ReadMath(), s0);
                     continue;
                 }
 
-                if (t.StartsWith('>')) { FlushPara(); outp.Add(ReadQuote()); continue; }
+                if (t.StartsWith('>')) { FlushPara(); int s0 = _i; AddSpanned(ReadQuote(), s0); continue; }
 
                 if (line.Contains('|') && _i + 1 < _l.Length && ReTableSep.IsMatch(_l[_i + 1]))
                 {
                     FlushPara();
-                    outp.Add(ReadTable());
+                    int s0 = _i;
+                    AddSpanned(ReadTable(), s0);
                     continue;
                 }
 
                 var im = ReItem.Match(line);
-                if (im.Success) { FlushPara(); outp.Add(ReadList(im)); continue; }
+                if (im.Success) { FlushPara(); int s0 = _i; AddSpanned(ReadList(im), s0); continue; }
 
-                if (IndentOf(line) >= 4) { FlushPara(); outp.Add(ReadIndented()); continue; }
+                if (IndentOf(line) >= 4) { FlushPara(); int s0 = _i; AddSpanned(ReadIndented(), s0); continue; }
 
                 para.Add(t.TrimEnd());
                 _i++;
@@ -867,7 +990,19 @@ internal static class Markdown
         private BList ReadList(Match first)
         {
             bool ordered = char.IsAsciiDigit(first.Groups[2].Value[0]);
+
+            // 起始编号：源文写几就是几。模型接着上文续写列表时不会从 1 开始，
+            // 一律重编成 1 起会把「第 5 步」画成「第 1 步」。
+            int start = 1;
+            if (ordered)
+            {
+                string mk = first.Groups[2].Value;
+                if (int.TryParse(mk.AsSpan(0, mk.Length - 1), out int n0) && n0 >= 0) start = n0;
+            }
+
             var items = new List<List<Block>>();
+            var tasks = new List<int>();
+            bool anyTask = false;
 
             while (_i < _l.Length)
             {
@@ -903,8 +1038,24 @@ internal static class Markdown
                 var sub = new Parser(body.ToArray()).Blocks();
                 if (sub.Count == 0) sub.Add(new BPara { Inlines = new List<Inline>() });
                 items.Add(sub);
+
+                // 任务列表项：`- [ ] xxx` / `- [x] xxx`。把方框记号从正文里剥掉，
+                // 画的时候它是一个真的小方框，不是三个字符（见 EmitList）。
+                int task = 0;
+                if (!ordered && sub[0] is BPara tp && tp.Inlines.Count > 0)
+                {
+                    var t0 = tp.Inlines[0];
+                    if (t0.Math == null && !t0.HardBreak && t0.Text.Length >= 3
+                        && t0.Text[0] == '[' && (t0.Text[1] == ' ' || t0.Text[1] is 'x' or 'X') && t0.Text[2] == ']')
+                    {
+                        task = t0.Text[1] == ' ' ? 1 : 2;
+                        anyTask = true;
+                        t0.Text = t0.Text.Length > 3 && t0.Text[3] == ' ' ? t0.Text[4..] : t0.Text[3..];
+                    }
+                }
+                tasks.Add(task);
             }
-            return new BList { Ordered = ordered, Items = items };
+            return new BList { Ordered = ordered, Start = start, Items = items, Tasks = anyTask ? tasks : null };
         }
 
         private BTable ReadTable()
@@ -991,6 +1142,9 @@ internal static class Markdown
         /// <summary>公式。非空时 <see cref="Text"/> 是空串，<see cref="Width"/> 取盒子宽。</summary>
         public MBox? Math;
 
+        /// <summary>链接地址。一个词折成几个原子都带同一份，落到每个 <see cref="Run"/> 上。</summary>
+        public string? Link;
+
         public readonly float Advance => Width + PadX * 2;
     }
 
@@ -1064,6 +1218,7 @@ internal static class Markdown
                 Underline = (inl.Flags & FLink) != 0,
                 Strike = (inl.Flags & FStrike) != 0,
                 PadX = code ? InlineCodePadX : 0,
+                Link = inl.Link,
             };
 
             string s = inl.Text;
@@ -1244,6 +1399,7 @@ internal static class Markdown
                     PadX = a.PadX,
                     Underline = a.Underline,
                     Strike = a.Strike,
+                    Link = a.Link,
                 });
                 lb.W += a.Advance;
                 if (a.Font.Height > lb.H) { lb.H = a.Font.Height; tall = a.Font; }
@@ -1307,6 +1463,14 @@ internal static class Markdown
         public float PadBelow;
 
         /// <summary>
+        /// 本块的**名义块首距**：排版这一块时第一次「要不要段前距」问到的那个值。
+        /// 块级排版缓存（<see cref="BlockLayoutOf"/>）把每个块排成「不含块首距」的行，
+        /// 装配时才按「是不是容器里第一块、上一块欠多少下内边距」把这一段加回首行 ——
+        /// 那个值就得有地方读。-1 = 这一块从里到外没问过（空块）。
+        /// </summary>
+        public float LeadSpace = -1f;
+
+        /// <summary>
         /// 在容器 / 整段的开头时不加段前距。**必须在排版这一块之前先取好**。
         /// 顺带把上一块欠的下内边距**消费掉**：每个块只在开头问这一次，
         /// 谁问谁拿走，免得一路漏到后面不该躲的块头上。
@@ -1315,6 +1479,7 @@ internal static class Markdown
         {
             float below = PadBelow;
             PadBelow = 0f;
+            if (LeadSpace < 0f) LeadSpace = space;   // 每个块只在开头问一次（见 Build 的装配）
             return Lines.Count > Base ? space + below : 0f;
         }
     }
@@ -1361,27 +1526,34 @@ internal static class Markdown
 
     private static void EmitBlocks(Ctx c, List<Block> blocks, float left, float avail)
     {
-        foreach (var b in blocks)
-        {
-            switch (b)
-            {
-                case BHead h: EmitHead(c, h, left, avail); break;
-                case BPara p:
-                    EmitLines(c, Flow(p.Inlines, BodySize, FontStyle.Regular, Ink.Text, avail, PitchBody, c),
-                              left, c.Sp(SpacePara));
-                    break;
-                case BCode k: EmitCode(c, k, left, avail); break;
-                case BList l: EmitList(c, l, left, avail); break;
-                case BQuote q: EmitQuote(c, q, left, avail); break;
-                case BTable t: EmitTable(c, t, left, avail); break;
-                case BRule: EmitRule(c, left, avail); break;
-                case BMath mm: EmitMath(c, mm, left, avail); break;
-            }
-        }
+        foreach (var b in blocks) EmitBlock(c, b, left, avail);
 
         // 容器到底了：里面最后一块欠的下内边距不外泄给容器的下一个兄弟 ——
         // 那圈内边距是「容器内部和外部的分隔」，已经由容器自己的边框 / 间距表达了。
         c.PadBelow = 0f;
+    }
+
+    /// <summary>
+    /// 排一个块。除了 <see cref="EmitBlocks"/> 的逐个直排，块级排版缓存
+    /// （<see cref="BlockLayoutOf"/>）一次只排一个块时也从这里进 —— 两条路必须共用
+    /// 同一个分派，不然缓存里那份和直排出来的会长得不一样。
+    /// </summary>
+    private static void EmitBlock(Ctx c, Block b, float left, float avail)
+    {
+        switch (b)
+        {
+            case BHead h: EmitHead(c, h, left, avail); break;
+            case BPara p:
+                EmitLines(c, Flow(p.Inlines, BodySize, FontStyle.Regular, Ink.Text, avail, PitchBody, c),
+                          left, c.Sp(SpacePara));
+                break;
+            case BCode k: EmitCode(c, k, left, avail); break;
+            case BList l: EmitList(c, l, left, avail); break;
+            case BQuote q: EmitQuote(c, q, left, avail); break;
+            case BTable t: EmitTable(c, t, left, avail); break;
+            case BRule: EmitRule(c, left, avail); break;
+            case BMath mm: EmitMath(c, mm, left, avail); break;
+        }
     }
 
     private static float HeadSize(int lv) => lv switch
@@ -1590,6 +1762,13 @@ internal static class Markdown
         return outp;
     }
 
+    /// <summary>列表项的记号文字（任务项没有记号文字，它的记号是小方框）。</summary>
+    private static string MarkerText(BList l, int n, string bullet) =>
+        l.Ordered ? (l.Start + n) + "." : bullet;
+
+    /// <summary>任务列表那个小方框的边长。</summary>
+    private const float TaskBoxW = 12f;
+
     /// <summary>
     /// 列表。项目符号在**第一行**上绝对定位，正文整体悬挂缩进 ——
     /// 第二行对齐的是文字的左缘而不是符号，否则折行之后缩进会一截一截往里跑。
@@ -1600,10 +1779,10 @@ internal static class Markdown
         string bullet = BulletGlyph(c.ListDepth);
 
         // 先量一遍所有符号，取最宽的那个当悬挂宽度：`1.` 和 `10.` 宽度不同，
-        // 逐个算的话同一张列表里每一行的文字起点都不一样。
+        // 逐个算的话同一张列表里每一行的文字起点都不一样。任务项的记号是那个小方框。
         float markW = 0;
         for (int n = 0; n < l.Items.Count; n++)
-            markW = Math.Max(markW, RunWidth(l.Ordered ? (n + 1) + "." : bullet, f));
+            markW = Math.Max(markW, l.Tasks != null && l.Tasks[n] > 0 ? TaskBoxW : RunWidth(MarkerText(l, n, bullet), f));
         float hang = markW + 8f;
 
         int i0 = c.Lines.Count;
@@ -1622,15 +1801,35 @@ internal static class Markdown
             if (c.Lines.Count == before)     // 空项：至少留一行，否则那个符号无处可挂
                 EmitLine(c, new List<Run>(), left + hang, f.Height, f.Height);
 
-            string mk = l.Ordered ? (n + 1) + "." : bullet;
-            c.Lines[before].Runs.Insert(0, new Run
+            if (l.Tasks != null && l.Tasks[n] > 0)
             {
-                Text = mk,
-                Font = f,
-                Ink = l.Ordered ? Ink.Muted : Ink.Accent,
-                Width = RunWidth(mk, f),
-                X = left,
-            });
+                // 任务项：记号是一个小方框（完成 = 实心强调色，未完成 = 描边），挂在该项
+                // 第一行上、垂直跟文字行居中。用画出来的方框而不是 ☐/☑ 字符 —— 那两个字符
+                // 在微软雅黑里的字形和基线都不稳，方框是自己画的，多大、在哪全是定数。
+                var ln0 = c.Lines[before];
+                float boxY = ln0.LineHeight > 0 ? (ln0.LineHeight - TaskBoxW) / 2f + 1f : 1f;
+                bool done = l.Tasks[n] == 2;
+                ln0.Decors.Add(new Decor
+                {
+                    Rect = new RectangleF(left + 1f, boxY, TaskBoxW, TaskBoxW),
+                    Fill = done ? Ink.Accent : Ink.None,
+                    Stroke = done ? Ink.None : Ink.Muted,
+                    StrokeW = 1.2f,
+                    Radius = 3f,
+                });
+            }
+            else
+            {
+                string mk = MarkerText(l, n, bullet);
+                c.Lines[before].Runs.Insert(0, new Run
+                {
+                    Text = mk,
+                    Font = f,
+                    Ink = l.Ordered ? Ink.Muted : Ink.Accent,
+                    Width = RunWidth(mk, f),
+                    X = left,
+                });
+            }
             if (n > 0) Pad(c, before, SpaceItem);
         }
         c.ListDepth = outerDepth;
@@ -1661,6 +1860,13 @@ internal static class Markdown
 
         int i0 = c.Lines.Count;
         float yStart = c.Y;
+
+        // 段前距要在**进容器之前**取：Sp 判的是「本容器里前面有没有块」，等内容排完再问，
+        // 连「它是容器里第一块」都会被刚排出来的内容顶成「前面有块」—— 于是引用块在
+        // 容器顶上时也会凭空多出一段（别的块型都不是这样，见 Ctx.Base 的注释）。
+        // 段前距里要连自己的 QuotePadY 一起要 —— 面板是从首行内容原点往上退 QuotePadY
+        // 画的，那 7px 会吃掉段前距，只写 SpaceQuote 的话两块面板会贴在一起。
+        float sp = c.Sp(SpaceQuote + QuotePadY);
         int outerBase = c.Base;
         c.Base = i0;
         EmitBlocks(c, q.Blocks, innerLeft, innerAvail);
@@ -1668,11 +1874,7 @@ internal static class Markdown
         if (c.Lines.Count == i0) return;
         float contentH = c.Y - yStart;
 
-        // 内外边距都落在行身上（类注释第三条）。注意先取段前距再落内边距：
-        // Sp 判的是「本容器里前面有没有块」，顺序反了会让收缩块永远拿不到段前距。
-        // 段前距里要连自己的 QuotePadY 一起要 —— 面板是从首行内容原点往上退 QuotePadY
-        // 画的，那 7px 会吃掉段前距，只写 SpaceQuote 的话两块面板会贴在一起。
-        float sp = c.Sp(SpaceQuote + QuotePadY);
+        // 内边距同样落在行身上（类注释第三条）：首行往上加一圈、末行往下加一圈。
         c.Lines[i0].SpaceBefore += QuotePadY;
         c.Y += QuotePadY;
         c.Lines[^1].Pitch += QuotePadY;
@@ -1869,21 +2071,118 @@ internal static class Markdown
         return w;
     }
 
+    // ---------------- 块级排版缓存 ----------------
+
+    /// <summary>
+    /// 一个块**与位置无关**的排版结果：不含块首距。块首距（段前距 + 上一块欠的下内边距）
+    /// 取决于块在文档里的位置，装配时才加回首行；缓存回答的只是「这块内容在这个宽度下
+    /// 长什么样」。
+    /// </summary>
+    private sealed class BlockLayout
+    {
+        public required List<PhysLine> Lines;
+        public float Height;                    // 全部行的 Advance 之和
+        public float Lead;                      // 名义块首距（Ctx.LeadSpace）
+        public float PadBelow;                  // 欠给下一块的下内边距（面板型块）
+        public bool Wrapped, FullWidth;
+    }
+
+    /// <summary>
+    /// 块级排版缓存，键是（块的**源文**, 可用宽）。
+    ///
+    /// 流式回复每 40ms 把**全文**重排一次（MessageBubble.RefreshText），而一次流式里
+    /// 变的只有**最后一个块** —— 前面所有块源文逐字相同、宽度相同，全部在这里命中。
+    /// 省掉的就是「每 40ms 把一条上万字的回复从头解析、量宽、折行一遍」。
+    ///
+    /// 条目间共享同一个 <see cref="PhysLine"/> 实例：装配只读它们，块首距落在复制出来的
+    /// 壳上（见 <see cref="Build"/>），绝不原地改。<see cref="Run"/> 同理 ——
+    /// 这也让增量重画能靠引用相等认出「这一行没变」（MessageBubble.Paint 的 SameLine）。
+    /// </summary>
+    private const int BlockCacheMax = 64;
+    private static readonly Dictionary<(string src, int cap), BlockLayout> BlockCache = new();
+    private static readonly Queue<(string src, int cap)> BlockCacheOrder = new();
+
+    private static BlockLayout BlockLayoutOf(Block b, string src, int cap)
+    {
+        if (BlockCache.TryGetValue((src, cap), out var hit)) return hit;
+
+        var c = new Ctx();
+        EmitBlock(c, b, 0, cap);
+        var bl = new BlockLayout
+        {
+            Lines = c.Lines,
+            Height = c.Y,
+            Lead = Math.Max(0f, c.LeadSpace),
+            PadBelow = c.PadBelow,
+            Wrapped = c.Wrapped,
+            FullWidth = c.FullWidth,
+        };
+        BlockCache[(src, cap)] = bl;
+        BlockCacheOrder.Enqueue((src, cap));
+        while (BlockCacheOrder.Count > BlockCacheMax) BlockCache.Remove(BlockCacheOrder.Dequeue());
+        return bl;
+    }
+
+    /// <summary>
+    /// 整篇排版 = 逐块排版（走缓存）+ 装配。装配做三件事：把块首距按
+    /// 「是不是第一块、上一块欠多少下内边距」加回各块首行；累出总高；
+    /// 记下最后一个有行的块从哪一行开始（<see cref="Layout.TailStart"/>，增量重画的脏区起点）。
+    /// </summary>
     private static Layout Build(string md, int cap)
     {
-        var c = new Ctx();
-        EmitBlocks(c, new Parser(SplitLines(md)).Blocks(), 0, cap);
+        var parser = new Parser(SplitLines(md));
+        var blocks = parser.Blocks();
+        var srcs = parser.Sources;
 
         var lay = new Layout();
-        lay.Lines.AddRange(c.Lines);
-        lay.Height = c.Y;
-        lay.Wrapped = c.Wrapped || c.FullWidth;
+        float padBelow = 0f;
+        bool first = true, fullWidth = false;
 
-        if (c.FullWidth) lay.Width = cap;
+        for (int i = 0; i < blocks.Count; i++)
+        {
+            var bl = BlockLayoutOf(blocks[i], srcs[i], cap);
+
+            // 先消费、再判空（空块也消费）：上一块欠的下内边距属于「本块之前」这段空隙，
+            // 空块不占行，这段空隙就跟它一起消掉 —— 与逐块直排时 Sp 的行为逐字一致。
+            float lead = first ? 0f : bl.Lead + padBelow;
+            padBelow = bl.PadBelow;
+            if (bl.Lines.Count == 0) continue;
+
+            lay.TailStart = lay.Lines.Count;
+
+            // 块首距落在首行身上（类注释第三条）。缓存里的行是跨条目共享的，不能原地改 ——
+            // 需要非零的距时复制一个壳，Runs / Decors 照样共享（绘制对它们只读）。
+            var l0 = bl.Lines[0];
+            if (lead > 0f)
+            {
+                var head = new PhysLine
+                {
+                    Indent = l0.Indent,
+                    Pitch = l0.Pitch,
+                    LineHeight = l0.LineHeight,
+                    Base = l0.Base,
+                    TextShift = l0.TextShift,
+                    SpaceBefore = l0.SpaceBefore + lead,
+                };
+                head.Runs.AddRange(l0.Runs);
+                head.Decors.AddRange(l0.Decors);
+                lay.Lines.Add(head);
+            }
+            else lay.Lines.Add(l0);
+            for (int j = 1; j < bl.Lines.Count; j++) lay.Lines.Add(bl.Lines[j]);
+
+            lay.Height += lead + bl.Height;
+            lay.Wrapped |= bl.Wrapped;
+            fullWidth |= bl.FullWidth;
+            first = false;
+        }
+
+        lay.Wrapped |= fullWidth;
+        if (fullWidth) lay.Width = cap;
         else
         {
             float mx = 0;
-            foreach (var pl in c.Lines) mx = Math.Max(mx, ExtentOf(pl));
+            foreach (var pl in lay.Lines) mx = Math.Max(mx, ExtentOf(pl));
             lay.Width = Math.Min(cap, Math.Max(40f, mx));
         }
         return lay;
@@ -1900,7 +2199,11 @@ internal static class Markdown
     /// 每一步都走 <see cref="PhysLine.Advance"/>。
     /// </summary>
     /// <param name="bubble">画在哪个气泡上。装饰色要相对它来混，见 <see cref="Palette"/>。</param>
-    public static float Draw(Graphics g, Layout lay, float x, float y, Color bubble)
+    /// <param name="fromLine">
+    /// 只画从这一行起的部分（增量重画用，见 MessageBubble.Paint）。它之前的行一个像素都不碰，
+    /// 但行的 y 坐标仍然从头累加 —— 返回值与完整绘制完全相同。
+    /// </param>
+    public static float Draw(Graphics g, Layout lay, float x, float y, Color bubble, int fromLine = 0)
     {
         // 分两遍画，因为这两遍**对 Graphics 的用法互斥**（见下面的 HeldDc）。
         //
@@ -1919,7 +2222,7 @@ internal static class Markdown
         //
         // 必须整遍跑完再动文字：第二遍要把 HDC 借出来攥着不放，而那个 Graphics
         // 在此期间是**不能用**的。
-        for (int i = 0; i < lay.Lines.Count; i++)
+        for (int i = fromLine; i < lay.Lines.Count; i++)
         {
             var pl = lay.Lines[i];
             float top = tops[i];
@@ -1927,16 +2230,28 @@ internal static class Markdown
 
             foreach (var d in pl.Decors)
             {
-                if (d.Fill == Ink.None) continue;
                 var rc = new RectangleF(x + d.Rect.X, ttop + d.Rect.Y, d.Rect.Width, d.Rect.Height);
                 if (rc.Width <= 0 || rc.Height <= 0) continue;
-                using var br = new SolidBrush(Palette.Of(d.Fill, bubble));
-                if (d.Radius > 0)
+                if (d.Fill != Ink.None)
                 {
-                    using var path = Rounded(rc, d.Radius);
-                    g.FillPath(br, path);
+                    using var br = new SolidBrush(Palette.Of(d.Fill, bubble));
+                    if (d.Radius > 0)
+                    {
+                        using var path = Rounded(rc, d.Radius);
+                        g.FillPath(br, path);
+                    }
+                    else g.FillRectangle(br, rc);
                 }
-                else g.FillRectangle(br, rc);
+                if (d.Stroke != Ink.None)
+                {
+                    using var pen = new Pen(Palette.Of(d.Stroke, bubble), d.StrokeW);
+                    if (d.Radius > 0)
+                    {
+                        using var path = Rounded(rc, d.Radius);
+                        g.DrawPath(pen, path);
+                    }
+                    else g.DrawRectangle(pen, rc.X, rc.Y, rc.Width, rc.Height);
+                }
             }
 
             float runX = x + pl.Indent;
@@ -1988,7 +2303,7 @@ internal static class Markdown
         // 这条在 DrawReason 的注释里已经写过一遍。
         using (var dc = new HeldDc(g))
         {
-            for (int i = 0; i < lay.Lines.Count; i++)
+            for (int i = fromLine; i < lay.Lines.Count; i++)
             {
                 var pl = lay.Lines[i];
                 float top = tops[i];
@@ -2021,7 +2336,7 @@ internal static class Markdown
         //
         // 删除线要横穿字形才叫删除线，压到字底下就等于没有（下划线差得没这么明显，
         // 但它在旧版里也是画在字上面，没有理由在这里改）。所以它不能并进第一遍。
-        for (int i = 0; i < lay.Lines.Count; i++)
+        for (int i = fromLine; i < lay.Lines.Count; i++)
         {
             var pl = lay.Lines[i];
             float top = tops[i] + pl.TextShift;

@@ -85,4 +85,11 @@ internal static class Win32
 
     [DllImport("gdi32.dll", EntryPoint = "GetTextMetricsW")]
     public static extern bool GetTextMetrics(IntPtr hdc, out TEXTMETRICW tm);
+
+    // 定时器分辨率（动画时钟用，见 MainForm.Sidebar.cs 的 SideClockBegin/End）
+    [DllImport("winmm.dll")]
+    public static extern uint timeBeginPeriod(uint uMilliseconds);
+
+    [DllImport("winmm.dll")]
+    public static extern uint timeEndPeriod(uint uMilliseconds);
 }

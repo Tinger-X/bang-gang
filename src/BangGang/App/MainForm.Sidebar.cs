@@ -13,6 +13,11 @@ partial class MainForm
     /// 收起 / 展开左侧栏。宽度不是一下跳过去的：<see cref="_sideTimer"/> 每帧把
     /// <see cref="_sideW"/> 往目标推掉剩余距离的一部分，走一条缓出曲线。
     /// 图标在这一刻就翻转（而不是等动画结束），点下去马上有反馈。
+    ///
+    /// 动画起步前先把系统定时器分辨率提到 1ms（<see cref="SideClockBegin"/>）：
+    /// WM_TIMER 的实际节拍受系统分辨率钳制，默认 15.6ms 下 18ms 的间隔会滑成 ~31ms
+    /// 一拍 —— 每帧画得再快（实测 <1ms），画面上也只有 ~30fps 且节拍抖动，
+    /// 「侧栏动画卡」的体感主要来自这里，不是来自绘制。
     /// </summary>
     private void ToggleSidebar()
     {
@@ -20,7 +25,25 @@ partial class MainForm
         _sideTarget = collapse ? 0 : SideW;
         _btnSideToggle.Icon = collapse ? IconButton.Kind.Expand : IconButton.Kind.Collapse;
         _btnSideToggle.Invalidate();
+        SideClockBegin();
         _sideTimer.Start();                          // 重复点只是换目标，不会叠出第二个动画
+    }
+
+    // 动画期间持有 timeBeginPeriod(1) 的证据；Begin/End 必须成对，重复点不能重复 Begin。
+    private bool _sideHiRes;
+
+    private void SideClockBegin()
+    {
+        if (_sideHiRes) return;
+        _sideHiRes = true;
+        Win32.timeBeginPeriod(1);
+    }
+
+    private void SideClockEnd()
+    {
+        if (!_sideHiRes) return;
+        _sideHiRes = false;
+        Win32.timeEndPeriod(1);
     }
 
     private void SideTick()
@@ -33,6 +56,7 @@ partial class MainForm
         {
             _sideW = _sideTarget;
             _sideTimer.Stop();
+            SideClockEnd();
         }
         else
         {
@@ -59,6 +83,7 @@ partial class MainForm
     {
         if (_sideTarget > 0) return;
         _sideTimer.Stop();
+        SideClockEnd();
         _sideTarget = SideW;
         _sideW = SideW;
         _btnSideToggle.Icon = IconButton.Kind.Collapse;

@@ -182,6 +182,16 @@ internal sealed class MessageBubble
     private Bitmap? _cache;
     private int _cacheW, _cacheH;
 
+    // ---- 缓存里烘着的是哪一版内容（增量重画的判据，见 Paint）----
+    // 不能只记「上一版排版」：气泡滚出屏幕时 Paint 不会被调，缓存会落后好几个版本。
+    // 代际号也不能省：行内多出一个词时宽高都可能不变，尺寸对不上号的旧缓存要靠它认出。
+    private int _seq;
+    private Markdown.Layout? _cacheMd;
+    private int _cacheSeq = -1;
+    private float _cacheReasonH, _cacheWarnH;
+    private bool _cacheShowWait;
+    private int _cacheReasonLen = -1, _cacheReasonMs = -1;
+
     public MessageBubble(ChatMessage msg, bool isUser)
     {
         Msg = msg;
@@ -270,6 +280,8 @@ internal sealed class MessageBubble
     /// <summary>依据消息重建内部布局并计算气泡尺寸（附件区在上、气泡体在下）。</summary>
     private void Rebuild()
     {
+        _seq++;     // 内容代际 +1：尺寸没变的追加（行内又多了一个词）靠它认出缓存已旧
+
         // 正文取一次存成局部变量，后面都读它。
         //
         // 两个理由。一是**确实可能是 null**：消息是从磁盘上的 JSON 反序列化回来的，
@@ -355,7 +367,9 @@ internal sealed class MessageBubble
 
         // 重排后悬浮下标可能指到了另一格上（甚至指到了不存在的下标）
         if (_hover >= _chips.Count) _hover = -1;
-        DropCache();
+        // 位图缓存**不在这里扔**：流式回复的增量重画（见 Paint）要拿旧缓存对比、把没动过的
+        // 前缀像素直接搬过来。真正需要整幅重画的那些变化（主题、悬浮、等待动画的每一帧）
+        // 各自调 DropCache。
     }
 
     /// <summary>
@@ -497,6 +511,7 @@ internal sealed class MessageBubble
         {
             // 指针形状不改（用户要求），所以「这一行能点」只能靠悬浮时文字变个颜色来暗示
             _reasonHover = overHead;
+            DropCache();        // 缓存里烘着的是没悬浮的样子，不扔的话悬浮反馈永远不画
             Repaint?.Invoke();
         }
 
@@ -504,6 +519,7 @@ internal sealed class MessageBubble
         int i = ChipAt(p);
         if (i == _hover) return;
         _hover = i;
+        DropCache();
         Repaint?.Invoke();
     }
 
@@ -513,7 +529,7 @@ internal sealed class MessageBubble
         bool dirty = _hover >= 0 || _reasonHover;
         _hover = -1;
         _reasonHover = false;
-        if (dirty) Repaint?.Invoke();
+        if (dirty) { DropCache(); Repaint?.Invoke(); }
     }
 
     /// <summary>在本气泡上松开左键。</summary>
@@ -521,7 +537,40 @@ internal sealed class MessageBubble
     {
         if (ReasonHeadAt(p)) { ToggleReason(); return; }
         int i = ChipAt(p);
-        if (i >= 0) ImagePressed?.Invoke(_chips[i].Src);
+        if (i >= 0) { ImagePressed?.Invoke(_chips[i].Src); return; }
+
+        // 链接：排版时挂到 Run 上的地址（Markdown 的 ScanInline），打开走 Ui.OpenLink
+        // 那条白名单（只 http/https）。打不开不说什么 —— 状态条是输入区那条通道，够不着这里。
+        string? link = LinkAt(p);
+        if (link != null) Ui.OpenLink(link);
+    }
+
+    /// <summary>
+    /// 点中的那段链接的地址，没点中是 null。
+    ///
+    /// 位置是**当场**按排版结果重算的（与 Markdown.Draw 的累加逐行对应），不落一张命中表
+    /// —— 排版结果自己就是那张表，再抄一份出来早晚会和它岔开（流式期间它 40ms 就换一版）。
+    /// </summary>
+    private string? LinkAt(Point p)
+    {
+        if (_md == null || _showWait || !_bubbleBody) return null;
+        float y = BodyTop();
+        foreach (var pl in _md.Lines)
+        {
+            float top = y + pl.SpaceBefore;
+            y = top + pl.Pitch;
+            if (p.Y < top || p.Y >= y) continue;
+
+            float runX = PadX + pl.Indent;
+            foreach (var r in pl.Runs)
+            {
+                float at = r.X >= 0 ? PadX + r.X : runX;
+                if (r.Link != null && p.X >= at && p.X < at + r.Advance) return r.Link;
+                if (r.X < 0) runX += r.Advance;
+            }
+            return null;    // 已经落在这一行里：这一行没有链接就是没点中，别再扫后面的行
+        }
+        return null;
     }
 
     // ---------------- 绘制 ----------------
@@ -548,22 +597,89 @@ internal sealed class MessageBubble
     {
         if (Width <= 0 || Height <= 0) return;
 
-        if (_cache == null || _cacheW != Width || _cacheH != Height)
+        if (_cache == null || _cacheSeq != _seq || _cacheW != Width || _cacheH != Height)
         {
-            DropCache();
+            // 增量重画（流式回复的主路）：宽度没变、旁白（思考块 / 截断说明 / 等待动画 /
+            // 思考耗时标签）一样没动、而且最后一个块之前的所有行逐行相同 —— 那前缀的像素
+            // 就是旧缓存里的那一份，搬过来就行，只有最后一个块要重画。
+            // 流式期间这条路每 40ms 走一次，省掉的是「每 40ms 把整条消息重画一遍」
+            // （实测一条 4200 字的回复全量要 ~139ms，这条路上只剩最后一个块）。
+            //
+            // 脏区边界取在**块边界**上（Layout.TailStart）：面板型块的装饰（代码块底、
+            // 引用竖线）从首行往上退一圈内边距，跨块边界的缝只有这里切得干净。
+            int from = 0;
+            var old = _cache;
+            var md = _md;     // 取一次存成局部变量：跨语句之后编译器的流分析就丢了（CS8602）
+            if (old != null && _cacheW == Width && md != null && _cacheMd != null
+                && _cacheReasonH == _reasonH && _cacheWarnH == _warnH
+                && !_cacheShowWait && !_showWait
+                && _cacheReasonLen == (Msg.Reasoning ?? "").Length
+                && _cacheReasonMs == Msg.ReasoningMs)
+            {
+                int limit = Math.Min(_cacheMd.TailStart, md.TailStart);
+                int p = 0;
+                while (p < limit && SameLine(_cacheMd.Lines[p], md.Lines[p])) p++;
+                if (p == limit) from = limit;   // 前缀整块稳定才走增量，否则老老实实全画
+            }
+
             var bmp = new Bitmap(Width, Height, PixelFormat.Format32bppPArgb);
             using (var bg = Graphics.FromImage(bmp))
             {
                 bg.SmoothingMode = SmoothingMode.AntiAlias;
                 bg.TextRenderingHint = System.Drawing.Text.TextRenderingHint.AntiAlias;
-                bg.Clear(Color.Transparent);
-                Render(bg);
+                if (from > 0 && old != null && md != null)
+                {
+                    float dirtyY = BodyTop();
+                    for (int i = 0; i < from; i++) dirtyY += md.Lines[i].Advance;
+                    int keep = Math.Min(Math.Max(0, (int)MathF.Floor(dirtyY)), Height);
+                    if (keep > 0)
+                    {
+                        // 1:1 搬稳定前缀（PixelOffsetMode 的理由同 Blit）
+                        bg.PixelOffsetMode = PixelOffsetMode.HighQuality;
+                        bg.DrawImage(old, new Rectangle(0, 0, Width, keep),
+                                     new Rectangle(0, 0, Width, keep), GraphicsUnit.Pixel);
+                    }
+                    bg.SetClip(new Rectangle(0, keep, Width, Height - keep));
+                    Render(bg, from);
+                }
+                else
+                {
+                    bg.Clear(Color.Transparent);
+                    Render(bg, 0);
+                }
             }
+            old?.Dispose();
             // 太高的不留缓存，但**这一帧仍然要走位图**（见上面的注释）—— 画完就扔。
-            if (Height <= CacheMaxH) { _cache = bmp; _cacheW = Width; _cacheH = Height; }
+            if (Height <= CacheMaxH)
+            {
+                _cache = bmp; _cacheW = Width; _cacheH = Height;
+                _cacheSeq = _seq;
+                _cacheMd = _md; _cacheReasonH = _reasonH; _cacheWarnH = _warnH;
+                _cacheShowWait = _showWait;
+                _cacheReasonLen = (Msg.Reasoning ?? "").Length;
+                _cacheReasonMs = Msg.ReasoningMs;
+            }
             else { Blit(g, bmp, at); bmp.Dispose(); return; }
         }
         Blit(g, _cache!, at);
+    }
+
+    /// <summary>
+    /// 两版排版里同一行是否逐像素一致。引用相等走快路（块级排版缓存让没动过的块
+    /// **跨版本共享同一个 <see cref="Markdown.PhysLine"/> 实例**，流式期间前缀全是这条路）；
+    /// 首行因块首距被复制过壳（见 Markdown.Build），逐字段比，Runs / Decors 按引用比 ——
+    /// 复制壳时它们也是共享的，内容不同必然引用不同。
+    /// </summary>
+    private static bool SameLine(Markdown.PhysLine a, Markdown.PhysLine b)
+    {
+        if (ReferenceEquals(a, b)) return true;
+        if (a.Pitch != b.Pitch || a.SpaceBefore != b.SpaceBefore || a.Indent != b.Indent
+            || a.LineHeight != b.LineHeight || a.Base != b.Base || a.TextShift != b.TextShift)
+            return false;
+        if (a.Runs.Count != b.Runs.Count || a.Decors.Count != b.Decors.Count) return false;
+        for (int i = 0; i < a.Runs.Count; i++) if (!ReferenceEquals(a.Runs[i], b.Runs[i])) return false;
+        for (int i = 0; i < a.Decors.Count; i++) if (!ReferenceEquals(a.Decors[i], b.Decors[i])) return false;
+        return true;
     }
 
     /// <summary>
@@ -578,8 +694,9 @@ internal sealed class MessageBubble
         g.PixelOffsetMode = off;
     }
 
-    /// <summary>在局部坐标 (0,0) 起把整条消息画出来。</summary>
-    private void Render(Graphics g)
+    /// <summary>在局部坐标 (0,0) 起把整条消息画出来。<paramref name="fromLine"/> 是增量重画的
+    /// 正文起始行（见 Paint），附件与「帮帮」那几段在增量时已被裁掉，画不画无所谓。</summary>
+    private void Render(Graphics g, int fromLine)
     {
         Color bg = IsUser ? Theme.UserBubble : Theme.AsstBubble;
 
@@ -612,7 +729,7 @@ internal sealed class MessageBubble
         // 加漏一段（比如思考块）就会被正文盖住，而且只错几个像素，很难看出来。
         float y = BodyTop();
         if (_showWait) y += DrawWait(g, y, bg);
-        else if (_md != null) y = Markdown.Draw(g, _md, x, y, bg);
+        else if (_md != null) y = Markdown.Draw(g, _md, x, y, bg, fromLine);
         if (_warnH > 0) DrawWarning(g, y + WarnGap, bg);
     }
 
