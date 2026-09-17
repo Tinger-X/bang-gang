@@ -72,7 +72,7 @@ public class AppSettings
     // ---------- 对话参数（每次请求都带上，见 ChatPage） ----------
     /// <summary>采样温度，0–2。越低越确定，越高越发散。</summary>
     public double ChatTemperature { get; set; } = 0.7;
-    /// <summary>单次回复的 token 上限。</summary>
+    /// <summary>单次回复的 token 上限；<b>0 = 不限</b>（请求不带 max_tokens，见 <see cref="LlmConfig.MaxTokens"/>）。</summary>
     public int ChatMaxTokens { get; set; } = 2048;
     /// <summary>系统提示词（每次对话都放在最前面）。留空表示不发送这一段。</summary>
     public string ChatSystemPrompt { get; set; } = "";

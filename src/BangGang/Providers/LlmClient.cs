@@ -25,6 +25,8 @@ internal sealed class LlmConfig
     public string Model = "";
     public bool Vision = true;
     public double Temperature = 0.7;
+
+    /// <summary>单次回复的 token 上限；<b>0 = 不限</b>（请求里干脆不带 max_tokens，由模型自己决定）。</summary>
     public int MaxTokens = 2048;
     public string SystemPrompt = "";
     public string Reinforce = "";
@@ -36,7 +38,7 @@ internal sealed class LlmConfig
         {
             Vision = s.ChatVision,
             Temperature = Math.Clamp(s.ChatTemperature, 0, 2),
-            MaxTokens = Math.Clamp(s.ChatMaxTokens, 1, 1_000_000),
+            MaxTokens = Math.Clamp(s.ChatMaxTokens, 0, 1_000_000),
             SystemPrompt = s.ChatSystemPrompt ?? "",
             Reinforce = s.ChatReinforce ?? "",
         };
@@ -135,9 +137,10 @@ internal static class LlmClient
             ["model"] = cfg.Model,
             ["stream"] = true,
             ["temperature"] = cfg.Temperature,
-            ["max_tokens"] = cfg.MaxTokens,
             ["messages"] = BuildMessages(cfg, history),
         };
+        // 0 = 不限：干脆不带这个字段。带上 0 会被接口读成「一个 token 都不许回」。
+        if (cfg.MaxTokens > 0) body["max_tokens"] = cfg.MaxTokens;
 
         using var req = new HttpRequestMessage(HttpMethod.Post, cfg.Endpoint);
         if (cfg.ApiKey.Length > 0)

@@ -113,7 +113,12 @@ internal static class OfflineRender
                 string what = r.Math != null
                     ? $"MATH {r.Math.Width}x{r.Math.Height}+{r.Math.Depth} prims={r.Math.Prims.Count}"
                     : "\"" + (r.Text.Length > 60 ? r.Text[..60] + "..." : r.Text) + "\"";
-                Console.WriteLine($"      x={at} w={r.Width} adv={r.Advance} {what}");
+                // 线状装饰（删除线 / 下划线）从截图上只能看出「有一笔」，看不出是哪个 run 的
+                // 哪个标记 —— 线画错了位置时先来这里对旗标。
+                string fl = (r.Strike ? " STRIKE" : "") + (r.Underline ? " UNDER" : "")
+                          + (r.Link != null ? " LINK" : "")
+                          + (r.PadL > 0 ? $" PADL{r.PadL}" : "") + (r.PadR > 0 ? $" PADR{r.PadR}" : "");
+                Console.WriteLine($"      x={at} w={r.Width} adv={r.Advance} {what}{fl}");
                 if (r.Math != null && verbose) Prims(r.Math, at, cursor + ln.Base);
                 if (r.X < 0) runX += r.Advance;
             }

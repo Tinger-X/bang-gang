@@ -175,6 +175,18 @@ internal sealed class MessageBubble
     /// <summary>指针停在上面那个图片格子的序号，-1 表示没停在任何一格上。</summary>
     private int _hover = -1;
 
+    /// <summary>
+    /// 收起来的代码块的序号（<see cref="Markdown.CodeHead.Ordinal"/>）。是 Measure 的
+    /// 参数之一、也进它的缓存键 —— 「收起着」和「展开着」是两份不同的排版。
+    /// </summary>
+    private readonly HashSet<int> _codeFolded = new();
+
+    /// <summary>指针悬停的代码块头部按钮：块序号 + 哪个钮（0=复制，1=收展）。-1 = 没悬停。</summary>
+    private int _codeHotOrd = -1, _codeHotBtn = -1;
+
+    /// <summary>刚复制成功的代码块序号：复制图标短暂换成勾，1.2 秒后还回去。</summary>
+    private int _codeCopiedOrd = -1;
+
     public MessageBubble(ChatMessage msg, bool isUser)
     {
         Msg = msg;
@@ -293,7 +305,7 @@ internal sealed class MessageBubble
         int chipsH = LayoutChips(_bubbleBody ? PadX : 0);
         _bubbleTop = chipsH == 0 ? 0 : chipsH + (_bubbleBody ? AttachGap : 0);
 
-        _md = Markdown.Measure(text, _inner);
+        _md = Markdown.Measure(text, _inner, _codeFolded.Count > 0 ? _codeFolded : null);
         MeasureReason(reason);
         _warnH = warn.Length > 0 ? WarnBoxH(warn) + WarnGap : 0;
 
@@ -487,6 +499,15 @@ internal sealed class MessageBubble
             Repaint?.Invoke();
         }
 
+        // 代码块头部按钮：同上，悬浮变色是唯一的「能点」暗示
+        var cb = CodeBtnAt(p);
+        if (cb.Ord != _codeHotOrd || cb.Btn != _codeHotBtn)
+        {
+            _codeHotOrd = cb.Ord;
+            _codeHotBtn = cb.Btn;
+            Repaint?.Invoke();
+        }
+
         // 指针形状不改（用户要求），所以「这里能点」只能靠悬浮时把图压暗一点点来暗示
         int i = ChipAt(p);
         if (i == _hover) return;
@@ -497,9 +518,11 @@ internal sealed class MessageBubble
     /// <summary>指针离开本气泡。</summary>
     public void MouseLeave()
     {
-        bool dirty = _hover >= 0 || _reasonHover;
+        bool dirty = _hover >= 0 || _reasonHover || _codeHotOrd >= 0;
         _hover = -1;
         _reasonHover = false;
+        _codeHotOrd = -1;
+        _codeHotBtn = -1;
         if (dirty) Repaint?.Invoke();
     }
 
@@ -507,6 +530,15 @@ internal sealed class MessageBubble
     public void MouseUp(Point p)
     {
         if (ReasonHeadAt(p)) { ToggleReason(); return; }
+
+        var cb = CodeBtnAt(p);
+        if (cb.Ord >= 0)
+        {
+            if (cb.Btn == 1) ToggleCode(cb.Ord);
+            else CopyCode(cb.Ord);
+            return;
+        }
+
         int i = ChipAt(p);
         if (i >= 0) { ImagePressed?.Invoke(_chips[i].Src); return; }
 
@@ -514,6 +546,74 @@ internal sealed class MessageBubble
         // 那条白名单（只 http/https）。打不开不说什么 —— 状态条是输入区那条通道，够不着这里。
         string? link = LinkAt(p);
         if (link != null) Ui.OpenLink(link);
+    }
+
+    /// <summary>点收展钮：翻转这块代码的折叠态。高度变了，得让 ChatView 重排。</summary>
+    private void ToggleCode(int ord)
+    {
+        if (!_codeFolded.Remove(ord)) _codeFolded.Add(ord);
+        Rebuild();
+        Changed?.Invoke();
+    }
+
+    /// <summary>
+    /// 点复制钮：把这块代码的**原文**（不是着色后的那一串 Run）写进剪贴板。
+    /// 成功了图标短暂换成一个勾（1.2s），用 UI 线程的同步上下文定时还回去 ——
+    /// 气泡自己不养时钟（和「等待动画由 ChatView 推」是同一条规矩）。
+    /// </summary>
+    private void CopyCode(int ord)
+    {
+        if (_md == null) return;
+        foreach (var h in _md.CodeHeads)
+        {
+            if (h.Ordinal != ord) continue;
+            try { Clipboard.SetText(h.Code); Trace.Log($"code block copied ord={ord} len={h.Code.Length}"); }
+            catch (Exception ex) { Trace.Log("code block copy failed: " + ex.Message); }
+            _codeCopiedOrd = ord;
+            Repaint?.Invoke();
+            var ts = TaskScheduler.FromCurrentSynchronizationContext();
+            _ = Task.Delay(1200).ContinueWith(_ =>
+            {
+                if (_codeCopiedOrd != ord) return;
+                _codeCopiedOrd = -1;
+                Repaint?.Invoke();
+            }, ts);
+            return;
+        }
+    }
+
+    // ---- 代码块头部按钮的几何 ----
+
+    private const float CodeBtnBox = 22f;    // 命中框（图标本身只有 13px，按的地方要大一圈）
+    private const float CodeBtnGap = 2f;
+    private const float CodeBtnIcon = 13f;
+
+    /// <summary>头部矩形从 markdown 局部坐标换算到气泡局部坐标。</summary>
+    private RectangleF CodeHeadLocal(Markdown.CodeHead h) =>
+        new(PadX + h.Rect.X, BodyTop() + h.Rect.Y, h.Rect.Width, h.Rect.Height);
+
+    private static RectangleF FoldBtnRect(RectangleF head) =>
+        new(head.Right - 8 - CodeBtnBox, head.Y + (head.Height - CodeBtnBox) / 2f, CodeBtnBox, CodeBtnBox);
+
+    private static RectangleF CopyBtnRect(RectangleF head)
+    {
+        var f = FoldBtnRect(head);
+        return new RectangleF(f.X - CodeBtnGap - CodeBtnBox, f.Y, CodeBtnBox, CodeBtnBox);
+    }
+
+    /// <summary>点中的代码块头部按钮（块序号 + 0=复制 / 1=收展），没点中是 (-1, -1)。</summary>
+    private (int Ord, int Btn) CodeBtnAt(Point p)
+    {
+        if (_md == null || _showWait || !_bubbleBody) return (-1, -1);
+        foreach (var h in _md.CodeHeads)
+        {
+            var hr = CodeHeadLocal(h);
+            if (p.Y < hr.Top || p.Y >= hr.Bottom) continue;
+            if (FoldBtnRect(hr).Contains(p)) return (h.Ordinal, 1);
+            if (CopyBtnRect(hr).Contains(p)) return (h.Ordinal, 0);
+            return (-1, -1);    // 落在这一行头部里了：不是按钮就是没点中，别再扫后面的块
+        }
+        return (-1, -1);
     }
 
     /// <summary>
@@ -596,12 +696,49 @@ internal sealed class MessageBubble
 
             float y = BodyTop();
             if (_showWait) DrawWait(g, y, bg);
-            else if (_md != null) Markdown.DrawBack(g, _md, PadX, y, bg, vt, vb);
+            else if (_md != null)
+            {
+                Markdown.DrawBack(g, _md, PadX, y, bg, vt, vb);
+                DrawCodeHeads(g, bg, vt, vb);
+            }
             if (_warnH > 0) DrawWarningBack(g, bg, vt, vb);
         }
 
         g.Restore(state);
     }
+
+    /// <summary>
+    /// 代码块头部的两个按钮（复制 / 收展），第一遍画（GDI+、气泡局部坐标）。
+    /// 头部行本身（语言标签那行字）是排版出来的；按钮是**界面**，不归排版管 ——
+    /// 排版只登记了头部矩形（<see cref="Markdown.Layout.CodeHeads"/>），图标在这里画。
+    /// </summary>
+    private void DrawCodeHeads(Graphics g, Color bubble, float vt, float vb)
+    {
+        if (_md == null || _md.CodeHeads.Count == 0) return;
+        // 复制图标里「前面那张纸」要拿面板底色填掉（见 Gfx 的 Copy），
+        // 底色必须和面板同出一个出处。
+        Color panel = Markdown.InkColor(Markdown.Ink.CodePanel, bubble);
+
+        foreach (var h in _md.CodeHeads)
+        {
+            var hr = CodeHeadLocal(h);
+            if (hr.Bottom < vt || hr.Top > vb) continue;
+
+            var copyBox = CenterIcon(CopyBtnRect(hr));
+            Color ci = _codeHotOrd == h.Ordinal && _codeHotBtn == 0 ? Theme.Accent : Theme.TextMuted;
+            if (_codeCopiedOrd == h.Ordinal) Gfx.DrawGlyph(g, Glyph.Check, copyBox, Theme.Accent);
+            else Gfx.DrawGlyph(g, Glyph.Copy, copyBox, ci, 1.3f, panel);
+
+            var foldBox = CenterIcon(FoldBtnRect(hr));
+            Color fi = _codeHotOrd == h.Ordinal && _codeHotBtn == 1 ? Theme.Accent : Theme.TextMuted;
+            Gfx.DrawGlyph(g, h.Folded ? Glyph.ChevRight : Glyph.ChevDown, foldBox, fi, 1.6f);
+        }
+    }
+
+    /// <summary>把 22px 的命中框收成居中的 13px 图标框。</summary>
+    private static RectangleF CenterIcon(RectangleF hit) =>
+        new(hit.X + (hit.Width - CodeBtnIcon) / 2f, hit.Y + (hit.Height - CodeBtnIcon) / 2f,
+            CodeBtnIcon, CodeBtnIcon);
 
     /// <summary>
     /// 第二遍：所有文字，走 ChatView 攥住的那一个 HDC（GDI 文本不认平移变换，
@@ -645,15 +782,16 @@ internal sealed class MessageBubble
     /// 位置一个像素都不挪。靠位移的话每一帧整条气泡的观感都在抖，
     /// 而这个程序里因为「动画里跟着动的东西」栽过的次数已经不止一次（见 CLAUDE.md）。
     ///
-    /// 点画在内宽的正中：气泡的宽度是内容撑出来的，靠左会在右边留一大块空的。
+    /// 点画在正文这一行的**左缘**（用户要求，0.9.4）：等待中的气泡是满宽的（见
+    /// <see cref="Rebuild"/> 里 _showWait 那条），居中会让点悬在一大片空白中间，
+    /// 而用户的眼睛那时正盯着左上角 —— 答案的第一个字也将落在那里。
     /// </summary>
     private void DrawWait(Graphics g, float top, Color bubble)
     {
         float pitch = Markdown.BodyLinePitch();
         const int n = 3;
         const float r = 3.5f, gap = 8f;
-        float total = n * r * 2 + (n - 1) * gap;
-        float left = PadX + Math.Max(0f, (_inner - total) / 2f);
+        float left = PadX + r;
         float cy = top + pitch / 2f;
 
         for (int i = 0; i < n; i++)

@@ -422,9 +422,16 @@ internal static class MathLayout
         {
             var (st, sb) = InkOf(sup);
             // 上标的墨迹下缘抬到基线以上约 0.42em（就是 x-height 稍高一点的位置）；
-            // base 自己很高时（分数、根式、大运算符）改成骑在它的墨迹上。两条取更靠上的那个，
-            // 于是「矮 base 用固定抬升、高 base 自动让位」是同一条式子的两个分支。
-            float want = MathF.Min(-0.42f * size, bt - size * 0.06f);
+            // base 自己很高时（分数、根式、大运算符）改成骑在它的墨迹上沿再往下
+            // 压 0.25em（TeX 的 sup_drop：上标嵌进高 base 的顶部一点，不是悬在它头顶上）。
+            // 两条取更靠上的那个，于是「矮 base 用固定抬升、高 base 自动让位」是同一条
+            // 式子的两个分支。
+            //
+            // 第二条的写法**必须是 `bt + 0.25em`（往下压），不能是「墨迹上沿再往上一点」
+            // （bt - 0.06em 之类）：n 这种小写字母的墨迹上沿只有约 0.55em，比固定抬升
+            // 的 0.42em 高不了多少，「再往上一点」会让上标整个悬到 n 的头顶上方 ——
+            // `\(O(n^2)\)` 里的 ² 就是这么飘上去的（0.9.4 修）。
+            float want = MathF.Min(-0.42f * size, bt + 0.25f * size);
             float supBase = want - sb;
             Append(box, sup, b.Width + kern, supBase);
             colW = MathF.Max(colW, sup.Width);

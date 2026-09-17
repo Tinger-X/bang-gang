@@ -319,6 +319,10 @@ partial class MainForm
     /// </summary>
     private static string TruncationNote(LlmConfig cfg, LlmStreamResult res, ChatMessage msg)
     {
+        // 设了「不限」时请求里根本没有 max_tokens，还收到 length 就是服务商 / 模型自己的上限，
+        // 「调大设置」这句话对它不成立。
+        if (cfg.MaxTokens <= 0)
+            return "回复被截断：本次请求没有设长度上限，是服务商或模型自身的上限到了。";
         string s = $"回复被长度上限截断：单次最多 {cfg.MaxTokens} tokens，已经用完。";
         if (res.ReasoningTokens > 0)
             s += $"其中思考占了 {res.ReasoningTokens} tokens —— 推理模型的思考也算在这个上限里。";

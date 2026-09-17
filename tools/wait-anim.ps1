@@ -170,6 +170,20 @@ function Get-BandSum([int]$x, [int]$y, [int]$w, [int]$h) {
     return $sum
 }
 
+# Same metric as Get-BandSum but on an ALREADY-CAPTURED bitmap. The arrival poll needs
+# the darkness and the pixel-diff of the SAME frame -- a second capture could land on a
+# different animation phase and the two readings would no longer agree about anything.
+function Get-CropSum($bmp) {
+    $sum = 0
+    for ($j = 0; $j -lt $bmp.Height; $j++) {
+        for ($i = 0; $i -lt $bmp.Width; $i++) {
+            $c = $bmp.GetPixel($i, $j)
+            $sum += (255 - $c.R) + (255 - $c.G) + (255 - $c.B)
+        }
+    }
+    return $sum
+}
+
 # How many pixels of two same-sized crops differ, which is the question "did this strip
 # change" actually asked. A still frame gives exactly 0 -- not "a small number".
 function Get-PixelDiff($a, $b) {
@@ -197,23 +211,29 @@ function Get-AsstRow {
 # The line the dots are drawn on: the LAST body line inside the bubble -- one pitch up
 # from the bottom edge, minus the bottom padding. Three strips on it:
 #
-#   Mid   the middle of the row, where DrawWait centres the three dots
-#   Left  the left edge of the content area, where the first character of the answer lands
-#   Ref   the far right of the content area -- bare bubble background, both before and
-#         after the token (the answer is one short line and cannot reach it)
+#   Dots  the left edge of the content area, where DrawWait draws the three dots
+#         (left-aligned since 0.9.4) -- and where the first character of the answer
+#         lands. Animation AND arrival both happen on this one strip.
+#   Mid   the middle of the row -- bare while waiting (the dots are no longer here),
+#         so it pairs with Ref for the "the line is bare apart from the dots" check
+#   Ref   the far right of the content area -- bare bubble background while waiting
 #
 # Ref exists because "is this strip bare" has no absolute answer: how much darkness a bare
 # strip has depends on the bubble's own colour, which is a theme away from being different.
 # Reading the three together makes it a comparison against a strip of the SAME bubble on
 # the SAME line that is known to be empty, which is what the question actually is.
+#
+# Ref is never read AFTER the token lands: the bubble then shrinks to hug the answer,
+# and a strip hung off the new right edge could land on the answer text itself.
+# Text-presence is instead checked against the strip's own dots-only sum from the
+# waiting phase (the brightness rotation keeps that sum invariant, see Get-BandSum).
 function Get-WaitBands($r) {
     $y = $r.T + $r.H - $PADY - $PITCH
     return @{
         Y     = $y
         H     = $PITCH
-        MidX  = $r.L + [int]($r.W / 2) - 48
-        MidW  = 96
-        LeftX = $r.L + 14
+        DotsX = $r.L + 14
+        MidX  = $r.L + [int]($r.W / 2) - 85
         RefX  = $r.L + $r.W - 14 - 170
         W     = 170
     }
@@ -221,8 +241,8 @@ function Get-WaitBands($r) {
 
 function Get-WaitSums($b) {
     return @{
-        Mid  = Get-BandSum $b.MidX $b.Y $b.MidW $b.H
-        Left = Get-BandSum $b.LeftX $b.Y $b.W $b.H
+        Dots = Get-BandSum $b.DotsX $b.Y $b.W $b.H
+        Mid  = Get-BandSum $b.MidX $b.Y $b.W $b.H
         Ref  = Get-BandSum $b.RefX $b.Y $b.W $b.H
     }
 }
@@ -233,14 +253,13 @@ $script:h1 = 0
 $script:sameOrigin = $false
 $script:rect0 = ''
 $script:rect1 = ''
-$script:midA = $null
-$script:midB = $null
-$script:midC = $null
-$script:midD = $null
+$script:dotsA = $null
+$script:dotsB = $null
+$script:dotsC = $null
+$script:dotsD = $null
 $script:waitA = $null
 $script:waitB = $null
 $script:afterA = $null
-$script:afterB = $null
 $script:waitedMs = -1
 
 try {
@@ -286,13 +305,13 @@ try {
         $script:bands = Get-WaitBands $script:r0
 
         $script:waitA = Get-WaitSums $script:bands
-        $script:midA = Get-Crop $script:bands.MidX $script:bands.Y $script:bands.MidW $script:bands.H
+        $script:dotsA = Get-Crop $script:bands.DotsX $script:bands.Y $script:bands.W $script:bands.H
         Save-WindowShot $main (Get-ShotPath 'wait-anim-waiting.png')
 
         # ---- B. those dots move ----
         Start-Sleep -Milliseconds 300
         $script:waitB = Get-WaitSums $script:bands
-        $script:midB = Get-Crop $script:bands.MidX $script:bands.Y $script:bands.MidW $script:bands.H
+        $script:dotsB = Get-Crop $script:bands.DotsX $script:bands.Y $script:bands.W $script:bands.H
 
         # ---- D (first half). the first character shows up, eventually ----
         #
@@ -300,17 +319,37 @@ try {
         # how long the app takes to get the request out is not part of the measurement,
         # and a fixed sleep would either be slack or be a race.
         #
-        # The arrival test is "the left strip stopped looking like the reference strip":
-        # while waiting, both are bare bubble background; once the answer starts, only
-        # the left one has glyphs on it. Comparing against the bubble's own background
-        # rather than against a fixed darkness is what makes this survive a theme change.
+        # The arrival test is two conditions on the SAME frame:
+        #
+        #   1. the dot strip STOPPED CHANGING -- while waiting, the phase advances every
+        #      110ms so any two 300ms-apart reads differ; the first character kills the
+        #      animation (_showWait flips off) and the text it leaves behind is static.
+        #      Three consecutive zero-diff reads = 900ms of stillness.
+        #   2. the strip got DARKER -- text ink, not three muted dots. The dots'
+        #      darkness sum is rotation-invariant (see Get-BandSum), so it doubles as
+        #      the waiting baseline: growth past it can only be the arrived text.
+        #
+        # Neither half works alone. Stillness without darkness fires mid-animation: a
+        # 1s+ repaint pause was actually observed once (the poll then "detected arrival"
+        # at 2942ms of a 6000ms silence, and section C found the dots still spinning).
+        # And darkness without stillness fires the moment the dots are drawn -- their
+        # sum already clears any plausible ink bar. Together they can only both be true
+        # after the first character: static text.
         $tries = 0
-        $sums = Get-WaitSums $script:bands
-        while ($tries -lt 30 -and (($sums.Left - $sums.Ref) -lt 20000)) {
+        $zeros = 0
+        $arrived = $false
+        $prev = $script:dotsB
+        while ($tries -lt 40 -and -not $arrived) {
             Start-Sleep -Milliseconds 300
-            $sums = Get-WaitSums $script:bands
+            $cur = Get-Crop $script:bands.DotsX $script:bands.Y $script:bands.W $script:bands.H
+            $d = Get-PixelDiff $prev $cur
+            $grew = ((Get-CropSum $cur) - $script:waitA.Dots) -ge 30000
+            if ($d -eq 0 -and $grew) { $zeros++; if ($zeros -ge 3) { $arrived = $true } }
+            else { $zeros = 0 }
+            $prev = $cur
             $tries++
         }
+        if (-not $arrived) { throw 'the dot strip was still animating after ~12s -- the token never landed' }
         $script:waitedMs = [int]$clock.ElapsedMilliseconds
         Save-WindowShot $main (Get-ShotPath 'wait-anim-first-token.png')
 
@@ -325,7 +364,7 @@ try {
         $script:h1 = $r1.H
         $b1 = Get-WaitBands $r1
         $script:afterA = Get-WaitSums $b1
-        $script:midC = Get-Crop $b1.MidX $b1.Y $b1.MidW $b1.H
+        $script:dotsC = Get-Crop $b1.DotsX $b1.Y $b1.W $b1.H
         # Where the row sits, not how wide it is. The width DOES change here and is meant
         # to: the empty bubble is full width (see MessageBubble.Rebuild -- the dots are a
         # narration, like the reasoning block), and the moment there is real text the box
@@ -339,8 +378,7 @@ try {
         $r2 = Get-AsstRow
         if ($null -eq $r2) { throw 'the assistant row went away between the two reads' }
         $b2 = Get-WaitBands $r2
-        $script:afterB = Get-WaitSums $b2
-        $script:midD = Get-Crop $b2.MidX $b2.Y $b2.MidW $b2.H
+        $script:dotsD = Get-Crop $b2.DotsX $b2.Y $b2.W $b2.H
         $script:sameOrigin = $script:sameOrigin -and ($r2.T -eq $r1.T) -and ($r2.L -eq $r1.L)
     }
 } finally {
@@ -375,30 +413,35 @@ if ($null -eq $script:r0) {
     # The row is as wide as ever: the bubble must not have shrunk to hug the dots. A
     # narrow box "full of animation" would still be the half-bubble complaint.
     Check ($script:r0.W -gt 400) 'and still as wide as the chat area' ($script:r0.W.ToString() + 'px')
-    # Nothing but the dots on that line: the left strip is where the answer will start,
-    # and it reads the same as the reference strip, which is bare bubble background by
-    # construction. This is what makes the arrival detector below mean something -- if
-    # the left strip already had glyphs on it, "it changed" would be unmeasurable.
-    $bare = [Math]::Abs($script:waitA.Left - $script:waitA.Ref)
-    Write-Output ('  left strip ' + $script:waitA.Left + ' vs bare reference ' + $script:waitA.Ref + '  (delta ' + $bare + ')')
+    # Nothing but the dots on that line: the middle strip reads the same as the
+    # reference strip, which is bare bubble background by construction. (Before 0.9.4
+    # this was the LEFT strip, because the dots were centred; now the dots are on the
+    # left and the middle is the bare one.)
+    $bare = [Math]::Abs($script:waitA.Mid - $script:waitA.Ref)
+    Write-Output ('  mid strip ' + $script:waitA.Mid + ' vs bare reference ' + $script:waitA.Ref + '  (delta ' + $bare + ')')
     Check ($bare -lt 4000) 'the line is bare apart from the dots' ('delta ' + $bare + ' against a strip known to be empty')
+    # And the dots ARE on the left: the dots strip is darker than the bare reference by
+    # roughly the three dots' worth of ink. Without this, "the dots moved to the left"
+    # would be asserted by a strip that has nothing on it either way.
+    $dots = $script:waitA.Dots - $script:waitA.Ref
+    Write-Output ('  dots strip ' + $script:waitA.Dots + ' vs bare reference ' + $script:waitA.Ref + '  (delta ' + $dots + ')')
+    Check ($dots -gt 8000) 'the dots are painted at the left edge' ('delta ' + $dots + ' over a bare strip')
 }
 
 # ---- B ----
 
 Write-Output ''
 Write-Output '--- B. the dots are animating ---'
-if ($null -eq $script:midA -or $null -eq $script:midB) {
+if ($null -eq $script:dotsA -or $null -eq $script:dotsB) {
     Check $false 'two frames of the dot strip' 'the probe did not get as far as measuring'
 } else {
-    $d = Get-PixelDiff $script:midA $script:midB
-    Write-Output ('  dot strip darkness: ' + $script:waitA.Mid + ' then ' + $script:waitB.Mid + '  (invariant, see Get-BandSum)')
-    Write-Output ('  dot strip pixels that changed: ' + $d + ' of ' + ($script:midA.Width * $script:midA.Height))
+    $d = Get-PixelDiff $script:dotsA $script:dotsB
+    Write-Output ('  dot strip darkness: ' + $script:waitA.Dots + ' then ' + $script:waitB.Dots + '  (invariant, see Get-BandSum)')
+    Write-Output ('  dot strip pixels that changed: ' + $d + ' of ' + ($script:dotsA.Width * $script:dotsA.Height))
     # Every tick moves all three dots one step along the rotation, so ~3 dots' worth of
     # pixels (about 110, plus their antialiased rims) change between any two frames.
     # A still frame -- the bug this section exists for -- gives exactly 0.
     Check ($d -gt 40) 'the dot strip changed between two frames' ($d.ToString() + ' px, a still frame gives 0')
-    Check ($script:waitA.Mid -gt 0) 'there is something painted on that line' ('darkness ' + $script:waitA.Mid)
 }
 
 # ---- D (second half) ----
@@ -406,8 +449,12 @@ if ($null -eq $script:midA -or $null -eq $script:midB) {
 Write-Output ''
 Write-Output '--- D. it stops at the first character ---'
 Write-Output ('  first character landed ' + $script:waitedMs + 'ms after send (stub held ' + $hold1 + 'ms)')
-Check (($script:afterA.Left - $script:afterA.Ref) -ge 20000) 'the answer started on that line' `
-    ('left strip ' + $script:afterA.Left + ' vs bare reference ' + $script:afterA.Ref)
+# The answer is text, much darker than three muted dots: the strip's sum jumps well
+# past anything the brightness rotation can produce (the rotation keeps the sum
+# invariant, so the waiting-phase sum IS the dots' whole contribution).
+$grown = $script:afterA.Dots - $script:waitA.Dots
+Check ($grown -ge 30000) 'the answer started on that line' `
+    ('dots strip ' + $script:waitA.Dots + ' while waiting -> ' + $script:afterA.Dots + ' after the token')
 Check ($script:waitedMs -ge ($hold1 - 600) -and $script:waitedMs -le ($hold1 + 3000)) `
     'and it landed while the stub was still holding' `
     ($script:waitedMs.ToString() + 'ms, expected around ' + $hold1 + 'ms')
@@ -416,10 +463,10 @@ Check ($script:waitedMs -ge ($hold1 - 600) -and $script:waitedMs -le ($hold1 + 3
 
 Write-Output ''
 Write-Output '--- C. and once it started, nothing on that line moves ---'
-if ($null -eq $script:midC -or $null -eq $script:midD) {
+if ($null -eq $script:dotsC -or $null -eq $script:dotsD) {
     Check $false 'two frames after the token' 'the probe did not get as far as measuring'
 } else {
-    $d2 = Get-PixelDiff $script:midC $script:midD
+    $d2 = Get-PixelDiff $script:dotsC $script:dotsD
     Write-Output ('  dot strip pixels that changed after the token: ' + $d2)
     Check ($d2 -eq 0) 'two frames are identical' `
         ($d2.ToString() + ' px changed -- B measured the animation, not render noise')

@@ -65,6 +65,7 @@ $cases = [ordered]@{
     'mathml'      = '<math><mfrac><mn>1</mn><mn>2</mn></mfrac></math>'
     'sqrt-index'  = '$$\sqrt[3]{x+1}$$'
     'currency'    = 'The price is $100 and the other one is $50.'
+    'sup-flat'    = 'Big O of n squared \(O(n^2)\) is quadratic.'
 }
 
 $script:dumps = @{}
@@ -144,6 +145,7 @@ function Parse-Dump([string]$Out) {
                 Kind = 'glyph'
                 Size = [double]$m.Groups[1].Value
                 Asc  = [double]$m.Groups[2].Value; Desc = [double]$m.Groups[3].Value
+                Ink0 = [double]$m.Groups[4].Value; Ink1 = [double]$m.Groups[5].Value
                 Px   = [double]$m.Groups[6].Value
                 X    = [double]$m.Groups[7].Value; Y = [double]$m.Groups[8].Value
                 Y0 = [double]$m.Groups[8].Value; Y1 = [double]$m.Groups[8].Value
@@ -412,6 +414,44 @@ try {
         Check ($d -le 2) 'inline baseline' ('prose ink bottom ' + $bTxt.B + ', formula ink bottom ' + $bMath.B +
                                            ', off by ' + $d + 'px (the dump says the line lifts the text ' +
                                            [Math]::Round($ln.Shift,1) + 'px)')
+    }
+
+    # ---- H. a simple superscript tucks in, it does not float ----------------
+    #
+    # The 0.9.4 bug: `\(O(n^2)\)` drew the 2 clear ABOVE the n, with daylight between
+    # them (sup baseline 10.2px over the base, n's ink only reaches 9.2px up). TeX puts
+    # a plain superscript at 0.42em -- 7.0px here -- so the two overlap vertically and
+    # the box does not grow. The nested-power fixture in G cannot see this: a ^2^2
+    # tower is SUPPOSED to stick out of the line, only a one-level sup on a letter has
+    # a known height (exactly the base glyph's ascent).
+    #
+    # The sup glyph is the one whose font is smaller than the base size; the base is
+    # the glyph right before it. Both are identified by SIZE, not by character -- the
+    # console code page is not trusted with glyph text, and does not need to be.
+    Write-Output ''
+    Write-Output '--- H: a simple superscript tucks in, it does not float ---'
+    $ln = Get-Case 'sup-flat'
+    $mr = Get-MathRun $ln
+    $glyphs = @($ln.Prims | Where-Object { $_.Kind -eq 'glyph' })
+    # No Measure-Object -Property here: these are hashtables, and Measure-Object reads
+    # object properties, not hashtable entries -- it errors out instead of measuring.
+    $baseSize = 0.0
+    foreach ($gl in $glyphs) { if ($gl.Size -gt $baseSize) { $baseSize = $gl.Size } }
+    $sup = $null; $bas = $null
+    for ($i = 0; $i -lt $glyphs.Count; $i++) {
+        if ($glyphs[$i].Size -lt $baseSize - 0.5) { $sup = $glyphs[$i]; $bas = $glyphs[$i - 1]; break }
+    }
+    if ($null -eq $sup) {
+        Check $false 'superscript identified' ('glyph sizes: ' + (($glyphs | ForEach-Object { $_.Size }) -join ','))
+    }
+    else {
+        $lift = $bas.Y - $sup.Y
+        Check ($lift -ge 4.5 -and $lift -le 8.5) 'superscript lift is 0.42em, not above the letter' `
+            ($lift.ToString('0.0') + 'px (broken was 10.2, want about 7.0)')
+        # No growth: the box over the baseline is exactly the base font's ascent.
+        $basAsc = $bas.Asc
+        Check ([Math]::Abs($mr.BoxH - $basAsc) -lt 0.6) 'and the box does not grow for it' `
+            ('box ' + $mr.BoxH + ' vs base ascent ' + $basAsc)
     }
 
     Write-Output ''

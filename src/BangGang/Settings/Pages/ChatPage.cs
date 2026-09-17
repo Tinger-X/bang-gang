@@ -26,6 +26,13 @@ internal sealed class ChatPage : SettingsPage
     /// <summary>温度滑条的值是**百分之一度**（0–200 → 0.00–2.00）。滑块是整数控件。</summary>
     private const int TempScale = 100;
 
+    /// <summary>
+    /// 长度滑条上的「不限」档位：最大值再往右多出一格，读数显示「不限」、存成 0
+    /// （请求里不带 max_tokens，见 <see cref="LlmConfig.MaxTokens"/>）。
+    /// 8320 = 8192 + 128，恰好落在步长网格上（256 + 63×128），吸附不会把它吃掉。
+    /// </summary>
+    private const int UnlimitedMark = 8192 + 128;
+
     private readonly SliderBar _temp = new(FieldW)
     {
         Min = 0, Max = 200, Step = 5, Value = 70,
@@ -34,10 +41,11 @@ internal sealed class ChatPage : SettingsPage
 
     private readonly SliderBar _tokens = new(FieldW)
     {
-        // 下限 256：再低就够不着一条正常回复；上限 8192 是多数 OpenAI 兼容接口的默认天花板。
+        // 下限 256：再低就够不着一条正常回复；上限 8192 是多数 OpenAI 兼容接口的默认天花板，
+        // 最右端再留一格「不限」（UnlimitedMark）。
         // 步长 128 是因为滑块只有两百多像素宽 —— 不吸附的话拖出来的是 2917 这种没人打算设的数。
-        Min = 256, Max = 8192, Step = 128, Value = 2048,
-        Format = v => v.ToString(CultureInfo.InvariantCulture),
+        Min = 256, Max = UnlimitedMark, Step = 128, Value = 2048,
+        Format = v => v >= UnlimitedMark ? "不限" : v.ToString(CultureInfo.InvariantCulture),
     };
 
     private readonly TextArea _sys = new(FieldW, 3, "例如：你是帮帮，回答简洁准确，用中文。");
@@ -57,7 +65,7 @@ internal sealed class ChatPage : SettingsPage
 
         var gen = new GroupCard("生成参数", "按当前模型的能力量力而行，设置过大会被接口拒绝");
         gen.Add(new SettingRow("对话温度", "越低越稳定，越高越发散", _temp));
-        gen.Add(new SettingRow("最大回复长度", "单次上限，推理模型的思考也计入", _tokens));
+        gen.Add(new SettingRow("最大回复长度", "单次上限，推理模型的思考也计入；最右为不限", _tokens));
         gen.Height = gen.MeasureHeight();
         Stack.Controls.Add(gen);
 
@@ -73,7 +81,8 @@ internal sealed class ChatPage : SettingsPage
     public override void Rebind(AppSettings s)
     {
         _temp.Value = (int)Math.Round(Math.Clamp(s.ChatTemperature, 0, 2) * TempScale);
-        _tokens.Value = s.ChatMaxTokens;
+        // 0（不限）映射到滑条最右端那一格；正数照旧（不在网格上的会被吸附）。
+        _tokens.Value = s.ChatMaxTokens <= 0 ? UnlimitedMark : s.ChatMaxTokens;
         _sys.Text = s.ChatSystemPrompt ?? "";
         _rein.Text = s.ChatReinforce ?? "";
         _sys.ClearUndoBuffers();
@@ -92,7 +101,7 @@ internal sealed class ChatPage : SettingsPage
     public override void ApplyTo(AppSettings target)
     {
         target.ChatTemperature = _temp.Value / (double)TempScale;
-        target.ChatMaxTokens = _tokens.Value;
+        target.ChatMaxTokens = _tokens.Value >= UnlimitedMark ? 0 : _tokens.Value;
         target.ChatSystemPrompt = _sys.Text;
         target.ChatReinforce = _rein.Text;
     }

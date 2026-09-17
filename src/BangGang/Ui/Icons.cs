@@ -6,7 +6,7 @@ namespace BangGang;
 /// 图标形状。除 <see cref="Glyph.Link"/> 外都是 1.6px 圆头线条；
 /// <see cref="Glyph.Link"/> 照搬的是一张**实心**参考图，笔画粗细由形状自己定，见那里的注释。
 /// </summary>
-internal enum Glyph { Sliders, Spark, Palette, Bubble, Link, Eye, EyeOff, Close, Reset, Check }
+internal enum Glyph { Sliders, Spark, Palette, Bubble, Link, Eye, EyeOff, Close, Reset, Check, Copy, ChevDown, ChevRight }
 
 internal static class Gfx
 {
@@ -157,8 +157,59 @@ internal static class Gfx
                 g.DrawLine(pen, cx + s * 0.60f, cy - s * 0.98f, cx + s * 0.92f, cy - s * 0.38f);
                 g.DrawLine(pen, cx + s * 0.60f, cy - s * 0.98f, cx + s * 0.06f, cy - s * 0.92f);
                 break;
+
+            case Glyph.Copy:
+                // 两张叠着的纸：后一张偏右上，前一张偏左下。前一张先拿底色（back）
+                // 填掉再描边，两张框相交的那几段线才不会糊成一团（和 EyeOff 的斜杠同理）。
+                {
+                    float bw = s * 1.04f, cr = s * 0.26f;
+                    using (var bp = RoundRect(new RectangleF(cx - s * 0.16f, cy - s * 0.82f, bw, bw), cr))
+                        g.DrawPath(pen, bp);
+                    using (var fp = RoundRect(new RectangleF(cx - s * 0.88f, cy - s * 0.22f, bw, bw), cr))
+                    {
+                        if (back.HasValue)
+                        {
+                            using var eb = new SolidBrush(back.Value);
+                            g.FillPath(eb, fp);
+                        }
+                        g.DrawPath(pen, fp);
+                    }
+                }
+                break;
+
+            case Glyph.ChevDown:     // 代码块展开时：点它收起来（和思考块的「展开时箭头朝下」一套）
+                g.DrawLines(pen, new[]
+                {
+                    new PointF(cx - s * 0.62f, cy - s * 0.30f),
+                    new PointF(cx, cy + s * 0.36f),
+                    new PointF(cx + s * 0.62f, cy - s * 0.30f),
+                });
+                break;
+
+            case Glyph.ChevRight:    // 代码块收起时：点它展开
+                g.DrawLines(pen, new[]
+                {
+                    new PointF(cx - s * 0.30f, cy - s * 0.62f),
+                    new PointF(cx + s * 0.36f, cy),
+                    new PointF(cx - s * 0.30f, cy + s * 0.62f),
+                });
+                break;
         }
         g.SmoothingMode = old;
+    }
+
+    /// <summary>圆角矩形路径（float 版；<c>RP.Path</c> 那组是整数网格的）。</summary>
+    private static GraphicsPath RoundRect(RectangleF r, float rad)
+    {
+        var p = new GraphicsPath();
+        float d = Math.Min(rad * 2, Math.Min(r.Width, r.Height));
+        if (d <= 0.5f) { p.AddRectangle(r); return p; }
+        p.AddArc(r.X, r.Y, d, d, 180, 90);
+        p.AddArc(r.Right - d, r.Y, d, d, 270, 90);
+        p.AddArc(r.Right - d, r.Bottom - d, d, d, 0, 90);
+        p.AddArc(r.X, r.Bottom - d, d, d, 90, 90);
+        p.CloseFigure();
+        return p;
     }
 
     /// <summary>

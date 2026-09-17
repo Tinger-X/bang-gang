@@ -60,6 +60,33 @@ internal static class Markdown
         /// 由折行的那一处**当场**记下来，不留给别人从宽度上反推。
         /// </summary>
         public bool Wrapped;
+
+        /// <summary>
+        /// 本文里所有代码块的头部（语言标签在左、复制 / 收展按钮在右的那一行），
+        /// 按文档顺序。坐标是 markdown 局部坐标；按钮的图形与命中测试都不归这里管 ——
+        /// 排版只负责登记「这块头部在哪、这块代码原文是什么」，
+        /// 画图标与响应点击是 <c>MessageBubble</c> 的事。
+        /// </summary>
+        public List<CodeHead> CodeHeads { get; } = new();
+    }
+
+    /// <summary>一个代码块的头部登记。见 <see cref="Layout.CodeHeads"/>。</summary>
+    internal sealed class CodeHead
+    {
+        /// <summary>本文里第几个代码块（从 0 数）。折叠状态按它记（MessageBubble._codeFolded）。</summary>
+        public int Ordinal;
+
+        /// <summary>整条头部行的矩形（markdown 局部坐标）。</summary>
+        public RectangleF Rect;
+
+        /// <summary>语言标签（可能是空串）。</summary>
+        public string Lang = "";
+
+        /// <summary>这块代码的原文（复制按钮用）。</summary>
+        public string Code = "";
+
+        /// <summary>这次排版时它是不是收起的（画哪个方向的箭头用）。</summary>
+        public bool Folded;
     }
 
     /// <summary>一条物理行。位置由「前面所有行的 Advance 之和」决定，自己不存 y。</summary>
@@ -112,7 +139,7 @@ internal static class Markdown
         public Font Font = SF.Get(BodySize);
         public Ink Ink = Ink.Text;
         public float Width;              // 文字本身的宽
-        public float PadX;               // 左右各垫多少（行内代码的圆角底）
+        public float PadL, PadR;         // 左 / 右各垫多少（行内代码圆角底的端帽，只在一段代码的两端有）
         public bool Underline, Strike;
 
         /// <summary>链接的地址（只有链接段有）。排版不读它，命中测试（MessageBubble.LinkAt）读它。</summary>
@@ -130,7 +157,7 @@ internal static class Markdown
         public MBox? Math;
 
         /// <summary>这一小段占的横向距离。</summary>
-        public float Advance => Width + PadX * 2;
+        public float Advance => Width + PadL + PadR;
     }
 
     /// <summary>画在文字下面的一块东西。填 / 描边各自可选。</summary>
@@ -181,7 +208,7 @@ internal static class Markdown
     private const float QuotePadY = 7f;      // 引用块内的上下留白
     private const float CodePadX = 12f;
     private const float CodePadY = 9f;
-    private const float CodeLangH = 17f;     // 代码块右上角语言标签占的那一行
+    private const float CodeHeadH = 24f;     // 代码块头部那一行：左语言标签、右复制 / 收展按钮
     private const float TablePadX = 9f;
     private const float TablePadY = 6f;
     private const float TableMinColW = 54f;
@@ -233,25 +260,37 @@ internal static class Markdown
     /// 反复命中 —— 切走会话再切回来、切主题（键里不含颜色，见类注释第一条）、
     /// 同一帧里被问两次、以及重排时那些宽度没动过的气泡。
     ///
-    /// 条数上限而不是字节上限：一条消息的排版结果和它自己的长度成正比，
+    /// <summary>条数上限而不是字节上限：一条消息的排版结果和它自己的长度成正比，
     /// 而「最近 6 条」在任何真实会话里都远小于一张缩略图。留着不封顶的话，
     /// 一晚上流式下来的每一段中间状态都会攒在里面。
     /// </summary>
     private const int CacheMax = 6;
-    private static readonly Dictionary<(string text, int cap), Layout> Cache = new();
-    private static readonly Queue<(string text, int cap)> CacheOrder = new();
+    private static readonly Dictionary<(string text, int cap, string fold), Layout> Cache = new();
+    private static readonly Queue<(string text, int cap, string fold)> CacheOrder = new();
 
-    public static Layout Measure(string md, float capWidth)
+    /// <param name="codeFolded">收起来的代码块的序号集合（见 <see cref="CodeHead.Ordinal"/>）。
+    /// 它进缓存键：同一段文字「收起第 1 块」和「全展开」是两份不同的排版。</param>
+    public static Layout Measure(string md, float capWidth, IReadOnlySet<int>? codeFolded = null)
     {
         string key = md ?? "";
         int cap = Math.Max(40, (int)Math.Round(capWidth));
-        if (Cache.TryGetValue((key, cap), out var hit)) return hit;
+        string fold = FoldSig(codeFolded);
+        if (Cache.TryGetValue((key, cap, fold), out var hit)) return hit;
 
-        var lay = Build(key, cap);
-        Cache[(key, cap)] = lay;
-        CacheOrder.Enqueue((key, cap));
+        var lay = Build(key, cap, codeFolded);
+        Cache[(key, cap, fold)] = lay;
+        CacheOrder.Enqueue((key, cap, fold));
         while (CacheOrder.Count > CacheMax) Cache.Remove(CacheOrder.Dequeue());
         return lay;
+    }
+
+    /// <summary>折叠集合的缓存键形态：有序、逐值列出。空集合与 null 是同一个键（""）。</summary>
+    private static string FoldSig(IReadOnlySet<int>? s)
+    {
+        if (s == null || s.Count == 0) return "";
+        var arr = new List<int>(s);
+        arr.Sort();
+        return string.Join(',', arr);
     }
 
     /// <summary>
@@ -1127,7 +1166,7 @@ internal static class Markdown
         public Font Font;
         public Ink Ink;
         public bool Underline, Strike;
-        public float PadX;
+        public float PadL, PadR;
         public bool Space;
         public bool BreakBefore;
         public bool ForceBreak;
@@ -1139,7 +1178,7 @@ internal static class Markdown
         /// <summary>链接地址。一个词折成几个原子都带同一份，落到每个 <see cref="Run"/> 上。</summary>
         public string? Link;
 
-        public readonly float Advance => Width + PadX * 2;
+        public readonly float Advance => Width + PadL + PadR;
     }
 
     private sealed class LineBuf
@@ -1211,11 +1250,11 @@ internal static class Markdown
                      : ink,
                 Underline = (inl.Flags & FLink) != 0,
                 Strike = (inl.Flags & FStrike) != 0,
-                PadX = code ? InlineCodePadX : 0,
                 Link = inl.Link,
             };
 
             string s = inl.Text;
+            int spanStart = atoms.Count;      // 行内代码这一段从这里开始（给端帽用）
             int i = 0;
             while (i < s.Length)
             {
@@ -1255,6 +1294,16 @@ internal static class Markdown
                 wp.Width = RunWidth(wp.Text, f);
                 atoms.Add(wp);
                 i = k;
+            }
+
+            // 行内代码的左右垫（圆角底的端帽）只加在**整段的两端**，不是每个原子各垫一份 ——
+            // 一个 `` `a = b` `` 会拆成「a / 空格 / = / 空格 / b」五个原子，每个都垫的话
+            // 每个空格两侧各多出 7px 的底，行内代码里的空格看上去就是断开的（用户报的
+            // 「空格前后不连续」就是这么来的）。只垫两端：中间的原子紧紧挨着，底色连成一整条。
+            if (code && atoms.Count > spanStart)
+            {
+                var first = atoms[spanStart]; first.PadL = InlineCodePadX; atoms[spanStart] = first;
+                var lastA = atoms[^1]; lastA.PadR = InlineCodePadX; atoms[^1] = lastA;
             }
         }
 
@@ -1318,7 +1367,9 @@ internal static class Markdown
                 var piece = a;
                 piece.Text = a.Text.Substring(k, len);
                 piece.Width = len == 1 ? CharWidth(c, a.Font) : RunWidth(piece.Text, a.Font);
-                piece.PadX = 0;
+                // 端帽跟着端走：劈开之后左垫留在第一片、右垫留到最后一片，中间的片不垫。
+                piece.PadL = k == 0 ? a.PadL : 0;
+                piece.PadR = k + len >= a.Text.Length ? a.PadR : 0;
                 piece.BreakBefore = at > 0;
                 atoms.Insert(at++, piece);
                 if (len == 2) k++;
@@ -1392,13 +1443,17 @@ internal static class Markdown
                 // 固定开销：选字体、ExtTextOut）—— 一份 4200 字的回复曾因此排成 3075 个 Run。
                 // 并完之后一行只剩「逐样式段」那么多个。宽度照旧按原子累加（lb.W 不变），
                 // 只是少建对象、少画几十次。
+                // 两端带垫的（行内代码的端帽）不并：并了垫就跑到 Run 中间去了。而**段内**的
+                // 相邻原子两端都不带垫，照样并成一个 —— 所以一段行内代码折进一行后仍是一个
+                // Run，端帽由最后一个原子的 PadR 在并入时带过来。
                 var last = lb.Runs.Count > 0 ? lb.Runs[^1] : null;
-                if (last != null && last.Math == null && last.X < 0 && last.PadX == 0 && a.PadX == 0
+                if (last != null && last.Math == null && last.X < 0 && last.PadR == 0 && a.PadL == 0
                     && ReferenceEquals(last.Font, a.Font) && last.Ink == a.Ink
                     && last.Underline == a.Underline && last.Strike == a.Strike && last.Link == a.Link)
                 {
                     last.Text += a.Text;
                     last.Width += a.Width;
+                    last.PadR = a.PadR;
                 }
                 else
                 {
@@ -1408,7 +1463,8 @@ internal static class Markdown
                         Font = a.Font,
                         Ink = a.Ink,
                         Width = a.Width,
-                        PadX = a.PadX,
+                        PadL = a.PadL,
+                        PadR = a.PadR,
                         Underline = a.Underline,
                         Strike = a.Strike,
                         Link = a.Link,
@@ -1474,6 +1530,12 @@ internal static class Markdown
         /// 所以由面板把这段记下来，交给**紧挨着的下一个块**去躲。
         /// </summary>
         public float PadBelow;
+
+        /// <summary>本次排的这个代码块是不是收起的（块级缓存一次只排一个块，所以是单个 bool）。</summary>
+        public bool CodeFolded;
+
+        /// <summary>排代码块时登记的头部（块局部坐标，装配时加上文档内的 y 再进 <see cref="Layout.CodeHeads"/>）。</summary>
+        public CodeHead? Head;
 
         /// <summary>
         /// 本块的**名义块首距**：排版这一块时第一次「要不要段前距」问到的那个值。
@@ -1655,7 +1717,11 @@ internal static class Markdown
     }
 
     /// <summary>
-    /// 代码块：圆角底 + 右上角语言标签 + 四类语法着色。
+    /// 代码块：圆角底 + 头部行（**左**语言标签、**右**复制 / 收展按钮）+ 四类语法着色。
+    ///
+    /// 头部行**永远在**（没有语言的块也一样）—— 复制 / 收展按钮得有个家。
+    /// 按钮的图形与点击不归排版管：这里只把头部矩形登记到 <see cref="Ctx.Head"/>，
+    /// 画图标与命中测试是 <c>MessageBubble</c> 的事。
     ///
     /// 超宽的行**硬折行**而不是横向滚动 —— 气泡里塞不下一个横向滚动条，
     /// 而「看不见的那半行」比「折下来的那半行」糟得多。
@@ -1671,65 +1737,72 @@ internal static class Markdown
 
         var local = new List<PhysLine>();
 
+        var head = new PhysLine { Indent = left + CodePadX, Pitch = CodeHeadH, LineHeight = CodeHeadH };
         if (bc.Lang.Length > 0)
         {
             var lf = SF.Get(9f);
             float lw = RunWidth(bc.Lang, lf);
-            var ll = new PhysLine
-            {
-                Indent = Math.Max(left + CodePadX, left + avail - CodePadX - lw),
-                Pitch = CodeLangH,
-                LineHeight = CodeLangH,
-            };
-            ll.Runs.Add(new Run { Text = bc.Lang, Font = lf, Ink = Ink.Muted, Width = lw });
-            local.Add(ll);
+            // 9pt 的标签在 24px 的行高里居中：TextShift 把文字往下推半段差值。
+            // 面板底色的矩形要把它**减回去**（装饰原点跟着 TextShift 走，见 DrawBack）。
+            head.TextShift = Math.Max(0f, (CodeHeadH - lf.Height) / 2f);
+            head.Runs.Add(new Run { Text = bc.Lang, Font = lf, Ink = Ink.Muted, Width = lw });
         }
+        local.Add(head);
+        float headShift = head.TextShift;
 
-        var carry = default(MarkdownSyntax.Carry);
-        foreach (string raw in bc.Lines)
+        // 收起的块到此为止：头部就是整块内容，面板收成一条。
+        if (!c.CodeFolded)
         {
-            var runs = new List<Run>();
-            foreach (var piece in MarkdownSyntax.Highlight(bc.Lang, raw, ref carry))
+            var carry = default(MarkdownSyntax.Carry);
+            foreach (string raw in bc.Lines)
             {
-                var ink = piece.Kind switch
+                var runs = new List<Run>();
+                foreach (var piece in MarkdownSyntax.Highlight(bc.Lang, raw, ref carry))
                 {
-                    MarkdownSyntax.Kind.Keyword => Ink.SynKeyword,
-                    MarkdownSyntax.Kind.Str => Ink.SynString,
-                    MarkdownSyntax.Kind.Comment => Ink.SynComment,
-                    MarkdownSyntax.Kind.Number => Ink.SynNumber,
-                    _ => Ink.Text,
-                };
-                string txt = raw.Substring(piece.Start, piece.Length);
-                runs.Add(new Run { Text = txt, Font = f, Ink = ink, Width = RunWidth(txt, f) });
-            }
+                    var ink = piece.Kind switch
+                    {
+                        MarkdownSyntax.Kind.Keyword => Ink.SynKeyword,
+                        MarkdownSyntax.Kind.Str => Ink.SynString,
+                        MarkdownSyntax.Kind.Comment => Ink.SynComment,
+                        MarkdownSyntax.Kind.Number => Ink.SynNumber,
+                        _ => Ink.Text,
+                    };
+                    string txt = raw.Substring(piece.Start, piece.Length);
+                    runs.Add(new Run { Text = txt, Font = f, Ink = ink, Width = RunWidth(txt, f) });
+                }
 
-            foreach (var chunk in HardWrap(runs, textAvail))
-            {
-                var pl = new PhysLine { Indent = left + CodePadX, Pitch = pitch, LineHeight = f.Height };
-                pl.Runs.AddRange(chunk);
-                local.Add(pl);
+                foreach (var chunk in HardWrap(runs, textAvail))
+                {
+                    var pl = new PhysLine { Indent = left + CodePadX, Pitch = pitch, LineHeight = f.Height };
+                    pl.Runs.AddRange(chunk);
+                    local.Add(pl);
+                }
             }
-        }
-
-        if (local.Count == 0)
-        {
-            var pl = new PhysLine { Indent = left + CodePadX, Pitch = pitch, LineHeight = f.Height };
-            pl.Runs.Add(new Run { Text = " ", Font = f, Width = 0 });
-            local.Add(pl);
         }
 
         float inner = 0;
         foreach (var pl in local) inner += pl.Pitch;
 
-        // 整块底画在**第一行**上，高度盖住后面的所有行。行是顺序画的，后面几行只画文字，
-        // 不会把这层底盖掉；反过来把底挂在每一行上，行与行之间就会露出一条条缝。
+        // 整块底画在**第一行**（头部行）上，高度盖住后面的所有行。行是顺序画的，
+        // 后面几行只画文字，不会把这层底盖掉；反过来把底挂在每一行上，
+        // 行与行之间就会露出一条条缝。
         // 矩形往回退 CodePadY：那圈内边距在第一行的**上面**，不属于任何一行。
+        // 头部行的 TextShift（标签居中用的那几像素）不参与定位，要减回去。
         local[0].Decors.Insert(0, new Decor
         {
-            Rect = new RectangleF(left, -CodePadY, avail, inner + CodePadY * 2),
+            Rect = new RectangleF(left, -CodePadY - headShift, avail, inner + CodePadY * 2),
             Fill = Ink.CodePanel,
             Radius = 8,
         });
+
+        // 登记头部：块局部坐标（首行顶 = 0），装配时再加上文档内的 y（见 Build）。
+        c.Head = new CodeHead
+        {
+            Rect = new RectangleF(left, 0, avail, CodeHeadH),
+            Lang = bc.Lang,
+            Code = string.Join("\n", bc.Lines),
+            Folded = c.CodeFolded,
+        };
 
         int i0 = c.Lines.Count;
         // 段前距要连**自己的内边距**一起要：面板是从首行内容原点往上退 CodePadY 画的
@@ -1993,7 +2066,14 @@ internal static class Markdown
 
             for (int k = 0; k < maxSub; k++)
             {
+                // 单元格的上下内边距是**真的行距**，不是只在装饰矩形的账上记一笔：
+                // 行首子行吃 TablePadY 的段前距、行尾子行把 Pitch 加长 TablePadY。
+                // 不这么办的话 ly 只累计了文字行距，rowH 里的那 2×TablePadY 根本没被
+                // 排版让出来 —— 表头色块于是多盖住下一行 6px、行分隔线压进上一行
+                // 文字的降部里（0.9.4 之前那张「错位」的表就是这么来的）。
                 var pl = new PhysLine { Pitch = pitch, LineHeight = f.Height };
+                if (k == 0) pl.SpaceBefore = TablePadY;
+                if (k == maxSub - 1) pl.Pitch = pitch + TablePadY;
                 float x = left;
                 for (int col = 0; col < n; col++)
                 {
@@ -2018,12 +2098,14 @@ internal static class Markdown
                     x += colW[col] + 1f;
                 }
                 local.Add(pl);
-                ly += pitch;
+                ly += pl.Advance;
             }
         }
 
-        // 网格。装饰矩形的原点在第一行的**顶**，而表格的第一行上面还压着 TablePadY 的
-        // 单元格内边距，所以整体上移一格。
+        // 网格。装饰挂在第一行身上，而第一行自己的段前距就是 TablePadY（上内边距），
+        // 所以装饰的 y 一律按「行槽坐标 − TablePadY」换算：行槽原点 = 第一行文字顶 − TablePadY。
+        // 这样表头色块的下缘**恰好**停在第一条行分隔线上（rowTop[1] = rowH[0]），
+        // 每条分隔线上下各有 6px 的真内边距，谁也压不到文字。
         float dy = -TablePadY;
         var first = local[0];
         first.Decors.Add(new Decor
@@ -2040,6 +2122,7 @@ internal static class Markdown
             });
 
         // 竖线落在单元格的内边距里，不会穿过文字 —— 这正是 TablePadX 的用处。
+        // ly 这时是整张表（含内边距）的高，竖线从色块里 1px 一直画到表底上 1px。
         float bx = left;
         for (int col = 0; col < n - 1; col++)
         {
@@ -2050,7 +2133,7 @@ internal static class Markdown
 
         int i0 = c.Lines.Count;
         float sp = c.Sp(SpaceTable);
-        foreach (var pl in local) { c.Lines.Add(pl); c.Y += pl.Pitch; }
+        foreach (var pl in local) { c.Lines.Add(pl); c.Y += pl.Advance; }
         Pad(c, i0, sp);
     }
 
@@ -2098,10 +2181,13 @@ internal static class Markdown
         public float Lead;                      // 名义块首距（Ctx.LeadSpace）
         public float PadBelow;                  // 欠给下一块的下内边距（面板型块）
         public bool Wrapped, FullWidth;
+
+        /// <summary>代码块的头部登记（块局部坐标）。非代码块是 null。装配时复制一份加上文档内 y。</summary>
+        public CodeHead? Head;
     }
 
     /// <summary>
-    /// 块级排版缓存，键是（块的**源文**, 可用宽）。
+    /// 块级排版缓存，键是（块的**源文**, 可用宽, 是否收起）。
     ///
     /// 流式回复每 40ms 把**全文**重排一次（MessageBubble.RefreshText），而一次流式里
     /// 变的只有**最后一个块** —— 前面所有块源文逐字相同、宽度相同，全部在这里命中。
@@ -2111,14 +2197,14 @@ internal static class Markdown
     /// 壳上（见 <see cref="Build"/>），绝不原地改。<see cref="Run"/> 同理。
     /// </summary>
     private const int BlockCacheMax = 64;
-    private static readonly Dictionary<(string src, int cap), BlockLayout> BlockCache = new();
-    private static readonly Queue<(string src, int cap)> BlockCacheOrder = new();
+    private static readonly Dictionary<(string src, int cap, bool fold), BlockLayout> BlockCache = new();
+    private static readonly Queue<(string src, int cap, bool fold)> BlockCacheOrder = new();
 
-    private static BlockLayout BlockLayoutOf(Block b, string src, int cap)
+    private static BlockLayout BlockLayoutOf(Block b, string src, int cap, bool fold)
     {
-        if (BlockCache.TryGetValue((src, cap), out var hit)) return hit;
+        if (BlockCache.TryGetValue((src, cap, fold), out var hit)) return hit;
 
-        var c = new Ctx();
+        var c = new Ctx { CodeFolded = fold };
         EmitBlock(c, b, 0, cap);
         var bl = new BlockLayout
         {
@@ -2128,9 +2214,10 @@ internal static class Markdown
             PadBelow = c.PadBelow,
             Wrapped = c.Wrapped,
             FullWidth = c.FullWidth,
+            Head = c.Head,
         };
-        BlockCache[(src, cap)] = bl;
-        BlockCacheOrder.Enqueue((src, cap));
+        BlockCache[(src, cap, fold)] = bl;
+        BlockCacheOrder.Enqueue((src, cap, fold));
         while (BlockCacheOrder.Count > BlockCacheMax) BlockCache.Remove(BlockCacheOrder.Dequeue());
         return bl;
     }
@@ -2138,8 +2225,9 @@ internal static class Markdown
     /// <summary>
     /// 整篇排版 = 逐块排版（走缓存）+ 装配。装配做两件事：把块首距按
     /// 「是不是第一块、上一块欠多少下内边距」加回各块首行；累出总高。
+    /// 顺带把代码块的头部登记从块局部坐标换算成文档坐标（<see cref="Layout.CodeHeads"/>）。
     /// </summary>
-    private static Layout Build(string md, int cap)
+    private static Layout Build(string md, int cap, IReadOnlySet<int>? folded)
     {
         var parser = new Parser(SplitLines(md));
         var blocks = parser.Blocks();
@@ -2148,10 +2236,13 @@ internal static class Markdown
         var lay = new Layout();
         float padBelow = 0f;
         bool first = true, fullWidth = false;
+        int codeOrd = 0;         // 代码块的文档序：折叠状态（MessageBubble._codeFolded）按它记
 
         for (int i = 0; i < blocks.Count; i++)
         {
-            var bl = BlockLayoutOf(blocks[i], srcs[i], cap);
+            int ord = blocks[i] is BCode ? codeOrd++ : -1;
+            var bl = BlockLayoutOf(blocks[i], srcs[i], cap,
+                                   ord >= 0 && folded != null && folded.Contains(ord));
 
             // 先消费、再判空（空块也消费）：上一块欠的下内边距属于「本块之前」这段空隙，
             // 空块不占行，这段空隙就跟它一起消掉 —— 与逐块直排时 Sp 的行为逐字一致。
@@ -2179,6 +2270,19 @@ internal static class Markdown
             }
             else lay.Lines.Add(l0);
             for (int j = 1; j < bl.Lines.Count; j++) lay.Lines.Add(bl.Lines[j]);
+
+            // 头部登记**复制**一份：缓存里的那份是跨条目共享的模板，文档 y 与序号
+            // 都是装配时才知道的，写回去就串到别家了。
+            if (bl.Head != null)
+                lay.CodeHeads.Add(new CodeHead
+                {
+                    Ordinal = ord,
+                    Rect = new RectangleF(bl.Head.Rect.X, lay.Height + lead + bl.Head.Rect.Y,
+                                          bl.Head.Rect.Width, bl.Head.Rect.Height),
+                    Lang = bl.Head.Lang,
+                    Code = bl.Head.Code,
+                    Folded = bl.Head.Folded,
+                });
 
             lay.Height += lead + bl.Height;
             lay.Wrapped |= bl.Wrapped;
@@ -2285,8 +2389,9 @@ internal static class Markdown
             }
 
             float runX = x + pl.Indent;
-            foreach (var r in pl.Runs)
+            for (int ri = 0; ri < pl.Runs.Count; ri++)
             {
+                var r = pl.Runs[ri];
                 float at = r.X >= 0 ? x + r.X : runX;
 
                 if (r.Math != null)
@@ -2301,12 +2406,26 @@ internal static class Markdown
 
                 if (r.Text.Length == 0) continue;
 
-                if (r.PadX > 0)
+                if (r.Ink == Ink.InlineCode)
                 {
-                    var bg = new RectangleF(at, ttop + 1.5f, r.Advance, Math.Max(4f, pl.LineHeight - 3f));
+                    // 一段行内代码折进一行后通常已经并成了一个 Run（端帽在两端，见 AtomsOf）。
+                    // 这里再兜一层：万一没并上（样式不同的相邻片段），底色也画成**一整条**
+                    // 圆角底，而不是每段一个圆角块 —— 块与块之间的圆角缝就是「空格断开」
+                    // 的另一种长相。
+                    float start = at, end = at + r.Advance;
+                    while (ri + 1 < pl.Runs.Count)
+                    {
+                        var nx = pl.Runs[ri + 1];
+                        if (nx.X >= 0 || nx.Math != null || nx.Text.Length == 0 || nx.Ink != Ink.InlineCode) break;
+                        end += nx.Advance;
+                        ri++;
+                    }
+                    var bg = new RectangleF(start, ttop + 1.5f, end - start, Math.Max(4f, pl.LineHeight - 3f));
                     using var br = new SolidBrush(Palette.Of(Ink.InlineCodeBg, bubble));
                     using var path = Rounded(bg, 4f);
                     g.FillPath(br, path);
+                    if (r.X < 0) runX = end;
+                    continue;
                 }
 
                 if (r.X < 0) runX += r.Advance;
@@ -2350,7 +2469,7 @@ internal static class Markdown
                 if (r.Text.Length == 0) continue;
 
                 TextRenderer.DrawText(dc, r.Text, r.Font,
-                    new Point((int)MathF.Round(at + r.PadX), (int)MathF.Round(ttop)),
+                    new Point((int)MathF.Round(at + r.PadL), (int)MathF.Round(ttop)),
                     Palette.Of(r.Ink, bubble), TFlags);
 
                 if (r.X < 0) runX += r.Advance;
@@ -2384,13 +2503,13 @@ internal static class Markdown
                 {
                     using var pen = new Pen(Palette.Of(r.Ink, bubble), 1f);
                     float uy = top + pl.LineHeight - 2f;
-                    g.DrawLine(pen, at + r.PadX, uy, at + r.PadX + r.Width, uy);
+                    g.DrawLine(pen, at + r.PadL, uy, at + r.PadL + r.Width, uy);
                 }
                 if (r.Strike)
                 {
                     using var pen = new Pen(Palette.Of(Ink.Muted, bubble), 1f);
                     float sy = top + pl.LineHeight * 0.55f;
-                    g.DrawLine(pen, at + r.PadX, sy, at + r.PadX + r.Width, sy);
+                    g.DrawLine(pen, at + r.PadL, sy, at + r.PadL + r.Width, sy);
                 }
 
                 if (r.X < 0) runX += r.Advance;
@@ -2496,6 +2615,13 @@ internal static class Markdown
             _g.ReleaseHdc(_hdc);
         }
     }
+
+    /// <summary>
+    /// 把 <see cref="Ink"/> 记号解成颜色。排版与绘制之间只流记号（见类注释第一条）；
+    /// 这一个出口是给气泡画代码块头部按钮用的：复制图标前一张纸要先拿面板底色填掉，
+    /// 那个色必须和面板是**同一个**出处，不能在外头另混一份。
+    /// </summary>
+    internal static Color InkColor(Ink ink, Color bubble) => Palette.Of(ink, bubble);
 
     /// <summary>
     /// 记号 → 颜色。<paramref name="bubble"/> 是这张气泡的填充色，
