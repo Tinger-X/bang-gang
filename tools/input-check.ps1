@@ -427,7 +427,25 @@ Invoke-BBProbe {
     # The box was emptied by the send, so there has to be text again first --
     # otherwise the first click hits a button that is neither busy nor holding a
     # draft, the app ignores it, and the second click becomes the send.
-    Start-Sleep -Milliseconds 600          # let the first reply land and Busy clear
+    #
+    # And the previous reply has to be *over* before that text goes in. This used to
+    # be a flat 600ms sleep, on the assumption that the endpoint fails fast; it does
+    # not. The fixture points at a closed port, and a connect to it takes 2.1s on this
+    # machine -- so 600ms in, the first reply was still in flight, the "send" click
+    # landed as a PAUSE, and the click that was supposed to pause became the send.
+    # The two failures that produced ("status is not the paused message", "the button
+    # is still lit") read exactly like a broken pause button. Poll for the state
+    # instead of guessing the clock: with the box empty and no reply running, the
+    # button is grey, so accent pixels going to zero is "Busy cleared".
+    $cleared = $false
+    $swWait = [System.Diagnostics.Stopwatch]::StartNew()
+    while ($swWait.ElapsedMilliseconds -lt 15000) {
+        if ((Get-AccentCount $btns.Send.Left $btns.Send.Top 28 28) -eq 0) { $cleared = $true; break }
+        Start-Sleep -Milliseconds 100
+    }
+    Write-Output ("previous reply finished after " + $swWait.ElapsedMilliseconds + "ms (button grey again: " + $cleared + ")")
+    if (-not $cleared) { throw 'the first reply never finished; nothing left to pause' }
+
     $got = [BB]::Type($edit, 'again')
     if ($got -ne 'again') { throw "EDIT did not take the text (got '$got')" }
     Start-Sleep -Milliseconds 200

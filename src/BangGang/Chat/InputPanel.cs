@@ -619,6 +619,8 @@ internal sealed class InputPanel : Panel, IMessageFilter
     public bool PreFilterMessage(ref Message m)
     {
         if (m.Msg != WM_MOUSEWHEEL) return false;
+        // 看图浮层开着的时候滚轮归它缩放，别拿来滚文本（见 ImageViewer.AnyOpen）。
+        if (ImageViewer.AnyOpen) return false;
         if (!_box.IsHandleCreated || !_box.Visible) return false;
 
         long lp = m.LParam.ToInt64();

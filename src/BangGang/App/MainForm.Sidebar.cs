@@ -28,7 +28,8 @@ partial class MainForm
         int d = _sideTarget - _sideW;
 
         // 收尾：snap 到整数目标并停表。不能只判 d == 0 —— 指数逼近永远差一点点。
-        if (Math.Abs(d) <= 2)
+        bool done = Math.Abs(d) <= 2;
+        if (done)
         {
             _sideW = _sideTarget;
             _sideTimer.Stop();
@@ -38,7 +39,11 @@ partial class MainForm
             _sideW += (int)Math.Round(d * SideAnimEase);
         }
 
-        ApplyLayout();
+        // 动画中间帧只挪位置（liveResize: true），最后一帧才真正重排一次文字。
+        // 别把这一对拆开：只传 true 的话文字会永远停在动画中途的折行上；
+        // 只传 false 就退回到「逐帧重排全部消息」，也就是这次要修的那个卡顿。
+        ApplyLayout(liveResize: !done);
+        if (done) _chatView.SettleLayout();
     }
 
     /// <summary>

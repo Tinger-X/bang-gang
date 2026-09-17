@@ -18,7 +18,7 @@ namespace BangGang;
 ///
 /// 指针形状一律不动（用户明确要求过）：能不能点靠蒙版上的提示文字说，不靠手型指针。
 /// </summary>
-internal sealed class ImageViewer : Control, IThemed
+internal sealed class ImageViewer : Control, IThemed, IMessageFilter
 {
     /// <summary>图片与窗口边缘至少留出的空白，同时也是「点在图片外 = 关闭」的判定基准。</summary>
     private const int EdgePad = 28;
@@ -60,6 +60,19 @@ internal sealed class ImageViewer : Control, IThemed
 
     public bool IsOpen => Visible;
 
+    /// <summary>
+    /// 有没有一张图正开着。给<b>别的</b>消息过滤器看的（<see cref="ChatView"/> 与
+    /// <c>InputPanel</c> 各有一个在吃 <c>WM_MOUSEWHEEL</c>）。
+    ///
+    /// 做成静态的而不是让它们去问主窗口，是因为 <c>Application.AddMessageFilter</c> 的
+    /// 遍历顺序不是调用方能依赖的：谁先看见这条滚轮消息，取决于注册的先后，
+    /// 而三个控件各自是在自己的句柄建出来时才注册的 —— 那是个随时会变的顺序。
+    /// 与其赌顺序，不如让另外两个**显式让路**，一行判断，读起来也直白。
+    ///
+    /// 本程序只有一个看图浮层，所以「有没有」和「是哪一个」是同一个问题。
+    /// </summary>
+    internal static bool AnyOpen { get; private set; }
+
     /// <summary>打开某张图。读不出来返回 false（调用方据此不弹浮层）。</summary>
     public bool Open(string path, string name)
     {
@@ -76,6 +89,7 @@ internal sealed class ImageViewer : Control, IThemed
         Visible = true;
         BringToFront();
         Focus();
+        AnyOpen = true;
         _backdropStale = true;    // 底图等到绘制那一刻再抓，见 OnPaintBackground
         Invalidate();
         return true;
@@ -85,6 +99,7 @@ internal sealed class ImageViewer : Control, IThemed
     {
         if (!Visible) return;
         Visible = false;
+        AnyOpen = false;
         _drag = false;
         _img?.Dispose();
         _img = null;
@@ -160,24 +175,82 @@ internal sealed class ImageViewer : Control, IThemed
 
     // ---------------- 交互 ----------------
 
-    protected override void OnMouseWheel(MouseEventArgs e)
+    /// <summary>
+    /// 滚轮缩放，**在应用内任意位置都生效**（用户要求）。
+    ///
+    /// 光靠 <see cref="OnMouseWheel"/> 是做不到的：那条路要滚轮消息落在本控件的 HWND 上，
+    /// 而指针一旦移开图片就没有下文了。所以走消息过滤器（见 <see cref="PreFilterMessage"/>），
+    /// 滚轮发到哪里都拦得下来 —— 那个方法把坐标换算好之后调到这里。
+    ///
+    /// <paramref name="anchor"/> 是**本控件坐标**里的锚点：那个点在缩放前后压着同一个像素。
+    /// </summary>
+    private void ZoomAt(Point anchor, int notches)
     {
-        base.OnMouseWheel(e);
-        if (_img == null) return;
+        if (_img == null || notches == 0) return;
 
-        // 以指针为锚点：指针底下那个像素在缩放前后不动，否则放大一圈图就跑到窗口外面去了
         float sOld = ViewScale;
-        float sNew = Math.Clamp(sOld * (e.Delta > 0 ? 1.15f : 1f / 1.15f), FitScale * 0.25f, MaxZoom);
+        float sNew = Math.Clamp(sOld * (float)Math.Pow(1.15, notches), FitScale * 0.25f, MaxZoom);
         if (Math.Abs(sNew - sOld) < 1e-4f) return;
 
         var r = ImageRect();
-        float ix = (e.X - r.Left) / sOld;
-        float iy = (e.Y - r.Top) / sOld;
+        // 指针压在图上：以指针为锚，放大时那个细节留在原地。
+        //
+        // 指针在别处（对话区、输入框……滚轮全域生效之后这是常态）：改用**图片中心**为锚。
+        // 拿一个离图很远的点做锚，图会顺着那个方向一路甩出视野 —— 用户滚一下，图没了。
+        if (!r.Contains(anchor)) anchor = new Point((int)(r.Left + r.Width / 2), (int)(r.Top + r.Height / 2));
+
+        float ix = (anchor.X - r.Left) / sOld;
+        float iy = (anchor.Y - r.Top) / sOld;
         _zoom = sNew;
-        _panX = (e.X - ix * sNew + _img.Width * sNew / 2f) - Width / 2f;
-        _panY = (e.Y - iy * sNew + _img.Height * sNew / 2f) - Height / 2f;
+        _panX = (anchor.X - ix * sNew + _img.Width * sNew / 2f) - Width / 2f;
+        _panY = (anchor.Y - iy * sNew + _img.Height * sNew / 2f) - Height / 2f;
         ClampPan();
         Invalidate();
+    }
+
+    protected override void OnMouseWheel(MouseEventArgs e)
+    {
+        base.OnMouseWheel(e);
+        ZoomAt(e.Location, e.Delta / 120);
+    }
+
+    private const int WM_MOUSEWHEEL = 0x020A;
+
+    protected override void OnHandleCreated(EventArgs e)
+    {
+        base.OnHandleCreated(e);
+        // 全域缩放走消息过滤器。WM_MOUSEWHEEL 是**投递到线程消息队列**的，过滤器在消息
+        // 出队时就看得见它，落在哪个 HWND 上都一样 —— 不必赌指针压在谁身上。
+        // 同 ChatView / InputPanel 的用法，那边是为了「压在谁身上都滚得动对话区」。
+        Application.AddMessageFilter(this);
+    }
+
+    protected override void OnHandleDestroyed(EventArgs e)
+    {
+        Application.RemoveMessageFilter(this);
+        base.OnHandleDestroyed(e);
+    }
+
+    /// <summary>
+    /// 看图时把**全应用**的滚轮都收下来缩放。没开图就什么都不做，让给对话区 / 输入框。
+    ///
+    /// 另外两个过滤器（<c>ChatView</c> / <c>InputPanel</c>）各自的判断在前、看见这张图开着
+    /// 就主动返回 false，所以这里不必去争注册顺序 —— 见 <see cref="AnyOpen"/>。
+    /// </summary>
+    public bool PreFilterMessage(ref Message m)
+    {
+        if (m.Msg != WM_MOUSEWHEEL) return false;
+        if (!Visible || !IsHandleCreated || _img == null) return false;
+
+        // 用消息里的**屏幕坐标**换算，不用 Cursor.Position：后者要等这条消息被处理时才读，
+        // UI 线程一忙就读到已经走掉的鼠标位置（同 ChatView 那条注释）。
+        long lp = m.LParam.ToInt64();
+        var screen = new Point((short)(lp & 0xFFFF), (short)((lp >> 16) & 0xFFFF));
+        int notches = (short)((long)m.WParam >> 16) / 120;
+        if (notches == 0) return false;
+
+        ZoomAt(PointToClient(screen), notches);
+        return true;
     }
 
     protected override void OnMouseDown(MouseEventArgs e)
@@ -332,7 +405,7 @@ internal sealed class ImageViewer : Control, IThemed
     {
         string info = _name + "   " + _img!.Width + " x " + _img.Height
                     + "   " + (int)Math.Round(ViewScale * 100) + "%";
-        const string hint = "滚轮缩放 · 拖动平移 · 点空白处或按 Esc 关闭";
+        const string hint = "滚轮缩放（界面上任意位置都行）· 拖动平移 · 点空白处或按 Esc 关闭";
 
         var f = SF.Get(10.5f);
         var fh = SF.Get(9.5f);

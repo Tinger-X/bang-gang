@@ -79,20 +79,21 @@ function Read-Settings {
 
 # ---------------- the window ----------------
 
-# The chat view, as both handle and rect: the rect says which control it is, the handle
-# is what the rows have to be enumerated from (see Get-Rows).
-function Get-ChatPanel($main) {
-    $mr = Get-WinRect $main
-    $best = $null
-    foreach ($h in Get-WinKids $main) {
-        $r = Get-WinRect $h
-        if ($r.Top -ne ($mr.Top + 38 + 48)) { continue }
-        if ($r.Right -ne $mr.Right) { continue }
-        if ($r.Left -lt $mr.Left) { continue }
-        if ($null -eq $best -or $r.Left -lt $best.R.Left) { $best = @{ H = $h; R = $r } }
-    }
-    return $best
+# The bubbles, reduced to "how big is it", ordered top-down. That is what the before/after
+# comparison needs: a dropped or truncated message comes back as a shorter bubble.
+#
+# Read from ui-rows.json rather than off the control tree. 0.9.0 made ChatView paint the
+# bubbles itself, so they stopped being child windows -- an enumeration returns an empty
+# list now, and an empty list compares EQUAL to an empty list, which would make the
+# comparison below pass while measuring nothing at all. That is the failure this function
+# exists to catch, so it is worth the paragraph.
+function Get-Rows {
+    $ui = Get-UiRows
+    $rows = @(Get-UiRowList $ui | Sort-Object { [int]$_.y })
+    return @($rows | ForEach-Object { '' + [int]$_.w + 'x' + [int]$_.h })
 }
+
+# The conversation title is a real Label, so its text can be read straight back. That
 
 # The conversation list: full width of the sidebar, below the 46-tall head strip.
 function Get-ConvList($main) {
@@ -118,26 +119,6 @@ function Get-InputEdit($main) {
     return $null
 }
 
-# The bubbles: the chat view's OWN children, by rect. Reduced to "how big is it" and
-# ordered top-down, which is what the before/after comparison needs -- a dropped or
-# truncated message comes back as a shorter bubble.
-#
-# Enumerated from the chat view rather than from the main window: the input card's text
-# box and its two 28x28 buttons also sit below the title strip and pass any filter that
-# only looks at "is it in the body area", which is how a first cut of this counted the
-# send button as a message. They are siblings of the chat view, not children of it.
-function Get-Rows($chat) {
-    $rows = @()
-    foreach ($h in Get-WinKids $chat.H) {
-        if ((Get-ShortClass $h) -like '*SCROLLBAR*') { continue }
-        $r = Get-WinRect $h
-        $rows += ,@{ Top = $r.Top; S = ('' + ($r.Right - $r.Left) + 'x' + ($r.Bottom - $r.Top)) }
-    }
-    $out = @()
-    foreach ($x in @($rows | Sort-Object Top)) { $out += ,$x.S }
-    return @($out)
-}
-
 # The conversation title is a real Label, so its text can be read straight back. That
 # is the cheapest solid proof that the UI came up on the restored conversation rather
 # than on the welcome page -- and it needs no OCR of the self-drawn list.
@@ -154,6 +135,13 @@ function Find-Text($main, [string]$want) {
 # "12..44 x 3..20 (n=311, w=33 h=18)" as a string. Reading .B / .Y off a string gives
 # $null without a word from PowerShell, and $null - $null + 1 is 1 -- so the box came
 # back as a flat 1px for every sample and all three list checks passed on nothing.
+#
+# WATCH OUT: the number is not "how many rows". A row is 38 tall, and the one that is
+# ACTIVE is filled with the accent colour while the others are text only -- so one
+# highlighted row measures ~39 and one plain row measures ~16. Since 0.9.0 a relaunch
+# never opens a conversation (item 3), so a list that is highlighted on one side of a
+# comparison and plain on the other reads as a 23px difference that has nothing to do
+# with rows appearing or disappearing. Compare like with like.
 function List-InkHeight($main) {
     $mr = Get-WinRect $main
     $r = Get-InkBoxNumAt ($mr.Left + 10) ($mr.Top + 170) 200 260
@@ -195,7 +183,11 @@ $script:fileMsgs = 0
 $script:fileTitle = ''
 $script:nameIsId = $false
 $script:foundTitle = $false
-$script:foundAgain = $false
+$script:rowsOnStart = -1
+$script:titleOnStart = $true
+$script:listOnStart = 0
+$script:rowsAfterEmpty = -1
+$script:listEmpty = -1
 $script:backOnWelcome = $false
 $script:filesAfterEmpty = -1
 $script:filesAfterDelete = -1
@@ -233,6 +225,15 @@ try {
         Set-Content -Path $legacy -Value ($old | ConvertTo-Json -Depth 8) -Encoding utf8
 
         $main = Start-BangGang 5
+        # The import happens on the way up; whether the imported conversation is the one on
+        # screen is answered by opening it. Before 0.9.0 the app restored the last active
+        # conversation by itself, so "the title strip says it" was readable straight away --
+        # item 3 changed that, and the relaunch now always lands on the welcome page.
+        $listRow = Get-ConvList $main
+        if ($null -ne $listRow) {
+            Invoke-MouseClick ([int](($listRow.R.Left + $listRow.R.Right) / 2)) ($listRow.R.Top + 19)
+            Start-Sleep -Milliseconds 900
+        }
         $script:importTitle = ($null -ne (Find-Text $main $titleLegacy))
         $files = @(List-ChatFiles)
         $script:importFile = $files.Count
@@ -285,9 +286,7 @@ try {
         }
         Write-Output ('  round finished after ' + $waited + 'ms')
 
-        $chat = Get-ChatPanel $main
-        if ($null -eq $chat) { throw 'chat panel not found' }
-        $script:rows1 = Get-Rows $chat
+        $script:rows1 = Get-Rows
         $script:ink1 = List-InkHeight $main
         Save-WindowShot $main (Get-ShotPath 'persist-2-before.png')
 
@@ -306,14 +305,30 @@ try {
         $set = Read-Settings
         $script:nameIsId = ($files.Count -eq 1 -and $null -ne $set -and ('' + $set.ActiveChatId) -eq [IO.Path]::GetFileNameWithoutExtension($files[0]))
 
-        # ---- round 3: restart, is it back? ----
+        # ---- round 3: restart -- welcome page first, then open it ----
+        #
+        # Item 3: the relaunch lands on the welcome page even though a conversation is
+        # sitting right there in the list. So the first thing to assert is precisely that
+        # -- no rows, no title strip -- and that the conversation is still LISTED; then
+        # the row is clicked and the bubbles have to come back the same size they were.
+        #
+        # Both halves are needed. "Back on the welcome page" alone passes on a build that
+        # dropped the whole conversation list on the floor.
         Stop-BangGang
         Start-Sleep -Milliseconds 600
+        Remove-Item $script:BBRows -ErrorAction SilentlyContinue
         $main = Start-BangGang 5
+        $script:rowsOnStart = @(Get-UiRowList (Get-UiRows)).Count
+        $script:titleOnStart = ($null -ne (Find-Text $main $title))
+        $script:listOnStart = List-InkHeight $main
+
+        $startRow = Get-ConvList $main
+        if ($null -ne $startRow) {
+            Invoke-MouseClick ([int](($startRow.R.Left + $startRow.R.Right) / 2)) ($startRow.R.Top + 19)
+            Start-Sleep -Milliseconds 900
+        }
         $script:foundTitle = ($null -ne (Find-Text $main $title))
-        $chat2 = Get-ChatPanel $main
-        if ($null -eq $chat2) { throw 'chat panel not found after restart' }
-        $script:rows2 = Get-Rows $chat2
+        $script:rows2 = Get-Rows
         Save-WindowShot $main (Get-ShotPath 'persist-3-after.png')
 
         # ---- round 4: two empty conversations ----
@@ -336,9 +351,14 @@ try {
 
         Stop-BangGang
         Start-Sleep -Milliseconds 600
+        Remove-Item $script:BBRows -ErrorAction SilentlyContinue
         $main = Start-BangGang 5
         $script:ink4 = List-InkHeight $main
-        $script:foundAgain = ($null -ne (Find-Text $main $title))
+        # Not "the title is back": since 0.9.0 a relaunch never opens a conversation, so
+        # that would be false even on a perfect run. What has to hold is that the
+        # conversation is still LISTED -- which is what ink4 measures, against listOnStart
+        # (the same picture, taken earlier in this same run; see the check in section D).
+        $script:rowsAfterEmpty = @(Get-UiRowList (Get-UiRows)).Count
         $script:filesAfterEmpty = @(List-ChatFiles).Count
 
         # ---- round 5: deleting the conversation takes its file with it ----
@@ -358,8 +378,13 @@ try {
         # ---- round 6: nothing left, so nothing comes back ----
         Stop-BangGang
         Start-Sleep -Milliseconds 600
+        Remove-Item $script:BBRows -ErrorAction SilentlyContinue
         $main = Start-BangGang 5
-        $script:backOnWelcome = ($null -eq (Find-Text $main $title))
+        # Two independent signals, because either one alone is vacuous here: 0 rows is
+        # also what a successfully-opened EMPTY conversation looks like, and "the list is
+        # empty" is also what a list that failed to render looks like.
+        $script:backOnWelcome = (@(Get-UiRowList (Get-UiRows)).Count -eq 0)
+        $script:listEmpty = (List-InkHeight $main)
         Save-WindowShot $main (Get-ShotPath 'persist-6-welcome.png')
     }
 } finally {
@@ -401,9 +426,18 @@ Check $script:nameIsId 'the file is named after the conversation id' $script:one
 Check ($script:fileMsgs -eq 2) 'both messages stored' ($script:fileMsgs.ToString())
 Check ($script:fileTitle -eq $title) 'title stored' $script:fileTitle
 
-# ---- C. back on screen after a restart ----
+# ---- C. after a restart: welcome page first, then the conversation opens unchanged ----
 Write-Output ''
-Write-Output '--- C. it comes back after a restart ---'
+Write-Output '--- C. after a restart it waits on the welcome page ---'
+Write-Output ('  on start: ' + $script:rowsOnStart + ' rows, title strip ' +
+              $(if ($script:titleOnStart) { 'present' } else { 'absent' }) +
+              ', conversation list ink ' + $script:listOnStart + 'px')
+Check ($script:rowsOnStart -eq 0) 'no conversation is open after a restart' ($script:rowsOnStart.ToString() + ' rows')
+Check (-not $script:titleOnStart) 'and no title strip either' 'label is not there'
+Check ($script:listOnStart -gt 0) 'but the conversation is still listed' ($script:listOnStart.ToString() + 'px of ink')
+
+Write-Output ''
+Write-Output '--- C2. opening it by hand brings back exactly what was there ---'
 Check $script:foundTitle 'the title strip shows it again' ('label "' + $title + '"')
 $r1 = @($script:rows1)
 $r2 = @($script:rows2)
@@ -418,10 +452,19 @@ Check (($r2 -join ',') -eq ($r1 -join ',')) 'and the same sizes' 'identical rect
 # ---- D. empty conversations leave no file ----
 Write-Output ''
 Write-Output '--- D. empty conversations are not kept ---'
-Write-Output ('  list ink height: 1 conversation ' + $script:ink1 + 'px   3 conversations (live) ' + $script:ink3 + 'px   after restart ' + $script:ink4 + 'px')
+Write-Output ('  list ink height: 1 row selected ' + $script:ink1 + 'px   3 rows (live) ' + $script:ink3 +
+              'px   1 row plain ' + $script:listOnStart + 'px   after restart ' + $script:ink4 + 'px')
 Check ($script:ink1 -gt 0) 'the list has a row to measure' ($script:ink1.ToString() + 'px')
-Check ($script:ink3 -gt $script:ink1 + 10) 'three rows really are taller than one' ($script:ink3.ToString() + 'px vs ' + $script:ink1 + 'px')
-Check ([Math]::Abs($script:ink4 - $script:ink1) -le 4) 'back to one row after the restart' ($script:ink4.ToString() + 'px vs ' + $script:ink1 + 'px')
+Check ($script:ink3 -gt $script:ink4 + 10) 'three rows really are taller than one' ($script:ink3.ToString() + 'px vs ' + $script:ink4 + 'px')
+
+# Compared against listOnStart, NOT against ink1. Both of those are the same picture --
+# one conversation, nothing open after a relaunch -- while ink1 is one conversation with
+# its row SELECTED, and the selected row is filled with the accent colour, so its ink box
+# is the whole 38px row instead of the ~16px the text alone covers. Comparing across that
+# pair reads a 23px difference and calls it a lost row. That the two are the same picture
+# is the point being tested, so the baseline has to be taken in the same state.
+Check ([Math]::Abs($script:ink4 - $script:listOnStart) -le 4) 'back to one row after the restart' ($script:ink4.ToString() + 'px vs ' + $script:listOnStart + 'px, unselected both times')
+Check ($script:rowsAfterEmpty -eq 0) 'and the restart still lands on the welcome page' ($script:rowsAfterEmpty.ToString() + ' rows')
 Check ($script:filesAfterEmpty -eq 1) 'still one file in chats\' ($script:filesAfterEmpty.ToString())
 
 # ---- E. deleting a conversation deletes its file ----
@@ -436,7 +479,8 @@ Check $script:activeCleared 'settings no longer points at it' 'ActiveChatId empt
 # ---- F. where the relaunch lands ----
 Write-Output ''
 Write-Output '--- F. with nothing left it comes back to the welcome page ---'
-Check $script:backOnWelcome 'not stuck on a conversation that is gone' 'title label is gone'
+Check $script:backOnWelcome 'not stuck on a conversation that is gone' '0 rows rendered'
+Check ($script:listEmpty -le 2) 'and the list is empty too, so the delete stuck' ($script:listEmpty.ToString() + 'px of ink')
 
 Write-Output ''
 if ($script:fail -eq 0) { Write-Output 'ALL CHECKS PASSED' } else { Write-Output ('' + $script:fail + ' CHECK(S) FAILED') }

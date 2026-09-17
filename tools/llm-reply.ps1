@@ -10,13 +10,18 @@
 # What it pins down, in the order the data flows:
 #   A. the request the app actually sends    -- model, temperature, max_tokens,
 #      the system message, and the reinforcement text riding on the last user turn
-#   B. that the reply arrives progressively  -- the bubble is taller mid-stream
+#   B. that the reply arrives progressively  -- the row is taller mid-stream
 #      than the empty placeholder, and taller again once the stream ends
 #   C. that it is really painted             -- the strip of screen that was bare
 #      chat background mid-stream carries ink by the end (same rect, two snapshots)
 #   D. that nothing was lost on the way      -- "llm done chars=N" equals the total
 #      the stub sent, to the character
 #   E. (-Reasoning only) the thinking block and the truncation notice
+#
+# 0.9.0 note: the row geometry comes from ui-rows.json, not from the chat view's children
+# -- ChatView paints the bubbles itself now. That is a better fit for this file than the
+# enumeration was: the snapshot is written once per layout pass, so "the row grew between
+# these two reads" is an observation rather than a race against a moving window tree.
 #
 # Two modes, and the second one is not a variation of the first:
 #
@@ -220,9 +225,9 @@ function Get-InputButtons($main, $edit) {
 # window's right edge. Same rule as sidebar-check.ps1 -- it cannot be found by name,
 # the chat view is a plain Panel and the containers above it all hug the window now.
 #
-# Returns the HANDLE as well as the rect. It used to hand back just the rect, which
-# was enough while callers only asked "where is it"; the bubbles are now identified by
-# their parent, and a rect is not a parent.
+# It is a real control and still is one -- what stopped being windows in 0.9.0 are the
+# bubbles INSIDE it. The rect is all this probe wants from it now (the bottom edge, to
+# keep the watched strip inside the view); the rows themselves come from the snapshot.
 function Get-ChatPanel($main) {
     $mr = Get-WinRect $main
     $best = $null
@@ -236,44 +241,40 @@ function Get-ChatPanel($main) {
     return $best
 }
 
-# Every control laid out inside the chat view -- i.e. the message bubbles. Printed
-# when a sample comes back empty: "no bubble" has several very different causes
-# (scrolled out of the view, never created, wrong margin) and the survey tells them
-# apart without another round trip. Same parent rule as Get-AsstBubble, for the same
-# reason: a geometric window hides the very case this is meant to diagnose.
-function Show-ChatKids($main, $chat) {
+# The rows the snapshot is holding. Printed when a sample comes back empty: "no row" has
+# several very different causes (the stream never started, the row was laid out at zero
+# height, the snapshot is stale) and the survey tells them apart without another round
+# trip. This replaces an enumeration of the chat view's children, for the same reason
+# Get-AsstBubble did -- see the note there.
+function Show-ChatRows {
+    $ui = Get-UiRows
+    if ($null -eq $ui) { Write-Output '    (no ui-rows.json at all)'; return }
+    Write-Output ('    view ' + $ui.viewX + ',' + $ui.viewY + ' ' + $ui.clientW + 'x' + $ui.clientH +
+                  '  offset ' + $ui.offset + '  contentH ' + $ui.contentH)
     $n = 0
-    foreach ($h in Get-WinKids $main) {
-        if ([BB]::GetParent($h) -ne $chat.H) { continue }
-        $r = Get-WinRect $h
-        Write-Output ('    ' + (Get-ShortClass $h).PadRight(14) + $r.Left + ',' + $r.Top + ' ' +
-                      ($r.Right - $r.Left) + 'x' + ($r.Bottom - $r.Top) +
-                      $(if ([BB]::IsWindowVisible($h)) { '  vis' } else { '  hid' }))
+    foreach ($r in @(Get-UiRowList $ui)) {
+        Write-Output ('    ' + ('' + $r.role).PadRight(10) + $r.x + ',' + $r.y + ' ' + $r.w + 'x' + $r.h)
         $n++
     }
-    if ($n -eq 0) { Write-Output '    (nothing inside the chat view)' }
+    if ($n -eq 0) { Write-Output '    (no rows at all)' }
 }
 
-# The last assistant bubble: the bottom-most child of the chat view whose left edge is
-# the 26px margin ChatView.LayoutRows gives every non-user row.
+# The last assistant row, from the snapshot ChatView writes.
 #
-# Identified by PARENT, not by a coordinate window. It used to test "Top >= chat.Top",
-# which quietly drops the bubble the moment the conversation scrolls: AutoScroll moves
-# child windows physically, so a bubble taller than what is left of the view starts a
-# pixel or two ABOVE the panel -- still plainly on screen, but no longer matching. The
-# symptom is a bubble that is visibly there in the screenshot and "disappeared" in the
-# probe. The scrollbars really are children of the chat view too, hence the class test.
-function Get-AsstBubble($main, $chat) {
-    $best = $null
-    foreach ($h in Get-WinKids $main) {
-        if ((Get-ShortClass $h) -like '*SCROLLBAR*') { continue }
-        if ([BB]::GetParent($h) -ne $chat.H) { continue }
-        $r = Get-WinRect $h
-        if ([Math]::Abs($r.Left - ($chat.R.Left + 26)) -gt 2) { continue }
-        if ($r.Bottom -le $chat.R.Top) { continue }            # scrolled out of sight above
-        if ($null -eq $best -or $r.Top -gt $best.Top) { $best = $r }
-    }
-    return $best
+# This used to walk the chat view's children and take the bottom-most one sitting at the
+# 26px margin. 0.9.0 made ChatView paint the rows itself, so there are no children left --
+# and what an empty enumeration does here is make this probe throw "no assistant bubble
+# after sending", which is precisely the failure the probe exists to detect. Reading the
+# snapshot instead also removes a race: the old version could catch a bubble halfway
+# through being moved by the scroll.
+function Get-AsstBubble {
+    $ui = Get-UiRows
+    $rows = @(Get-UiRowsOf $ui 'assistant')
+    if ($rows.Count -eq 0) { return $null }
+    $s = Get-UiRowScreen $ui $rows[$rows.Count - 1]
+    if ($null -eq $s) { return $null }
+    return @{ Left = $s.L; Top = $s.T; Right = ($s.L + $s.W); Bottom = ($s.T + $s.H)
+              W = $s.W; H = $s.H }
 }
 
 $script:fail = 0
@@ -328,11 +329,11 @@ try {
         Start-Sleep -Milliseconds 600
         $chat = Get-ChatPanel $main
         if ($null -eq $chat) { throw 'chat panel not found' }
-        $script:b1 = Get-AsstBubble $main $chat
+        $script:b1 = Get-AsstBubble
         if ($null -eq $script:b1) {
-            Write-Output '  chat view contents right after sending:'
-            Show-ChatKids $main $chat
-            throw 'no assistant bubble after sending'
+            Write-Output '  chat rows right after sending:'
+            Show-ChatRows
+            throw 'no assistant row after sending'
         }
         # A frame of the thinking phase itself. Everything measured here is a number;
         # this is the one artifact that shows what the user was actually looking at
@@ -364,18 +365,18 @@ try {
         $sh = 20
         $sx = 0; $sy = 0; $bmp = $null; $still = $false
         for ($try = 0; $try -lt 20; $try++) {
-            $bb = Get-AsstBubble $main $chat
-            if ($null -eq $bb) { throw 'the assistant bubble went away mid-measurement' }
+            $bb = Get-AsstBubble
+            if ($null -eq $bb) { throw 'the assistant row went away mid-measurement' }
             $sx = $bb.Left + 14
             $sy = $bb.Bottom + $GUARD
             if ($sy + $sh -gt $chat.R.Bottom) { throw 'the watched strip would fall outside the chat view' }
             $bmp = Get-Crop $sx $sy $sw $sh
-            $after = Get-AsstBubble $main $chat
+            $after = Get-AsstBubble
             if ($null -ne $after -and $after.Bottom -eq $bb.Bottom) { $still = $true; break }
             $bmp.Dispose()
             $bmp = $null
         }
-        if ($null -eq $bmp) { throw 'the assistant bubble never held still long enough to sample it' }
+        if ($null -eq $bmp) { throw 'the assistant row never held still long enough to sample it' }
         # 20 tries at ~60ms each is longer than the stub's whole reply, so getting here
         # with $still false would mean the reply ended mid-loop -- say so rather than
         # letting the numbers below be read as a measurement of something.
@@ -391,13 +392,13 @@ try {
         if (-not $Reasoning) { Save-WindowShot $main (Get-ShotPath 'llm-reply-mid.png') }
 
         Start-Sleep -Milliseconds 3000
-        $script:b2 = Get-AsstBubble $main $chat
+        $script:b2 = Get-AsstBubble
         if ($Reasoning) { Save-WindowShot $main (Get-ShotPath 'llm-reply-reasoning.png') }
         else { Save-WindowShot $main (Get-ShotPath 'llm-reply.png') }
         if ($null -eq $script:b2) {
-            Write-Output '  chat view contents at the end:'
-            Show-ChatKids $main $chat
-            throw 'the assistant bubble disappeared'
+            Write-Output '  chat rows at the end:'
+            Show-ChatRows
+            throw 'the assistant row disappeared'
         }
         $bmp = Get-Crop $sx $sy $sw $sh
         $script:endInk = Get-InkBoxNum $bmp

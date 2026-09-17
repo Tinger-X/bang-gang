@@ -46,10 +46,12 @@ partial class MainForm
     private void PersistChat(Conversation c) => ChatStore.Save(c);
 
     /// <summary>
-    /// 记住「用户现在开的是哪条」，下次启动直接回到它。
+    /// 记住「用户现在开的是哪条」。
     ///
-    /// 没变就不写：切会话是常事，每次重写一遍 settings.json 没必要。启动时
-    /// <see cref="RestoreConversations"/> 也会走到这儿，那时值本来就是对的，等于不写。
+    /// 注意它**不再影响启动**：启动一律停在欢迎页，见 <see cref="RestoreConversations"/>。
+    /// 留着它是「用户最后开过哪条」这个事实本身还有用，也一直有探针在断言它。
+    ///
+    /// 没变就不写：切会话是常事，每次重写一遍 settings.json 没必要。
     /// </summary>
     private void RememberActive()
     {
@@ -60,22 +62,26 @@ partial class MainForm
     }
 
     /// <summary>
-    /// 启动时把上次的会话读回来，并直接回到当时那一条上（找不到就挑最近更新的那条）。
+    /// 启动时把历史会话读进侧栏列表，但**一条都不打开** —— 一律停在欢迎页。
     ///
-    /// 没有历史时停在欢迎页 —— 那是「一条会话都没有」本该有的样子，不该为了「恢复」
-    /// 硬造一条空会话出来。
+    /// 这里以前会挑一条激活（settings.json 里的 <c>ActiveChatId</c>，没有就取最近更新的
+    /// 那条），用户明确要求改掉：一打开程序就是上一次那段对话，想开个新的还得先手动退出来。
+    /// 历史仍然一条不少地列在左边，点一下就进去 —— 「记得住」和「自动进去」是两件事。
+    ///
+    /// 不激活这件事本身不需要额外代码：<c>_active</c> 保持 null，
+    /// <c>_chatUI</c> 就是构造函数里设的不可见、<c>_welcome</c> 默认可见，
+    /// 于是自然停在欢迎页。**别在这里补一句「让欢迎页可见」** —— 那会多出一个
+    /// 只在启动那一瞬成立的状态，往后再有人加一条退出会话的路径就又对不上了。
+    ///
+    /// <see cref="ChatStore.Load"/> 的 0.8.1 单文件导入照跑：历史要迁进 <c>chats\</c>，
+    /// 只是迁完不再顺手打开它。它一起带回来的「当时开着哪条」同理不再被读。
     /// </summary>
     private void RestoreConversations()
     {
-        var (list, legacyActive) = ChatStore.Load();
+        var (list, _) = ChatStore.Load();
         if (list.Count == 0) return;
         _conversations.AddRange(list);
-        // 刚从 0.8.1 的单文件存档搬过来时，当时开着哪条是老文件一起带回来的；
-        // 平时这个指针在 settings.json 里。
-        string want = _settings.ActiveChatId.Length > 0 ? _settings.ActiveChatId : (legacyActive ?? "");
-        var c = want.Length == 0 ? null : _conversations.FirstOrDefault(x => x.Id == want);
-        c ??= _conversations.OrderByDescending(x => x.UpdatedAt).FirstOrDefault();
-        if (c != null) ActivateConversation(c);
+        RebindConversations();
     }
 
     private void RebindConversations()
@@ -178,7 +184,9 @@ partial class MainForm
         CancelStream();                       // 上一轮（如果有）到此为止
         _stream = st;
         _input.Busy = true;
-        if (ReferenceEquals(_active, conv)) _chatView.AddMessage(st.Msg);   // 先立一个空气泡
+        // 先立一个空气泡，并让它进入「等第一个字」的占位动画：这几秒钟里它否则只有
+        // 顶上那行「帮帮」，看着像半截断掉的气泡（用户要求）。
+        if (ReferenceEquals(_active, conv)) _chatView.AddMessage(st.Msg, waiting: true);
 
         st.Timer = new System.Windows.Forms.Timer { Interval = 40 };
         st.Timer.Tick += (_, _) => Flush(st);
@@ -227,6 +235,9 @@ partial class MainForm
             st.Timer = null;
             st.Cts.Dispose();
             Flush(st);                              // 收尾时还可能压着最后一段思考没落地
+            // 出错 / 暂停 / 空回复这几条路都到不了上面那句「收到第一个字符」，
+            // 不收这一笔，三个点会一直转下去 —— 而这一轮早就结束了。
+            _chatView.SetWaiting(st.Msg, false);
             // 思考了多久只有这里知道（回调只看得到「第一段是什么时候到的」）。
             // 已经在计时器里定过就不再覆盖：一轮里 PaintStream 只该让它变一次。
             if (st.ReasonStart != 0 && st.Msg.ReasoningMs == 0)
@@ -271,6 +282,9 @@ partial class MainForm
         if (!ReferenceEquals(_active, st.Conv)) return;
         var b = _chatView.BubbleFor(st.Msg);
         if (b == null) return;
+        // 第一个有效字符到了（正文或思考都算）：占位动画让位给真内容。
+        // 交给 ChatView 而不是气泡自己判，是因为动画的时钟也在那儿（见 UpdateWaitTimer）。
+        if (st.Msg.Text.Length > 0 || st.Msg.Reasoning.Length > 0) _chatView.SetWaiting(st.Msg, false);
         b.RefreshText();
         _chatView.NotifyRowGrew();
     }

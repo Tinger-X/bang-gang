@@ -128,24 +128,25 @@ function Get-ChatPanel($main) {
     return $best
 }
 
-# The bottom-most bubble of THIS chat view, by parent rather than by coordinate: a
-# bubble taller than what is left of the view starts above the panel's top edge, and a
-# geometric window would drop exactly the case worth looking at.
-function Get-AsstBubble($main, $chat) {
-    $best = $null
-    foreach ($h in Get-WinKids $main) {
-        if ((Get-ShortClass $h) -like '*SCROLLBAR*') { continue }
-        if ([BB]::GetParent($h) -ne $chat.H) { continue }
-        $r = Get-WinRect $h
-        if ([Math]::Abs($r.Left - ($chat.R.Left + 26)) -gt 2) { continue }
-        if ($r.Bottom -le $chat.R.Top) { continue }
-        if ($null -eq $best -or $r.Top -gt $best.Top) { $best = $r }
-    }
-    return $best
+# The last assistant row, from the snapshot ChatView writes.
+#
+# This used to be the bottom-most child of the chat view, found by parent. 0.9.0 made
+# ChatView paint the rows itself, so there are no children left -- and an enumeration
+# that comes back empty reads as "height 0", which in this file means "the model has not
+# said anything yet" and would be sampled all the way to the deadline.
+#
+# Screen coordinates via Get-UiRowScreen: the JSON is in the view's client space.
+function Get-AsstBubble {
+    $ui = Get-UiRows
+    $rows = @(Get-UiRowsOf $ui 'assistant')
+    if ($rows.Count -eq 0) { return $null }
+    $s = Get-UiRowScreen $ui $rows[$rows.Count - 1]
+    if ($null -eq $s) { return $null }
+    return @{ Left = $s.L; Top = $s.T; Right = ($s.L + $s.W); Bottom = ($s.T + $s.H) }
 }
 
-function Get-BubbleHeight($main, $chat) {
-    $b = Get-AsstBubble $main $chat
+function Get-BubbleHeight {
+    $b = Get-AsstBubble
     if ($null -eq $b) { return 0 }
     return ($b.Bottom - $b.Top)
 }
@@ -258,7 +259,7 @@ try {
         $deadline = (Get-Date).AddSeconds(240)
         while ((Get-Date) -lt $deadline) {
             if ((Get-DoneCount) -ge 1) { break }
-            $h = Get-BubbleHeight $main $chat
+            $h = Get-BubbleHeight
             $series += , $h
             if ($h -gt 28 -and -not $shot) {
                 # A picture of the thinking phase itself: the bubble is short enough
@@ -275,9 +276,9 @@ try {
             $script:r1.Done = Get-LastDone
             $script:r1.HMid = 0
             if ($series.Count -gt 0) { $script:r1.HMid = ($series | Measure-Object -Maximum).Maximum }
-            $script:r1.HFinal = Get-BubbleHeight $main $chat
+            $script:r1.HFinal = Get-BubbleHeight
             Save-WindowShot $main (Get-ShotPath 'llm-live-answer.png')
-            $b = Get-AsstBubble $main $chat
+            $b = Get-AsstBubble
             $bmp = Get-Crop $b.Left $b.Top ($b.Right - $b.Left) ($b.Bottom - $b.Top)
             $amber = 0
             for ($x = 0; $x -lt $bmp.Width; $x++) {
@@ -305,9 +306,9 @@ try {
         $script:r2.Ended = $ended
         if ($ended) {
             $script:r2.Done = Get-LastDone
-            $script:r2.HFinal = Get-BubbleHeight $main $chat
+            $script:r2.HFinal = Get-BubbleHeight
             Save-WindowShot $main (Get-ShotPath 'llm-live-truncated.png')
-            $b = Get-AsstBubble $main $chat
+            $b = Get-AsstBubble
             $bmp = Get-Crop $b.Left $b.Top ($b.Right - $b.Left) ($b.Bottom - $b.Top)
             $amber = 0
             for ($x = 0; $x -lt $bmp.Width; $x++) {

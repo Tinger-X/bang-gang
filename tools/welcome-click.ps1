@@ -26,72 +26,10 @@ param([switch]$Shot)
 
 $script:fail = 0
 
-# The accent-filled WIDGETS of the welcome area, as bands. Returns $null if there are none.
-#
-# Sampling every 2px is plenty for a 92px circle and a 180x40 button, and keeps PowerShell's
-# per-pixel interop cost down.
-#
-# Rows are merged into bands and thin ones are dropped, because "accent-coloured pixels"
-# is not the same question as "an accent-filled widget". The page's faux input card is
-# outlined in a colour close enough to the accent to match, so a raw row scan reports its
-# two 1px borders as extra bands -- and a probe that then takes the bottom band clicks the
-# card's outline instead of the button. A widget here is at least 16px tall and 60px wide;
-# an outline is neither.
-function Get-AccentBands([int]$x0, [int]$y0, [int]$x1, [int]$y1) {
-    $bmp = Get-Crop $x0 $y0 ($x1 - $x0) ($y1 - $y0)
-    $w = $bmp.Width; $h = $bmp.Height
+# The accent-band scan used to live here. It moved to _ui.ps1 when start-welcome.ps1
+# needed the same question answered ("is the welcome page up?") with a conversation
+# present in the store -- see Get-AccentBands there for what it does and why.
 
-    # The accent is the most common saturated colour in the area (logo + button are both
-    # filled with it and nothing else is). Saturated = the channels disagree.
-    $hist = @{}
-    for ($yy = 0; $yy -lt $h; $yy += 2) {
-        for ($xx = 0; $xx -lt $w; $xx += 2) {
-            $c = $bmp.GetPixel($xx, $yy)
-            $mx = [Math]::Max($c.R, [Math]::Max($c.G, $c.B))
-            $mn = [Math]::Min($c.R, [Math]::Min($c.G, $c.B))
-            if ($mx - $mn -lt 40) { continue }
-            $k = ($c.R * 65536) + ($c.G * 256) + $c.B
-            if ($hist.ContainsKey($k)) { $hist[$k]++ } else { $hist[$k] = 1 }
-        }
-    }
-    if ($hist.Count -eq 0) { $bmp.Dispose(); return $null }
-    $accKey = -1; $accN = -1
-    foreach ($k in $hist.Keys) { if ($hist[$k] -gt $accN) { $accN = $hist[$k]; $accKey = $k } }
-    $ar = [Math]::Floor($accKey / 65536); $ag = [Math]::Floor(($accKey - $ar * 65536) / 256)
-    $ab = $accKey - ($ar * 65536) - ($ag * 256)
-
-    $bands = New-Object System.Collections.Generic.List[object]
-    $cur = $null
-    for ($yy = 0; $yy -lt $h; $yy += 2) {
-        $n = 0; $lo = -1; $hi = -1
-        for ($xx = 0; $xx -lt $w; $xx += 2) {
-            $c = $bmp.GetPixel($xx, $yy)
-            if (([Math]::Abs($c.R - $ar) + [Math]::Abs($c.G - $ag) + [Math]::Abs($c.B - $ab)) -gt 30) { continue }
-            $n++
-            if ($lo -lt 0) { $lo = $xx }
-            $hi = $xx
-        }
-        if ($n -ge 10) {
-            if ($null -eq $cur) { $cur = @{ Y0 = $yy; Y1 = $yy; X0 = $lo; X1 = $hi } }
-            else {
-                $cur.Y1 = $yy
-                if ($lo -lt $cur.X0) { $cur.X0 = $lo }
-                if ($hi -gt $cur.X1) { $cur.X1 = $hi }
-            }
-        }
-        elseif ($null -ne $cur) { $bands.Add($cur); $cur = $null }
-    }
-    if ($null -ne $cur) { $bands.Add($cur) }
-    $bmp.Dispose()
-
-    $keep = New-Object System.Collections.Generic.List[object]
-    foreach ($b in $bands) {
-        if (($b.Y1 - $b.Y0) -lt 16) { continue }        # an outline, not a widget
-        if (($b.X1 - $b.X0) -lt 60) { continue }        # a 28px icon, not a widget
-        $keep.Add($b)
-    }
-    return @{ Accent = "$ar,$ag,$ab"; Bands = $keep }
-}
 # The store is moved aside rather than hoped to be empty.
 #
 # This probe's whole premise is that the app comes up on the WELCOME page, and that needs
@@ -164,14 +102,7 @@ try {
         # ...and "did a conversation start?" is read off the control tree, where the signal is
         # unambiguous: the real input card brings a multiline EDIT with it, and the welcome
         # page -- which only paints a replica of that card -- does not.
-        $inputEdit = {
-            foreach ($h in Get-WinKids $main) {
-                if ((Get-WinClass $h) -notlike '*EDIT*') { continue }
-                if (((Get-WinRect $h).Bottom - (Get-WinRect $h).Top) -lt 40) { continue }
-                return $h
-            }
-            return [IntPtr]::Zero
-        }
+        $inputEdit = { return (Get-InputEditBig $main) }
 
         Write-Output ("window " + $mr.Left + "," + $mr.Top + " ${mw}x${mh}   sidebar $sw   welcome " +
                       $wx0 + "," + $wy0 + " .. " + $wx1 + "," + $wy1)

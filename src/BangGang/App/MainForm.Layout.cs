@@ -13,7 +13,16 @@ partial class MainForm
     /// </summary>
     private const int ConvTitlePadX = 44;
 
-    private void ApplyLayout()
+    /// <param name="liveResize">
+    /// 这一次布局是**侧栏收展动画的中间帧**。为真时消息区只挪位置、不重排文字 ——
+    /// 重排要对每条消息跑一遍 Markdown 折行，而动画期间可用宽度每帧都在变，逐帧重排等于
+    /// 逐帧把全部消息重新折行一遍，那正是「卡顿」的来源之一。动画收尾由
+    /// <see cref="ChatView.SettleLayout"/> 补一次真正的重排。
+    ///
+    /// 只有 <c>SideTick</c> 传 true；其余调用方（窗口缩放、改设置、换会话）保持默认，
+    /// 它们本来就要实时重排，行为与改动前一致。
+    /// </param>
+    private void ApplyLayout(bool liveResize = false)
     {
         int W = ClientSize.Width, H = ClientSize.Height;
         _chrome.Bounds = new Rectangle(0, 0, W, ChromeH);
@@ -68,6 +77,9 @@ partial class MainForm
         int inputH = _input.PreferredHeight;
         _input.Bounds = new Rectangle(0, bodyH - inputH, W, inputH);
         _input.ContentInset = sw;
+        // 开关必须在 Bounds **之前**设：消息区是在 SetBounds 里同步回调 OnResize 的，
+        // 反过来的话那一帧已经按着旧开关的规矩走完了，这一帧的意图就丢了。
+        _chatView.LiveResize = liveResize;
         _chatView.Bounds = new Rectangle(sw, 48, mw, bodyH - 48 - inputH);
     }
 

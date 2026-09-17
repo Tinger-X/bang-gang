@@ -59,16 +59,16 @@ function Get-ChatView($main) {
     return $best
 }
 
-# Bubbles are real child HWNDs of the chat view, so this is an enumeration -- no pixel
-# scan can tell "no bubble" from "a bubble that happens to be blank".
+# How many bubbles the chat area is showing.
+#
+# 0.9.0 note: bubbles are painted by ChatView now, not one child HWND each, so the
+# enumeration this used to do returns 0 -- and "0 bubbles" reads exactly like "the
+# message was never rendered", which would make every assertion below pass or fail for
+# the wrong reason. It reads the row snapshot ChatView writes instead; see the
+# ui-rows.json block in _ui.ps1.
 function Count-Bubbles($chat) {
     if ($null -eq $chat) { return -1 }
-    $n = 0
-    foreach ($h in Get-WinKids $chat.H) {
-        if ((Get-WinClass $h) -like '*SCROLLBAR*') { continue }
-        $n++
-    }
-    return $n
+    return @(Get-UiRowList (Get-UiRows)).Count
 }
 
 # The conversation's own EDIT. Found in the bottom band and taken as the LAST match, the

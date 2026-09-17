@@ -13,7 +13,7 @@ namespace BangGang;
 public partial class MainForm : Form, IMessageFilter
 {
     public const string WindowTitle = "帮帮";
-    public const string AppVersion = "v0.8.5";
+    public const string AppVersion = "v0.9.0";
 
     private const uint Affinity = Native.WDA_EXCLUDEFROMCAPTURE;
 
@@ -135,7 +135,8 @@ public partial class MainForm : Form, IMessageFilter
         _input.SendRequested += SendFromInput;
         _input.StopRequested += StopReply;
         // 附件列表区的出现 / 消失要改整块输入区的高度，得重摆一次（消息区跟着让位）。
-        _input.LayoutChanged += ApplyLayout;
+        // 用 lambda 而不是方法组：ApplyLayout 现在多了一个可选参数，方法组转不成 Action。
+        _input.LayoutChanged += () => ApplyLayout();
         // 拒收文件之类的提示走顶栏那条 3 秒状态条 —— 全应用就这一个「临时说一句」的出口。
         _input.Notice += FlashStatus;
         _chatView.ImagePressed += OpenImage;

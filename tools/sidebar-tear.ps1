@@ -24,9 +24,80 @@
 # The comparison is restricted to the input band (the bottom PanelH pixels): that is where
 # the card is, and it keeps a full-window GetPixel sweep from costing seconds.
 #
+# 0.9.0 note: the chat band is why this probe exists, and it now needs a conversation WITH
+# CONTENT in it. An empty conversation has no bubbles to move, so the animation leaves no
+# trace whatever the architecture does -- the probe would pass on a completely broken build.
+# The fixture below therefore opens a real multi-message conversation first, and the chat
+# band is the whole message area.
+#
 # Usage:  powershell -File tools\sidebar-tear.ps1
 
 . "$PSScriptRoot\_ui.ps1"
+
+$script:fail = 0
+
+# --- the fixture conversation --------------------------------------------------
+#
+# Same shape as the other probes' fixtures: back up settings.json, conversations.json and
+# the whole chats\ directory, write one conversation, restore everything in the finally.
+$script:Dir = Split-Path $script:BBExe -Parent
+$script:Settings = Join-Path $script:Dir 'settings.json'
+$script:ChatsDir = Join-Path $script:Dir 'chats'
+$script:Legacy = Join-Path $script:Dir 'conversations.json'
+
+$script:HadSettings = Test-Path $script:Settings
+$script:BakSettings = $null
+if ($script:HadSettings) { $script:BakSettings = Get-Content $script:Settings -Raw }
+$script:HadLegacy = Test-Path $script:Legacy
+$script:BakLegacy = $null
+if ($script:HadLegacy) { $script:BakLegacy = Get-Content $script:Legacy -Raw }
+$script:BakChats = @{}
+if (Test-Path $script:ChatsDir) {
+    foreach ($f in Get-ChildItem $script:ChatsDir -File) { $script:BakChats[$f.Name] = (Get-Content $f.FullName -Raw) }
+    Remove-Item (Join-Path $script:ChatsDir '*') -Force
+}
+# An empty chats\ makes the app import the single-file store on startup, which would put a
+# second conversation in the list and the fixture on the wrong row.
+if (Test-Path $script:Legacy) { Remove-Item $script:Legacy -Force }
+
+$script:ConvId = 'sidebarbreach000000000000000000001'
+
+function Write-Fixture {
+    if (-not (Test-Path $script:ChatsDir)) { [void](New-Item -ItemType Directory -Force $script:ChatsDir) }
+    $now = (Get-Date).ToString('o')
+    $msgs = @()
+    for ($i = 1; $i -le 6; $i++) {
+        foreach ($role in @('user', 'assistant')) {
+            $text = 'message ' + $i + ' for the ' + $role + ' side, padded out so that it wraps ' +
+                    'a couple of times inside the bubble and the row really is as tall as a ' +
+                    'bubble with content is.'
+            if ($role -eq 'assistant') {
+                $text = $text + "`n`n" +
+                        '```csharp' + "`n" +
+                        'public static int Add' + $i + '(int a, int b) => a + b;' + "`n" +
+                        '```' + "`n`n" +
+                        '| key | value |' + "`n" +
+                        '|:----|------:|' + "`n" +
+                        '| alpha' + $i + ' | 1 |' + "`n" +
+                        '| beta' + $i + ' | 2 |'
+            }
+            $msgs += @{
+                Role = $role; When = $now; Text = $text
+                Reasoning = ''; ReasoningMs = 0; Warning = ''; Attachments = @()
+            }
+        }
+    }
+    # ChatFile envelope, not a bare Conversation -- see the note in markdown-render.ps1.
+    $file = @{
+        Version = 1
+        Conversation = @{
+            Id = $script:ConvId; Title = 'sidebar-tear'; CreatedAt = $now; UpdatedAt = $now
+            Messages = $msgs
+        }
+    }
+    Set-Content -Path (Join-Path $script:ChatsDir ($script:ConvId + '.json')) `
+                -Value ($file | ConvertTo-Json -Depth 8) -Encoding utf8
+}
 
 Add-Type -TypeDefinition @'
 using System;
@@ -166,26 +237,48 @@ function Test-AfterAnim($main, [string]$Tag, $Bands) {
     $a.Dispose(); $b.Dispose(); $c.Dispose()
 }
 
-Invoke-BBProbe {
-    $script:fail = 0
-    $main = Start-BangGang
+try {
+    Invoke-BBProbe {
+        $script:fail = 0
+        Write-Fixture
+        $main = Start-BangGang
     $mr = Get-WinRect $main
 
-    # A conversation, because the input card only exists once one is open
-    $pill = Get-SearchPill $main
-    if ($null -eq $pill) { throw 'search pill not found' }
-    $pb = Get-PillButtons $main $pill
-    if ($null -eq $pb) { throw 'sidebar pill buttons not found' }
-    Invoke-MouseClick ($pb[1].Left + 14) ($pb[1].Top + 14)
-    Start-Sleep -Milliseconds 1000
+    # Open the fixture conversation. The input card only exists once one is open, and --
+    # since 0.9.0 -- so does anything in the chat band worth measuring.
+    $list = $null
+    foreach ($h in Get-WinKids $main) {
+        $r = Get-WinRect $h
+        if ($r.Left -ne $mr.Left) { continue }
+        if (($r.Right - $r.Left) -ge 320) { continue }
+        if (($r.Bottom - $r.Top) -lt 100) { continue }
+        if ($r.Top -le $mr.Top + 38) { continue }
+        if ($null -eq $list) { $list = $r }
+    }
+    if ($null -eq $list) { throw 'conversation list not found; the fixture was not read back' }
+    Invoke-MouseClick ([int]($list.Left + ($list.Right - $list.Left) / 2)) ($list.Top + 19)
+    Start-Sleep -Milliseconds 1200
+
+    # A conversation that opened but rendered nothing would leave the chat band empty, and an
+    # empty band cannot tear. Count the rows via ui-rows.json -- bubbles stopped being windows
+    # in 0.9.0, so there is no control tree left to count.
+    $rows = @(Get-UiRowList (Get-UiRows))
+    Write-Output ("  fixture    : " + $rows.Count + " rows rendered in the chat area")
+    if ($rows.Count -lt 8) {
+        Write-Output '  fixture    : FAIL -- the conversation did not render; the chat band is empty and cannot tear'
+        $script:fail++
+    }
 
     if ($null -eq (Get-SideToggle $main)) { throw 'sidebar toggle not found' }
 
     # Two bands, because "the sidebar animation left a mark" has two different victims.
-    #   chat   -- between the chat title strip (ends at 86 from the top) and the input
-    #             panel (the bottom 158px). This is the band the user reported: the
-    #             bubbles move sideways with the width every frame, and so does the
-    #             scroll bar's thumb down its right edge.
+    #   chat   -- the whole message area: the chat title strip ends at 86 from the top and
+    #             the input panel takes the bottom 158px. This is the band the user reported:
+    #             the bubbles move sideways with the width every frame, and so does the
+    #             scroll bar's thumb down its right edge. Before 0.9.0 each bubble was a
+    #             child HWND and was blitted in on top of the parent's double buffer, which
+    #             left a row of half-moved bubbles behind after the animation; the whole
+    #             point of that change was to make this band clean.
     #   input  -- the self-painted card whose left edge follows the sidebar, which is
     #             where this probe started. Kept side by side with the chat band rather
     #             than instead of it: they are separate controls with separate paint
@@ -220,8 +313,23 @@ Invoke-BBProbe {
     else { Test-AfterAnim $main 'expand' $bands }
 
     Write-Output ''
-    if ($script:fail -eq 0) { Write-Output 'PASS: the input card leaves no trail behind the sidebar animation.' }
+    if ($script:fail -eq 0) { Write-Output 'PASS: neither the message area nor the input card leaves a trail behind the sidebar animation.' }
     else { Write-Output "FAIL: $($script:fail) state(s) kept pixels from an animation frame." }
+    }
+} finally {
+    if ($script:HadSettings) { Set-Content -Path $script:Settings -Value $script:BakSettings -Encoding utf8 -NoNewline }
+    else { Remove-Item $script:Settings -ErrorAction SilentlyContinue }
+    if ($script:HadLegacy) { Set-Content -Path $script:Legacy -Value $script:BakLegacy -Encoding utf8 -NoNewline }
+    else { Remove-Item $script:Legacy -ErrorAction SilentlyContinue }
+    if (Test-Path $script:ChatsDir) {
+        foreach ($f in Get-ChildItem $script:ChatsDir -File) {
+            if (-not $script:BakChats.ContainsKey($f.Name)) { Remove-Item $f.FullName -Force }
+        }
+    }
+    foreach ($n in $script:BakChats.Keys) {
+        if (-not (Test-Path $script:ChatsDir)) { New-Item -ItemType Directory -Force $script:ChatsDir | Out-Null }
+        Set-Content -Path (Join-Path $script:ChatsDir $n) -Value $script:BakChats[$n] -Encoding utf8 -NoNewline
+    }
 }
 
 Write-BBDone 'sidebar-tear'

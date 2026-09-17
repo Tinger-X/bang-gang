@@ -307,6 +307,14 @@ function Start-BangGang {
     Get-Process BangGang -ErrorAction SilentlyContinue | Stop-Process -Force
     Start-Sleep -Milliseconds 400
 
+    # ui-rows.json is a snapshot of ONE run. Leaving the previous run's copy on disk means
+    # a probe that waits for "two rows to appear" is satisfied instantly by a file
+    # describing the last app -- there are no rows yet and it says there are. (The origin
+    # in it is no longer part of the problem: Get-UiRows re-anchors that on the window
+    # rect, so a stale file can no longer scatter clicks across the desktop. The stale
+    # ROW LIST still can, and that is what this removes.)
+    Remove-Item $script:BBRows -ErrorAction SilentlyContinue
+
     if (-not (Test-Path $script:BBExe)) { throw "debug build missing: $script:BBExe" }
     $env:BANGGANG_SHOW_IN_CAPTURE = '1'      # only the Debug build honours this
     $p = Start-Process -FilePath $script:BBExe -PassThru
@@ -647,6 +655,45 @@ function Get-SettingsGear($main, $pill) {
     return $b[0]
 }
 
+# The conversation list: the tall narrow child flush with the window's left edge.
+#
+# Since 0.9.0 every launch lands on the welcome page (item 3 -- the last conversation is
+# no longer reopened), so the chat view and the input box do not exist until a row is
+# clicked. Any probe that needs them has to start here, and before this helper existed
+# four of them each carried their own copy of this loop.
+function Get-ConvList($main) {
+    $mr = Get-WinRect $main
+    $found = $null
+    foreach ($h in Get-WinKids $main) {
+        $r = Get-WinRect $h
+        if ($r.Left -ne $mr.Left) { continue }
+        if (($r.Right - $r.Left) -ge 320) { continue }
+        if (($r.Bottom - $r.Top) -lt 100) { continue }
+        if ($r.Top -le $mr.Top + 38) { continue }
+        $found = @{ H = $h; R = $r }
+    }
+    return $found
+}
+
+# A list row's pitch, mirrored from ConvListBox: 38px rows with 6px between them.
+$script:BBCovRowH = 38
+$script:BBCovRowGap = 6
+
+# Opens a conversation by clicking its row in the list (default: the first one), then
+# waits for the layout to settle. Returns $false if there is no list at all -- an empty
+# list and a list that failed to render are the same picture, so the caller has to
+# decide for itself whether that counts as a failure.
+function Open-ConvRow($main, [int]$Index = 0) {
+    $list = Get-ConvList $main
+    if ($null -eq $list) { return $false }
+    $rowH = $script:BBCovRowH
+    $y = $list.R.Top + $Index * ($rowH + $script:BBCovRowGap) + [int]($rowH / 2)
+    $x = [int](($list.R.Left + $list.R.Right) / 2)
+    Invoke-MouseClick $x $y
+    Start-Sleep -Milliseconds 900
+    return $true
+}
+
 # The input card's two 28x28 buttons, left to right: attach (+), then send.
 # Named by "28x28, below the text box" rather than by x for the same reason as
 # above: they are pinned BtnInset inside the card's left/right edges, and the
@@ -680,9 +727,215 @@ function Get-ChromeStatus($main) {
     return $best
 }
 
+# The accent-filled WIDGETS inside a screen region, as bands. Returns $null if there
+# are none.
+#
+# This is how a probe asks "is the welcome page up?". The welcome page is SELF-PAINTED
+# -- nothing on it has a handle -- so there is no control to look for, and looking for
+# one is what produced a round of "title bar not found", a probe bug that reads exactly
+# like a broken app. Its logo circle and its button are filled with the accent colour
+# and nothing else of that size is, so counting accent bands answers the question
+# directly. (welcome-click.ps1 and start-welcome.ps1 both need it.)
+#
+# Sampling every 2px is plenty for a 92px circle and a 180x40 button, and keeps
+# PowerShell's per-pixel interop cost down.
+#
+# Rows are merged into bands and thin ones are dropped, because "accent-coloured pixels"
+# is not the same question as "an accent-filled widget". The page's faux input card is
+# outlined in a colour close enough to the accent to match, so a raw row scan reports
+# its two 1px borders as extra bands -- and a probe that then takes the bottom band
+# clicks the card's outline instead of the button. A widget here is at least 16px tall
+# and 60px wide; an outline is neither.
+function Get-AccentBands([int]$x0, [int]$y0, [int]$x1, [int]$y1) {
+    $bmp = Get-Crop $x0 $y0 ($x1 - $x0) ($y1 - $y0)
+    $w = $bmp.Width; $h = $bmp.Height
+
+    # The accent is the most common saturated colour in the area (logo + button are both
+    # filled with it and nothing else is). Saturated = the channels disagree.
+    $hist = @{}
+    for ($yy = 0; $yy -lt $h; $yy += 2) {
+        for ($xx = 0; $xx -lt $w; $xx += 2) {
+            $c = $bmp.GetPixel($xx, $yy)
+            $mx = [Math]::Max($c.R, [Math]::Max($c.G, $c.B))
+            $mn = [Math]::Min($c.R, [Math]::Min($c.G, $c.B))
+            if ($mx - $mn -lt 40) { continue }
+            $k = ($c.R * 65536) + ($c.G * 256) + $c.B
+            if ($hist.ContainsKey($k)) { $hist[$k]++ } else { $hist[$k] = 1 }
+        }
+    }
+    if ($hist.Count -eq 0) { $bmp.Dispose(); return $null }
+    $accKey = -1; $accN = -1
+    foreach ($k in $hist.Keys) { if ($hist[$k] -gt $accN) { $accN = $hist[$k]; $accKey = $k } }
+    $ar = [Math]::Floor($accKey / 65536); $ag = [Math]::Floor(($accKey - $ar * 65536) / 256)
+    $ab = $accKey - ($ar * 65536) - ($ag * 256)
+
+    $bands = New-Object System.Collections.Generic.List[object]
+    $cur = $null
+    for ($yy = 0; $yy -lt $h; $yy += 2) {
+        $n = 0; $lo = -1; $hi = -1
+        for ($xx = 0; $xx -lt $w; $xx += 2) {
+            $c = $bmp.GetPixel($xx, $yy)
+            if (([Math]::Abs($c.R - $ar) + [Math]::Abs($c.G - $ag) + [Math]::Abs($c.B - $ab)) -gt 30) { continue }
+            $n++
+            if ($lo -lt 0) { $lo = $xx }
+            $hi = $xx
+        }
+        if ($n -ge 10) {
+            if ($null -eq $cur) { $cur = @{ Y0 = $yy; Y1 = $yy; X0 = $lo; X1 = $hi } }
+            else {
+                $cur.Y1 = $yy
+                if ($lo -lt $cur.X0) { $cur.X0 = $lo }
+                if ($hi -gt $cur.X1) { $cur.X1 = $hi }
+            }
+        }
+        elseif ($null -ne $cur) { $bands.Add($cur); $cur = $null }
+    }
+    if ($null -ne $cur) { $bands.Add($cur) }
+    $bmp.Dispose()
+
+    $keep = New-Object System.Collections.Generic.List[object]
+    foreach ($b in $bands) {
+        if (($b.Y1 - $b.Y0) -lt 16) { continue }        # an outline, not a widget
+        if (($b.X1 - $b.X0) -lt 60) { continue }        # a 28px icon, not a widget
+        $keep.Add($b)
+    }
+    return @{ Accent = "$ar,$ag,$ab"; Bands = $keep }
+}
+
+# The real input card's multiline EDIT, or [IntPtr]::Zero. "Is a conversation open?"
+# -- the welcome page only paints a REPLICA of that card, so it brings no EDIT with it.
+function Get-InputEditBig($main) {
+    foreach ($h in Get-WinKids $main) {
+        if ((Get-WinClass $h) -notlike '*EDIT*') { continue }
+        $r = Get-WinRect $h
+        if (($r.Bottom - $r.Top) -lt 40) { continue }
+        return $h
+    }
+    return [IntPtr]::Zero
+}
+
 # Calls out the end of a probe run so it is obvious in the transcript.
 function Write-BBDone([string]$Name) {
     Write-Output ''
     Write-Output ('== DONE: ' + $Name + ' -- app closed, nothing left running ==')
     Write-Output ''
+}
+
+# ============================================================================
+# ui-rows.json -- the chat rows, now that bubbles are not windows any more.
+# ============================================================================
+#
+# 0.9.0 made ChatView paint the bubbles itself (they used to be one child HWND
+# each). That is what fixed the sidebar animation, and it also means
+# EnumChildWindows can no longer see a bubble. Losing that signal is SILENT:
+# "0 rows" reads either as "the app is broken" or as "there are no bubbles",
+# and every probe that counted them would start passing on an empty screen.
+#
+# ChatView writes this file on every layout pass instead. Debug-only and gated
+# on BANGGANG_SHOW_IN_CAPTURE, i.e. exactly when a probe can see the window.
+#
+# It is also better than what it replaced: a file read is a consistent
+# snapshot, whereas enumerating children mid-animation can catch rows halfway
+# through a move. And it carries frame timings, which nothing could measure
+# before -- see tools/sidebar-perf.ps1.
+
+$script:BBRows = Join-Path (Split-Path $PSScriptRoot -Parent) 'build\bin\Debug\net8.0-windows\ui-rows.json'
+
+# The parsed snapshot, or $null if the app has not written one yet.
+#
+# viewX/viewY on the returned object are computed HERE, as the chat view's screen origin
+# right now. The file itself carries no absolute screen coordinate on purpose: the app
+# lays out once and the window then keeps moving (CenterScreen on startup, dragging,
+# maximize), and nothing re-dumps the file when it does. An absolute origin in there is
+# therefore stale by construction, and it goes stale in the worst possible way -- the
+# number stays perfectly plausible, so a probe clicks the desktop, reads pixels off
+# whatever is there, and reports app bugs. (Measured: the first dump of a run carried the
+# pre-CenterScreen origin, 264,79, while the window's rect was already 360,120, and it sat
+# there until the first reflow overwrote it.)
+#
+# So the file carries viewOffX/viewOffY -- how far the view sits inside the top-level
+# window, a pure layout quantity that no window move can invalidate -- and this function
+# re-anchors it on the window rect of the moment. Doing it here fixes every caller at
+# once: Get-UiRowScreen, Get-UiRowPoint, and the probes that read $ui.viewX directly.
+function Get-UiRows {
+    if (-not (Test-Path $script:BBRows)) { return $null }
+    $ui = $null
+    try { $ui = (Get-Content $script:BBRows -Raw | ConvertFrom-Json) } catch { return $null }
+    if ($null -eq $ui) { return $null }
+
+    # No viewOffX means the file came from a build that still wrote absolute coordinates,
+    # which cannot be corrected. Loud, because the alternative is a probe that quietly
+    # measures the wrong rectangle.
+    if ($null -eq $ui.viewOffX) {
+        throw ('ui-rows.json has no viewOffX/viewOffY -- this Debug build predates the ' +
+               'window-relative origin, so its coordinates cannot be trusted. Rebuild it.')
+    }
+
+    # Reads before Start-BangGang have no window to anchor on, and an unanchored origin
+    # is how coordinates silently end up near the desktop's corner.
+    $main = $script:BBMain
+    if ($null -eq $main -or $main -eq [IntPtr]::Zero) {
+        throw 'ui-rows.json was read before Start-BangGang; there is no window to anchor it on'
+    }
+
+    $mr = Get-WinRect $main
+    $ui | Add-Member -NotePropertyName viewX -NotePropertyValue ($mr.Left + [int]$ui.viewOffX) -Force
+    $ui | Add-Member -NotePropertyName viewY -NotePropertyValue ($mr.Top + [int]$ui.viewOffY) -Force
+    return $ui
+}
+
+# Every row, in document order. Always a real array: a JSON array with one
+# element still comes back from ConvertFrom-Json as a scalar-ish object, and
+# `$rows.Count` on that is the object's PROPERTY count, not 1.
+function Get-UiRowList($ui) {
+    if ($null -eq $ui) { return @() }
+    return @($ui.rows)
+}
+
+# Rows of one role ('user' / 'assistant').
+function Get-UiRowsOf($ui, [string]$Role) {
+    return @(Get-UiRowList $ui | Where-Object { $_.role -eq $Role })
+}
+
+# A row's rectangle in SCREEN coordinates. Every click and every pixel read has
+# to go through this -- the JSON is in the chat view's client space, and the view
+# is offset by the sidebar. Reading $row.y as a screen y silently clicks the
+# wrong thing, which then looks like a broken app.
+#
+# $ui must come from Get-UiRows, which has already re-anchored viewX/viewY on the
+# window's current position -- going through the raw file instead gives coordinates
+# that were true whenever the app last laid out, which is not necessarily now.
+#
+# Returns a hashtable, NOT a BB+RECT: BB+RECT has no Width/Height, and reading
+# a missing property in PowerShell yields $null rather than an error (see the
+# note on Get-WinRect).
+function Get-UiRowScreen($ui, $row) {
+    if ($null -eq $ui -or $null -eq $row) { return $null }
+    return @{
+        L = [int]$ui.viewX + [int]$row.x
+        T = [int]$ui.viewY + [int]$row.y
+        W = [int]$row.w
+        H = [int]$row.h
+    }
+}
+
+# A point inside a row, at a fraction across and down it. Default is the middle.
+function Get-UiRowPoint($ui, $row, [double]$Fx = 0.5, [double]$Fy = 0.5) {
+    $r = Get-UiRowScreen $ui $row
+    if ($null -eq $r) { return $null }
+    return @{
+        X = [int]($r.L + $r.W * $Fx)
+        Y = [int]($r.T + $r.H * $Fy)
+    }
+}
+
+# Total ink height of the row stack, measured the way the app lays it out:
+# from the first row's top to the last row's bottom. Used where a probe only
+# cares "did anything appear / disappear".
+function Get-UiRowsInkH($ui) {
+    $rows = Get-UiRowList $ui
+    if ($rows.Count -eq 0) { return 0 }
+    $top = ($rows | ForEach-Object { [int]$_.y } | Measure-Object -Minimum).Minimum
+    $bot = ($rows | ForEach-Object { [int]$_.y + [int]$_.h } | Measure-Object -Maximum).Maximum
+    return $bot - $top
 }

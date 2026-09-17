@@ -66,16 +66,25 @@ function Get-ChatPanel($main) {
     return $best
 }
 
-# The bubbles: the chat view's own children. Bubbles are real child HWNDs (that is a
-# standing invariant -- several probes count them), so this is an enumeration and not a
-# pixel scan.
-function Get-Bubbles($chat) {
+# The chat rows, from the snapshot ChatView writes.
+#
+# This used to enumerate the chat view's children: a bubble was a real child HWND, and
+# that "bubbles are windows" invariant was one several probes leaned on. 0.9.0 made
+# ChatView paint the rows itself, so there is nothing left to enumerate -- and an empty
+# enumeration would read as "this conversation has no messages", which is itself one of
+# the things this probe is supposed to catch. The snapshot also names each row's role.
+#
+# Screen coordinates, via Get-UiRowScreen: the JSON is in the view's client space, and
+# the view is offset by the sidebar. Reading $row.y as a screen y silently measures the
+# wrong rectangle.
+function Get-Bubbles {
+    $ui = Get-UiRows
     $rows = @()
-    foreach ($h in Get-WinKids $chat.H) {
-        if ((Get-WinClass $h) -like '*SCROLLBAR*') { continue }
-        $r = Get-WinRect $h
-        $rows += ,@{ Left = $r.Left; Top = $r.Top; Right = $r.Right; Bottom = $r.Bottom
-                     W = ($r.Right - $r.Left); H = ($r.Bottom - $r.Top) }
+    foreach ($r in @(Get-UiRowList $ui)) {
+        $s = Get-UiRowScreen $ui $r
+        if ($null -eq $s) { continue }
+        $rows += ,@{ Left = $s.L; Top = $s.T; Right = ($s.L + $s.W); Bottom = ($s.T + $s.H)
+                     W = $s.W; H = $s.H; Role = $r.role }
     }
     return @($rows | Sort-Object { $_.Top })
 }
@@ -147,10 +156,16 @@ $stamp = '2026-09-16T10:00:00'
 $sentence = 'ab cd ef gh ij kl mn op qr st uv wx yz '
 # Long enough to wrap many times over (so the wrap has to fill the cap) and, together,
 # taller than the chat area -- otherwise there is nothing to scroll and the thumb checks
-# would be measuring a bar that is not drawn. Kept modest because the machine this runs
-# on scales the fonts up: at 150% each of these is several hundred pixels tall already.
-$longUser = $sentence * 15
-$longAsst = $sentence * 22
+# would be measuring a bar that is not drawn.
+#
+# These multipliers are NOT free to pick, and they are not a "make it big enough" knob
+# either: how tall a given text ends up is decided by the renderer's line pitch, so the
+# same fixture got noticeably shorter when item 5 replaced the Markdown layer, and the
+# only symptom was the wheel check moving 32px instead of 100. The D section therefore
+# asserts the resulting scroll range up front, so the next time this drifts the probe
+# says "the fixture is too short to test scrolling" instead of blaming the app.
+$longUser = $sentence * 28
+$longAsst = $sentence * 42
 $shortMsg = 'hi there'
 
 # ---------------- backups ----------------
@@ -203,6 +218,22 @@ try {
 
     Invoke-BBProbe {
         $main = Start-BangGang 5
+
+        # The conversation is seeded into chats\, but since 0.9.0 a launch no longer opens
+        # anything -- so the chat view does not exist yet and the lookups below would all
+        # come back empty. No list rows is its own failure, not a reason to carry on.
+        if (-not (Open-ConvRow $main)) { throw 'conversation list not found; the fixture was not read back' }
+
+        # The view exists a frame before anything is in it, and every check below reads the
+        # rows -- so wait for the rows to be laid out, not just for the panel to appear.
+        $waited = 0
+        while ($waited -lt 6000) {
+            if ($null -ne (Get-ChatPanel $main)) {
+                if (@(Get-UiRowList (Get-UiRows)).Count -ge 3) { break }
+            }
+            Start-Sleep -Milliseconds 250
+            $waited += 250
+        }
         $chat = Get-ChatPanel $main
         if ($null -eq $chat) { throw 'chat panel not found' }
         $cw = $chat.R.Right - $chat.R.Left
@@ -238,8 +269,8 @@ try {
 
         # ---- C. it starts pinned to the bottom ----
         Write-Output ''
-        Write-Output '--- C. a restored conversation comes up pinned to the bottom ---'
-        $b0 = Get-Bubbles $chat
+        Write-Output '--- C. an opened conversation comes up pinned to the bottom ---'
+        $b0 = Get-Bubbles
         Check ($b0.Count -eq 3) 'three bubbles on screen' ((@($b0).Count).ToString())
         if (@($b0).Count -ge 3) {
             $gap = $chat.R.Bottom - $b0[2].Bottom
@@ -249,12 +280,22 @@ try {
         # ---- D. the wheel scrolls it, and the rows move with it ----
         Write-Output ''
         Write-Output '--- D. the wheel scrolls the view ---'
+
+        # The fixture has to overflow the view, or the wheel clamps on the first notch and
+        # this whole section measures nothing. Checked explicitly (see the note on the
+        # fixture's multipliers): without it, a fixture that became too short reads as
+        # "the bubbles did not move", which is a statement about the app.
+        $uiD = Get-UiRows
+        $range = [int]$uiD.contentH - [int]$uiD.clientH
+        Write-Output ('  scroll range ' + $range + 'px   (content ' + [int]$uiD.contentH + ', view ' + [int]$uiD.clientH + ')')
+        Check ($range -gt 150) 'the fixture overflows the view enough to scroll' ($range.ToString() + 'px of travel')
+
         $mx = [int](($chat.R.Left + $chat.R.Right) / 2)
         $my = [int](($chat.R.Top + $chat.R.Bottom) / 2)
         Invoke-WheelAt $mx $my 5
         Start-Sleep -Milliseconds 300
         $thumb1 = Get-ThumbBox $chat
-        $b1 = Get-Bubbles $chat
+        $b1 = Get-Bubbles
         if (($null -eq $thumb0) -or ($null -eq $thumb1)) {
             Check $false 'the thumb moves up as the content scrolls down' 'thumb missing in one of the two frames'
         } else {
@@ -263,7 +304,9 @@ try {
         }
         if ((@($b0).Count -ge 1) -and (@($b1).Count -ge 1)) {
             $moved = $b1[0].Top - $b0[0].Top
-            Check ($moved -gt 100) 'the bubbles move with the offset' ($moved.ToString() + 'px down')
+            # A wheel notch is 54px (ChatView.WheelStep) and five of them were sent, so
+            # "more than 100" distinguishes "it scrolled" from "it clamped immediately".
+            Check ($moved -gt 100) 'the bubbles move with the offset' ($moved.ToString() + 'px down, 5 notches = 270px asked for')
         }
         Save-WindowShot $main (Get-ShotPath 'chat-area-2-scrolled.png')
 
@@ -352,7 +395,7 @@ try {
         $chat2 = Get-ChatPanel $main
         if ($null -eq $chat2) { throw 'chat panel not found after collapse' }
         $cw2 = $chat2.R.Right - $chat2.R.Left
-        $b2 = Get-Bubbles $chat2
+        $b2 = Get-Bubbles
         $long2 = 0
         foreach ($r in @($b2)) { if ($r.W -gt $long2) { $long2 = $r.W } }
         Check ($cw2 -gt $cw + 200) 'the chat area really did get wider' ($cw.ToString() + ' -> ' + $cw2.ToString())
