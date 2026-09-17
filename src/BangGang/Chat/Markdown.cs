@@ -83,6 +83,26 @@ internal static class Markdown
         /// <summary>段前距 / 容器内边距。整段的第一行才带，后续行是 0。</summary>
         public float SpaceBefore;
 
+        /// <summary>
+        /// **基线**在行顶下方多远。0 表示本行没有公式，按老路画（文字顶对齐）。
+        ///
+        /// 带公式的行必须显式给出它：公式是挂在基线上的（分数线、根号、上下标全相对基线定位），
+        /// 而正文的字是**顶对齐**画的。两者要坐在同一条线上，就得知道正文的基线落在行顶下面
+        /// 多少 —— 那个数只有量过才知道（见 <c>MathLayout.Ascent</c> 为什么不能用 Font.Height）。
+        /// </summary>
+        public float Base;
+
+        /// <summary>
+        /// 文字要相对行顶**再往下**这么多。没有公式的行是 0。
+        ///
+        /// 行内公式比正文字体还高时（分数、根式、大运算符），本行会把**整行往下推**
+        /// 一点，好让公式的顶不越出行顶去压上一行 —— 推的是整行，包括文字。
+        /// 只把公式往下挪是不行的：那样文字和公式各坐一条基线，屏幕上就是
+        /// 「行内公式比周围的字矮一截」，而这正是用户第一眼会看出来的毛病。
+        /// 所以 <see cref="Base"/> 里含的这段抬升，文字这边必须原样跟一遍。
+        /// </summary>
+        public float TextShift;
+
         public float Advance => SpaceBefore + Pitch;
     }
 
@@ -96,8 +116,16 @@ internal static class Markdown
         public float PadX;               // 左右各垫多少（行内代码的圆角底）
         public bool Underline, Strike;
 
-        /// <summary>≥0 时**绝对**定位（列表的项目符号、表格单元格），不推进行内的光标。</summary>
+        /// <summary>≥0 时**绝对**定位（列表的项目符号、表格单元格、行间公式），不推进行内的光标。</summary>
         public float X = -1;
+
+        /// <summary>
+        /// 公式。非空时 <see cref="Text"/> 是空串，宽度取 <c>Math.Width</c>。
+        ///
+        /// 公式**不拆成多个 Run**（整个盒子就是一段）：分数线、根号那一撇都是跨字的几何图形，
+        /// 拆开之后每一段都要重新知道自己在整体里的位置，而那正是盒子模型存在的意义。
+        /// </summary>
+        public MBox? Math;
 
         /// <summary>这一小段占的横向距离。</summary>
         public float Advance => Width + PadX * 2;
@@ -157,6 +185,9 @@ internal static class Markdown
     private const float TableMinColW = 54f;
     private const float InlineCodePadX = 3.5f;
 
+    /// <summary>行间公式的上下留白。公式比正文高得多，贴着上下文会显得挤成一团。</summary>
+    private const float SpaceMath = 12f;
+
     // ---------------- 测量 ----------------
 
     // 量文字一律走这一对 flag，且**量画同一套**。NoPadding 让量出来的宽就是画的宽；
@@ -168,6 +199,11 @@ internal static class Markdown
 
     private static float RunWidth(string s, Font f) =>
         s.Length == 0 ? 0f : TextRenderer.MeasureText(s, f, NoLimit, TFlags).Width;
+
+    /// <summary>同 <see cref="RunWidth"/>，但给 <c>MathLayout</c> 用 ——
+    /// 量公式里的字必须和正文用**同一套 flag 和同一个测量 API**，否则盒子算出来的宽
+    /// 和真画出来的宽对不上，公式会溢到气泡外面。</summary>
+    internal static float TextWidth(string s, Font f) => RunWidth(s, f);
 
     /// <summary>
     /// 单字宽度缓存。中文折行按**字**累加宽度，不走「量一整串再取宽」那条路 ——
@@ -228,7 +264,7 @@ internal static class Markdown
 
     // ---------------- 行内解析 ----------------
 
-    private const int FBold = 1, FItalic = 2, FStrike = 4, FCode = 8, FLink = 16;
+    private const int FBold = 1, FItalic = 2, FStrike = 4, FCode = 8, FLink = 16, FMath = 32;
 
     private sealed class Inline
     {
@@ -237,6 +273,9 @@ internal static class Markdown
 
         /// <summary>这里必须换一行（行尾两空格 / 行尾反斜杠）。</summary>
         public bool HardBreak;
+
+        /// <summary>公式语法树（TeX 或 MathML 解析后的同一棵树）。非空时 <see cref="Text"/> 无意义。</summary>
+        public MNode? Math;
     }
 
     /// <summary>可以反斜杠转义的字符。只对**标点**生效，<c>\n</c> 这种要原样留着。</summary>
@@ -254,10 +293,11 @@ internal static class Markdown
     {
         if (text.Length == 0) return;
         // 与上一段同格式就并进去：不并的话一个字一个 Run，量宽度和画文字的次数都翻好几倍。
+        // 公式那一段永远不并 —— 它是整棵语法树，并进去就只剩最后一段了。
         if (outp.Count > 0)
         {
             var last = outp[^1];
-            if (!last.HardBreak && last.Flags == flags) { last.Text += text; return; }
+            if (!last.HardBreak && last.Math == null && last.Flags == flags) { last.Text += text; return; }
         }
         outp.Add(new Inline { Text = text, Flags = flags });
     }
@@ -278,6 +318,20 @@ internal static class Markdown
         while (i < s.Length)
         {
             char c = s[i];
+
+            // ---- 公式 ----
+            //
+            // **必须排在转义之前**：`\(` `\[` 是 LaTeX 的行内 / 行间公式定界符，而 `(` 和 `[`
+            // 都在可转义字符表里 —— 排在后面的话 `\(x\)` 会先被转义成普通的 `(x)`，
+            // 公式永远走不到这里。`\$`（想写一个真的美元符号）反过来要靠转义分支接住，
+            // 而 TryMath 只认 `\(` `\[`，所以两边不打架。
+            if (TryMath(s, i, out var mnode, out int mnext))
+            {
+                Flush();
+                outp.Add(new Inline { Math = mnode, Flags = flags | FMath });
+                i = mnext;
+                continue;
+            }
 
             // ---- 转义 ----
             if (c == '\\' && i + 1 < s.Length && IsEscapable(s[i + 1]))
@@ -404,6 +458,170 @@ internal static class Markdown
         Flush();
     }
 
+    // ---------------- 公式识别 ----------------
+
+    /// <summary>
+    /// 从 <paramref name="i"/> 处认一段公式。认出来就把解析好的树和下一个位置交出去。
+    ///
+    /// 四种写法都认：
+    /// <list type="bullet">
+    /// <item><c>$…$</c> 行内（带货币判定，见 <see cref="IsCurrency"/>）</item>
+    /// <item><c>$$…$$</c>、<c>\(…\)</c>、<c>\[…\]</c></item>
+    /// <item><c>&lt;math&gt;…&lt;/math&gt;</c>（MathML）</item>
+    /// <item><b>裸命令</b>：<c>\frac{a}{b}</c>、<c>\alpha</c> 这样直接写、没有定界符的
+    ///    —— 模型很爱这么写，而用户看到的是一串反斜杠，这正是这个功能存在的理由</item>
+    /// </list>
+    /// </summary>
+    private static bool TryMath(string s, int i, out MNode? node, out int next)
+    {
+        node = null;
+        next = i;
+        char c = s[i];
+
+        // ---- \( … \) / \[ … \] ----
+        if (c == '\\' && i + 1 < s.Length && (s[i + 1] == '(' || s[i + 1] == '['))
+        {
+            string close = s[i + 1] == '(' ? "\\)" : "\\]";
+            int e = s.IndexOf(close, i + 2, StringComparison.Ordinal);
+            if (e < 0) return false;
+            node = ParseMath(s[(i + 2)..e]);
+            next = e + 2;
+            return node != null;
+        }
+
+        // ---- $ … $ / $$ … $$ ----
+        if (c == '$')
+        {
+            bool disp = i + 1 < s.Length && s[i + 1] == '$';
+            string tok = disp ? "$$" : "$";
+            int body = i + tok.Length;
+            int e = FindClose(s, body, tok);
+            if (e < 0) return false;
+
+            string tex = s[body..e];
+            if (!disp)
+            {
+                // 行内公式**里面不能有换行**、首尾不能有空格：`$100 和一个 $50 的东西` 这种
+                // 句子两个 `$` 之间跨了半句话，认成公式会把中间的正文整段吃掉。
+                if (tex.Length == 0 || tex[0] == ' ' || tex[^1] == ' ' || tex.Contains('\n')) return false;
+                if (IsCurrency(tex)) return false;
+            }
+            node = ParseMath(tex);
+            if (node == null) return false;
+            next = e + tok.Length;
+            return true;
+        }
+
+        // ---- <math> … </math> ----
+        if (c == '<' && i + 5 <= s.Length
+            && string.Compare(s, i, "<math", 0, 5, StringComparison.OrdinalIgnoreCase) == 0)
+        {
+            int e = s.IndexOf("</math>", i, StringComparison.OrdinalIgnoreCase);
+            if (e < 0) return false;
+            node = MathMl.Parse(s[i..(e + 7)]);
+            if (node == null) return false;
+            next = e + 7;
+            return true;
+        }
+
+        // ---- 裸命令 ----
+        if (c == '\\')
+        {
+            int e = BareExtent(s, i);
+            if (e <= i) return false;
+            node = MathTex.Parse(s[i..e]);
+            if (node == null) return false;
+            next = e;
+            return true;
+        }
+
+        return false;
+    }
+
+    /// <summary>找一个不被转义的定界符。</summary>
+    private static int FindClose(string s, int from, string tok)
+    {
+        int k = from;
+        while (k < s.Length)
+        {
+            int e = s.IndexOf(tok, k, StringComparison.Ordinal);
+            if (e < 0) return -1;
+            bool esc = e > 0 && s[e - 1] == '\\' && !(e > 1 && s[e - 2] == '\\');
+            if (!esc) return e;
+            k = e + tok.Length;
+        }
+        return -1;
+    }
+
+    /// <summary>
+    /// 是不是钱而不是公式。<c>$100</c>、<c>$1,200.50</c> 里的 `$` 后面只跟数字和千分位 ——
+    /// 这种一律不当公式。**不做这一条的话**，一段正常的报价文字里两个 `$` 之间的内容
+    /// 会被拿去当公式解析，结果是那半句话整个变了样。
+    /// </summary>
+    private static bool IsCurrency(string t)
+    {
+        foreach (char c in t)
+            if (!char.IsDigit(c) && c != ',' && c != '.' && c != '\'' && c != ' ') return false;
+        return true;
+    }
+
+    /// <summary>
+    /// 裸命令公式**到哪儿为止**。
+    ///
+    /// 它没有定界符，所以边界只能靠「这个字符是不是还会出现在公式里」来判断。做法是从
+    /// <c>\name</c> 开始一路吃：字母数字、<c>{} ^ _ + - = &lt; &gt; * / | ( ) [ ] , . ; : ! ~ '</c>、
+    /// 以及**后面还接着公式字符的空格**。碰到汉字、换行、反引号、另一个 <c>$</c> 就停 ——
+    /// 「用 <c>\alpha</c> 表示」这句话里，公式在 <c>\alpha</c> 之后那个空格处就该断了。
+    /// </summary>
+    private static int BareExtent(string s, int i)
+    {
+        int k = i, last = i;
+        while (k < s.Length)
+        {
+            char c = s[k];
+
+            if (c == '\\')
+            {
+                int j = k + 1;
+                string nm;
+                if (j < s.Length && !char.IsLetter(s[j])) { nm = s[j].ToString(); j++; }
+                else { int st = j; while (j < s.Length && char.IsLetter(s[j])) j++; nm = s[st..j]; }
+                if (nm.Length == 0 || !MathTex.IsKnownCommand(nm)) break;
+                k = j;
+                last = k;
+                continue;
+            }
+            if (c == '{' || c == '}' || c == '^' || c == '_') { k++; last = k; continue; }
+            if (c < 128 && (char.IsLetterOrDigit(c) || "+-=<>*/|()[],.;:!~'".IndexOf(c) >= 0)) { k++; last = k; continue; }
+            if (c == ' ')
+            {
+                int j = k;
+                while (j < s.Length && s[j] == ' ') j++;
+                if (j < s.Length && IsMathChar(s, j)) { k = j; continue; }
+                break;
+            }
+            break;
+        }
+        return last;
+    }
+
+    private static bool IsMathChar(string s, int i)
+    {
+        char c = s[i];
+        if (c == '\\') return MathTex.IsKnownCommand(MathTex.NameAt(s, i));
+        if (c < 128 && (char.IsLetterOrDigit(c) || "+-=<>*/|()[],.;:!~'{ }^_".IndexOf(c) >= 0)) return true;
+        return false;
+    }
+
+    /// <summary>一段公式文本：MathML 走 MathML，其余走 TeX。都不认就返回 null，由调用方按普通文字渲染。</summary>
+    private static MNode? ParseMath(string src)
+    {
+        string t = src.Trim();
+        if (t.Length == 0) return null;
+        if (t.StartsWith("<math", StringComparison.OrdinalIgnoreCase)) return MathMl.Parse(t);
+        return MathTex.Parse(t);
+    }
+
     // ---------------- 块级解析 ----------------
 
     private abstract class Block;
@@ -445,6 +663,15 @@ internal static class Markdown
     }
 
     private sealed class BRule : Block;
+
+    /// <summary>独立成行的公式（<c>$$…$$</c>、<c>\[…\]</c>、行首的 <c>&lt;math&gt;</c>）。</summary>
+    private sealed class BMath : Block
+    {
+        public MNode? Node;
+
+        /// <summary>解析不出来时的原文 —— 宁可显示一串反斜杠，也不能整块变空。</summary>
+        public string Raw = "";
+    }
 
     private static readonly Regex ReFence = new(@"^\s{0,3}(`{3,}|~{3,})\s*(\S*)\s*$", RegexOptions.Compiled);
     private static readonly Regex ReHead = new(@"^(#{1,6})\s+(.*?)\s*#*\s*$", RegexOptions.Compiled);
@@ -518,6 +745,15 @@ internal static class Markdown
 
                 if (ReRule.IsMatch(t)) { FlushPara(); _i++; outp.Add(new BRule()); continue; }
 
+                // 独立成行的公式。必须在段落之前判 —— 落到段落里就变成行内公式了，
+                // 行内公式是**跟着文字走的**，而 `$$…$$` 写法的意思正是「单独占一行」。
+                if (t.StartsWith("$$") || t.StartsWith("\\[") || t.StartsWith("<math", StringComparison.OrdinalIgnoreCase))
+                {
+                    FlushPara();
+                    outp.Add(ReadMath());
+                    continue;
+                }
+
                 if (t.StartsWith('>')) { FlushPara(); outp.Add(ReadQuote()); continue; }
 
                 if (line.Contains('|') && _i + 1 < _l.Length && ReTableSep.IsMatch(_l[_i + 1]))
@@ -537,6 +773,50 @@ internal static class Markdown
             }
             FlushPara();
             return outp;
+        }
+
+        /// <summary>
+        /// 读一块独立成行的公式。三种开法各有各的收法，但**都得有一个明确的终点** ——
+        /// 收不到就只吃到本行为止（模型偶尔会把 <c>$$</c> 打成单数个，那之后整篇都是正文，
+        /// 无限吃下去会把整条消息吞光）。
+        /// </summary>
+        private BMath ReadMath()
+        {
+            string t = _l[_i].TrimStart();
+            string open, close;
+            bool keepClose;
+            if (t.StartsWith("$$")) { open = "$$"; close = "$$"; keepClose = false; }
+            else if (t.StartsWith("\\[")) { open = "\\["; close = "\\]"; keepClose = false; }
+            // MathML 这一支和上面两支是**反的**：`$$` / `\]` 是纯定界符，切掉才是公式本身；
+            // 而 `</math>` 是这段 XML 的**收尾标签**，公式本身要连它一起交给 MathMl.Parse
+            // （`Looks` / `ParseMath` 都要求开头是 `<math`，`XDocument` 又要求有闭合标签），
+            // 切掉就只剩一个开着的标签，解析必定失败、整块原样显示成一串尖括号。
+            else { open = ""; close = "</math>"; keepClose = true; }
+            int tail = keepClose ? close.Length : 0;
+
+            var body = new List<string>();
+            string first = t[open.Length..];
+            _i++;
+
+            int one = first.IndexOf(close, StringComparison.OrdinalIgnoreCase);
+            if (one >= 0) body.Add(first[..(one + tail)]);   // 单行写完的 $$…$$
+            else
+            {
+                if (first.Trim().Length > 0) body.Add(first);
+                while (_i < _l.Length)
+                {
+                    string cur = _l[_i];
+                    int e = cur.IndexOf(close, StringComparison.OrdinalIgnoreCase);
+                    if (e >= 0) { body.Add(cur[..(e + tail)]); _i++; break; }
+                    body.Add(cur.TrimEnd());
+                    _i++;
+                }
+            }
+
+            string raw = string.Join("\n", body).Trim();
+            var node = ParseMath(raw);
+            if (node != null) MathLayout.MarkDisplay(node);
+            return new BMath { Node = node, Raw = raw };
         }
 
         private BCode ReadFence(string lang)
@@ -708,6 +988,9 @@ internal static class Markdown
         public bool ForceBreak;
         public float Width;
 
+        /// <summary>公式。非空时 <see cref="Text"/> 是空串，<see cref="Width"/> 取盒子宽。</summary>
+        public MBox? Math;
+
         public readonly float Advance => Width + PadX * 2;
     }
 
@@ -715,6 +998,12 @@ internal static class Markdown
     {
         public readonly List<Run> Runs = new();
         public float W, H, Pitch;
+
+        /// <summary>本行的基线（行顶到基线）。见 <see cref="PhysLine.Base"/>。</summary>
+        public float Base;
+
+        /// <summary>文字往下跟多少。见 <see cref="PhysLine.TextShift"/>。</summary>
+        public float TextShift;
     }
 
     private static bool IsCjk(char c) =>
@@ -735,7 +1024,7 @@ internal static class Markdown
     /// 中文必须一字一段，否则「没有空格的一整段中文」会被当成一个不可断的巨词，
     /// 只能硬切 —— 硬切是按固定字数均分的，断点会落在词中间。
     /// </summary>
-    private static List<Atom> AtomsOf(List<Inline> inlines, float size, FontStyle baseStyle, Ink ink)
+    private static List<Atom> AtomsOf(List<Inline> inlines, float size, FontStyle baseStyle, Ink ink, float avail)
     {
         var atoms = new List<Atom>();
 
@@ -744,6 +1033,16 @@ internal static class Markdown
             if (inl.HardBreak)
             {
                 atoms.Add(new Atom { Text = "", Width = 0, ForceBreak = true });
+                continue;
+            }
+
+            // 公式：整个盒子就是一个原子 —— 它内部一律不许断（断了分数线就从中间劈开），
+            // 所以 Text 留空。空 Text 同时让下面那个「单个原子就超宽就按字拆开」的循环
+            // 直接跳过它（那里的判据是 `Text.Length <= 1`），不会把一棵语法树拆散。
+            if (inl.Math != null)
+            {
+                var box = MathLayout.Build(inl.Math, size, avail);
+                atoms.Add(new Atom { Text = "", Font = SF.Get(size), Ink = ink, Width = box.Width, Math = box });
                 continue;
             }
 
@@ -819,6 +1118,16 @@ internal static class Markdown
             if (cur.ForceBreak) continue;
             if (prev.ForceBreak) continue;
             if (cur.Space) continue;
+
+            // 公式的两侧永远可断。它是个**独立物件**（和行内图片一样），
+            // 前后连着汉字时那条「挨着 CJK 才可断」的规则本来也成立，但公式后面紧跟西文词
+            // （`$x$值`、`$\alpha$coefficient`）时就不成立了 —— 那种情况下整行会被推下去。
+            if (cur.Math != null || prev.Math != null) { cur.BreakBefore = true; atoms[n] = cur; continue; }
+
+            // prev / cur 都可能是空串（公式原子、或者被吃掉的分隔），
+            // 直接取 Text[0] 会抛 —— 这在旧版是个够不着的分支，加了公式就够得着了。
+            if (prev.Text.Length == 0 || cur.Text.Length == 0) continue;
+
             // prev 是空白、或者两个词之间本来就挨着可断的边界，才算一个断点
             bool brk = prev.Space
                        || (!NoBreakAfter(prev.Text) && !NoBreakBefore(cur.Text)
@@ -910,9 +1219,21 @@ internal static class Markdown
             while (end > f0 && atoms[end - 1].Space) end--;        // 行尾的空白也丢掉
 
             var lb = new LineBuf();
+            Font? tall = null;                 // 决定本行高度的那个字体（公式要靠它算基线）
+            float lead = 0, mdep = 0;          // 公式伸到基线上方 / 下方的最大值
             for (int k = f0; k < end; k++)
             {
                 var a = atoms[k];
+
+                if (a.Math != null)
+                {
+                    lb.Runs.Add(new Run { Math = a.Math, Width = a.Math.Width, Ink = a.Ink });
+                    lb.W += a.Math.Width;
+                    lead = Math.Max(lead, a.Math.Height);
+                    mdep = Math.Max(mdep, a.Math.Depth);
+                    continue;
+                }
+
                 if (a.Text.Length == 0) continue;
                 lb.Runs.Add(new Run
                 {
@@ -925,9 +1246,29 @@ internal static class Markdown
                     Strike = a.Strike,
                 });
                 lb.W += a.Advance;
-                lb.H = Math.Max(lb.H, a.Font.Height);
+                if (a.Font.Height > lb.H) { lb.H = a.Font.Height; tall = a.Font; }
             }
-            if (lb.H <= 0) { lb.Runs.Add(new Run { Text = " ", Font = blank, Width = 0 }); lb.H = blank.Height; }
+
+            // 空行占位。**只有一行字都没有的行才需要** —— 一行里只有公式时 lb.H 还是 0，
+            // 但它明明有内容，补一个空格进去会多出一条空白的高度。
+            if (lb.H <= 0 && lead <= 0) { lb.Runs.Add(new Run { Text = " ", Font = blank, Width = 0 }); lb.H = blank.Height; }
+
+            // 带公式的行：先定基线，再让公式决定行高。
+            //
+            //   基线 = 正文字体自己的上缘高度（公式和文字**共用这一条**）
+            //   公式比正文还高时，把整行往下推（公式顶伸出去的那部分），而不是把公式往下挪
+            // 公式往下伸的部分（分数线、分母）再把行往下撑。全程只用**一个**数（Base）
+            // 把两套坐标接起来；文字那边跟着 TextShift 走，没有公式的行两者都是 0。
+            if (lead > 0)
+            {
+                float textH = lb.H;
+                float baseA = MathLayout.Ascent(tall ?? blank);
+                float lift = Math.Max(0f, lead - baseA);
+                lb.Base = baseA + lift;
+                lb.TextShift = lift;
+                lb.H = Math.Max(textH + lift, lb.Base + mdep);
+            }
+
             lb.Pitch = Math.Max(1f, MathF.Round(lb.H * pitchK));
             lines.Add(lb);
         }
@@ -986,9 +1327,17 @@ internal static class Markdown
         c.Y += space;
     }
 
-    private static void EmitLine(Ctx c, List<Run> runs, float indent, float pitch, float lineH)
+    private static void EmitLine(Ctx c, List<Run> runs, float indent, float pitch, float lineH,
+                                 float baseY = 0f, float textShift = 0f)
     {
-        var pl = new PhysLine { Indent = indent, Pitch = pitch, LineHeight = lineH };
+        var pl = new PhysLine
+        {
+            Indent = indent,
+            Pitch = pitch,
+            LineHeight = lineH,
+            Base = baseY,
+            TextShift = textShift,
+        };
         pl.Runs.AddRange(runs);
         c.Lines.Add(pl);
         c.Y += pl.Pitch;
@@ -997,7 +1346,7 @@ internal static class Markdown
     private static void EmitLines(Ctx c, List<LineBuf> bufs, float indent, float spaceBefore)
     {
         int i0 = c.Lines.Count;
-        foreach (var lb in bufs) EmitLine(c, lb.Runs, indent, lb.Pitch, lb.H);
+        foreach (var lb in bufs) EmitLine(c, lb.Runs, indent, lb.Pitch, lb.H, lb.Base, lb.TextShift);
         Pad(c, i0, spaceBefore);
     }
 
@@ -1005,7 +1354,7 @@ internal static class Markdown
     private static List<LineBuf> Flow(List<Inline> inlines, float size, FontStyle style, Ink ink,
                                       float avail, float pitchK, Ctx c)
     {
-        var bufs = WrapAtoms(AtomsOf(inlines, size, style, ink), avail, pitchK, out bool wrapped);
+        var bufs = WrapAtoms(AtomsOf(inlines, size, style, ink, avail), avail, pitchK, out bool wrapped);
         if (wrapped) c.Wrapped = true;
         return bufs;
     }
@@ -1026,6 +1375,7 @@ internal static class Markdown
                 case BQuote q: EmitQuote(c, q, left, avail); break;
                 case BTable t: EmitTable(c, t, left, avail); break;
                 case BRule: EmitRule(c, left, avail); break;
+                case BMath mm: EmitMath(c, mm, left, avail); break;
             }
         }
 
@@ -1067,6 +1417,45 @@ internal static class Markdown
             Rect = new RectangleF(left, basePitch + HeadUnderGap, avail, 1f),
             Fill = Ink.Rule,
         });
+    }
+
+    /// <summary>
+    /// 独占一行的公式：**居中**、整行只有它一个 Run。
+    ///
+    /// 位置走 <c>Run.X ≥ 0</c> 那条绝对定位的路，而不是靠缩进 —— 缩进是「行从哪儿开始」，
+    /// 而这里要知道的是「这行总共多宽、公式摆在多宽里的正中」，居中是相对于**可用宽**算的。
+    ///
+    /// 字号比正文大一档：行间公式就该比正文醒目，这是 TeX 的 display style 唯一的视觉含义。
+    /// </summary>
+    private static void EmitMath(Ctx c, BMath bm, float left, float avail)
+    {
+        c.FullWidth = true;
+
+        if (bm.Node == null)
+        {
+            // 解析不出来：按普通文字原样排出来。**不能整块丢掉** —— 丢掉的后果是用户
+            // 完全不知道模型写了什么，而原样显示至少能让他看出「这里有个公式没渲染出来」。
+            EmitLines(c, Flow(ParseInline(bm.Raw), BodySize, FontStyle.Regular, Ink.Muted, avail, PitchBody, c),
+                      left, c.Sp(SpaceMath));
+            return;
+        }
+
+        var box = MathLayout.Build(bm.Node, BodySize * 1.18f, Math.Max(40f, avail - 8f));
+        float pad = 7f;
+        float sp = c.Sp(SpaceMath);                 // 必须在建行之前消费掉（见 Ctx.Sp）
+
+        int i0 = c.Lines.Count;
+        var pl = new PhysLine
+        {
+            Indent = 0,
+            Base = box.Height,
+            LineHeight = box.Height + box.Depth + pad * 2f,
+            Pitch = box.Height + box.Depth + pad * 2f,
+        };
+        pl.Runs.Add(new Run { Math = box, Width = box.Width, X = Math.Max(0f, (avail - box.Width) / 2f) });
+        c.Lines.Add(pl);
+        c.Y += pl.Pitch;
+        Pad(c, i0, sp);
     }
 
     /// <summary>分隔线。整条占满可用宽，所以它同时也把气泡撑到满宽。</summary>
@@ -1347,7 +1736,7 @@ internal static class Markdown
             for (int r = 0; r < t.Rows.Count; r++)
             {
                 float w = 0;
-                foreach (var a in AtomsOf(t.Rows[r][col], BodySize, r == 0 ? FontStyle.Bold : FontStyle.Regular, Ink.Text))
+                foreach (var a in AtomsOf(t.Rows[r][col], BodySize, r == 0 ? FontStyle.Bold : FontStyle.Regular, Ink.Text, avail))
                     w += a.Advance;
                 m = Math.Max(m, w);
             }
@@ -1370,7 +1759,8 @@ internal static class Markdown
             for (int col = 0; col < n; col++)
             {
                 var ls = WrapAtoms(
-                    AtomsOf(t.Rows[r][col], BodySize, head ? FontStyle.Bold : FontStyle.Regular, Ink.Text),
+                    AtomsOf(t.Rows[r][col], BodySize, head ? FontStyle.Bold : FontStyle.Regular, Ink.Text,
+                            Math.Max(24f, colW[col] - TablePadX * 2)),
                     Math.Max(24f, colW[col] - TablePadX * 2), PitchTable, out bool wrapped);
                 if (wrapped) c.Wrapped = true;
                 if (ls.Count == 0)
@@ -1533,11 +1923,12 @@ internal static class Markdown
         {
             var pl = lay.Lines[i];
             float top = tops[i];
+            float ttop = top + pl.TextShift;        // 有行内公式的行，文字跟着整行一起下来
 
             foreach (var d in pl.Decors)
             {
                 if (d.Fill == Ink.None) continue;
-                var rc = new RectangleF(x + d.Rect.X, top + d.Rect.Y, d.Rect.Width, d.Rect.Height);
+                var rc = new RectangleF(x + d.Rect.X, ttop + d.Rect.Y, d.Rect.Width, d.Rect.Height);
                 if (rc.Width <= 0 || rc.Height <= 0) continue;
                 using var br = new SolidBrush(Palette.Of(d.Fill, bubble));
                 if (d.Radius > 0)
@@ -1551,12 +1942,23 @@ internal static class Markdown
             float runX = x + pl.Indent;
             foreach (var r in pl.Runs)
             {
-                if (r.Text.Length == 0) continue;
                 float at = r.X >= 0 ? x + r.X : runX;
+
+                if (r.Math != null)
+                {
+                    // 公式里的**线**（分数线、根号、括号线、上划线）走这一遍：
+                    // 它们要垫在字下面，而且必须是 GDI+ —— 第二遍把 HDC 攥住不放，
+                    // 那期间一个 GDI+ 调用都不能有。
+                    MathLines(g, r.Math, at, top + pl.Base, bubble);
+                    if (r.X < 0) runX += r.Advance;
+                    continue;
+                }
+
+                if (r.Text.Length == 0) continue;
 
                 if (r.PadX > 0)
                 {
-                    var bg = new RectangleF(at, top + 1.5f, r.Advance, Math.Max(4f, pl.LineHeight - 3f));
+                    var bg = new RectangleF(at, ttop + 1.5f, r.Advance, Math.Max(4f, pl.LineHeight - 3f));
                     using var br = new SolidBrush(Palette.Of(Ink.InlineCodeBg, bubble));
                     using var path = Rounded(bg, 4f);
                     g.FillPath(br, path);
@@ -1590,15 +1992,24 @@ internal static class Markdown
             {
                 var pl = lay.Lines[i];
                 float top = tops[i];
+                float ttop = top + pl.TextShift;
                 float runX = x + pl.Indent;
 
                 foreach (var r in pl.Runs)
                 {
-                    if (r.Text.Length == 0) continue;
                     float at = r.X >= 0 ? x + r.X : runX;
 
+                    if (r.Math != null)
+                    {
+                        MathGlyphs(dc, r.Math, at, top + pl.Base, bubble);
+                        if (r.X < 0) runX += r.Advance;
+                        continue;
+                    }
+
+                    if (r.Text.Length == 0) continue;
+
                     TextRenderer.DrawText(dc, r.Text, r.Font,
-                        new Point((int)MathF.Round(at + r.PadX), (int)MathF.Round(top)),
+                        new Point((int)MathF.Round(at + r.PadX), (int)MathF.Round(ttop)),
                         Palette.Of(r.Ink, bubble), TFlags);
 
                     if (r.X < 0) runX += r.Advance;
@@ -1613,7 +2024,7 @@ internal static class Markdown
         for (int i = 0; i < lay.Lines.Count; i++)
         {
             var pl = lay.Lines[i];
-            float top = tops[i];
+            float top = tops[i] + pl.TextShift;
             float runX = x + pl.Indent;
 
             foreach (var r in pl.Runs)
@@ -1639,6 +2050,71 @@ internal static class Markdown
         }
 
         return cursor;
+    }
+
+    /// <summary>
+    /// 公式里的线和面（走 GDI+ 那一遍）。<paramref name="bx"/> / <paramref name="by"/> 是
+    /// **基线的原点**：盒子里所有纵坐标都是相对基线算的。
+    /// </summary>
+    private static void MathLines(Graphics g, MBox box, float bx, float by, Color bubble)
+    {
+        foreach (var p in box.Prims)
+        {
+            switch (p)
+            {
+                case MRule r:
+                {
+                    // 分数线 / 根号横杠只有 1px 高，而它的 y 是**算出来的小数**
+                    // （基线 + 轴线的 0.25em 再减去半个线宽）。直接按小数填，
+                    // 这一像素会摊到相邻两行上各半个 —— 抗锯齿对矩形一样生效，
+                    // 画出来是两条 50% 的浅灰，看着像「线画淡了」。
+                    // 先落到整数像素再填：线还是那 1px，颜色才是实笔。
+                    float rx = MathF.Round(bx + r.X);
+                    float ry = MathF.Round(by + r.Y);
+                    float rw = MathF.Max(1f, MathF.Round(r.W));
+                    float rh = MathF.Max(1f, MathF.Round(r.H));
+                    using var br = new SolidBrush(Palette.Of(r.Ink, bubble));
+                    g.FillRectangle(br, rx, ry, rw, rh);
+                    break;
+                }
+                case MPoly y:
+                {
+                    if (y.Pts.Length < 2) continue;
+                    var pts = new PointF[y.Pts.Length];
+                    for (int i = 0; i < pts.Length; i++) pts[i] = new PointF(bx + y.Pts[i].X, by + y.Pts[i].Y);
+                    using var pen = new Pen(Palette.Of(y.Ink, bubble), y.Th)
+                    {
+                        LineJoin = LineJoin.Bevel,       // 斜接会在那个尖角上戳出一根毛刺
+                        StartCap = LineCap.Round,
+                        EndCap = LineCap.Round,
+                    };
+                    g.DrawLines(pen, pts);
+                    break;
+                }
+            }
+        }
+    }
+
+    /// <summary>
+    /// 公式里的字（走攥着 HDC 的那一遍）。
+    ///
+    /// 每个字都是**独立**的一次 DrawText，位置由盒子算好 —— 不按 Run 合并，
+    /// 是因为公式里相邻的两个字几乎总是不同字号或不同斜体（上标、分数上下、正体函数名）。
+    /// 一次 DrawText 一个字的开销在这条路上是可接受的：真正的代价是 DC 往返，
+    /// 而那一次已经由外层摊掉了（见第二遍的注释）。
+    /// </summary>
+    private static void MathGlyphs(IDeviceContext dc, MBox box, float bx, float by, Color bubble)
+    {
+        foreach (var p in box.Prims)
+        {
+            if (p is not MGlyph gl || gl.Text.Length == 0) continue;
+            // 字格是**顶对齐**画的，所以基线位置要减去这个字体自己的上缘高度
+            // —— 和 <see cref="MathLayout.Ascent"/> 是同一个数，不是近似。
+            float asc = MathLayout.Ascent(gl.Font);
+            TextRenderer.DrawText(dc, gl.Text, gl.Font,
+                new Point((int)MathF.Round(bx + gl.X), (int)MathF.Round(by + gl.Y - asc)),
+                Palette.Of(gl.Ink, bubble), TFlags);
+        }
     }
 
     /// <summary>

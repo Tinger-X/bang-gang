@@ -7,6 +7,12 @@ internal static class Program
     [STAThread]
     static void Main()
     {
+#if DEBUG
+        // 离屏渲染一段 markdown 就退出（见 OfflineRender）。放在单实例锁之前：
+        // 它不建窗口，没有理由被「已经开着一个帮帮」挡住。
+        if (OfflineRender.TryRun()) return;
+#endif
+
         // 单实例：重复启动时把已有窗口带到前台后退出
         using var mutex = new Mutex(true, "Local\\BangGang_SingleInstance", out bool isNew);
         if (!isNew)
