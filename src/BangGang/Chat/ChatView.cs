@@ -45,10 +45,13 @@ namespace BangGang;
 /// </para>
 ///
 /// <para>
-/// <b>动画期间不重排文字，只挪位置</b>（<see cref="LiveResize"/> / <see cref="SettleLayout"/>）：
-/// 重排（<see cref="ReflowRows"/>）要对每一行跑一遍 <c>Markdown.Measure</c>，那是这一整条路上
-/// 最贵的一步，而侧栏动画期间**可用宽度每帧都在变**，逐帧重排等于逐帧把全部消息重新折行一遍。
-/// 位置跟着走就是了 —— 文字不折行这件事用户看不出来，掉帧他看得出来。
+/// <b>动画期间只有看得见的行重排</b>（<see cref="LiveResize"/> / <see cref="ReflowVisible"/> /
+/// <see cref="SettleLayout"/>）：用户要求气泡宽度在动画过程中**实时**跟着变，而不是结束后
+/// 突然跳一次。逐帧对全部消息跑 <c>Markdown.Measure</c> 会让动画时长随对话长度线性膨胀，
+/// 所以动画的每一帧只重排可见带内的行（块级排版缓存让重复重排几乎免费），
+/// 可见带之外的行保持旧宽度旧高度，动画结束由 <see cref="SettleLayout"/> 补一趟全量。
+/// 代价是动画期间总高与滑块按「可见行已重排、其余照旧」的混合状态算 —— 偏一点，
+/// 但滚动范围只会因此略小不会越界，收尾的全量重排把它修正。
 /// </para>
 /// </summary>
 internal sealed class ChatView : Panel, IThemed, IMessageFilter
@@ -117,7 +120,6 @@ internal sealed class ChatView : Panel, IThemed, IMessageFilter
     public void Restyle()
     {
         BackColor = Theme.ChatBg;
-        foreach (var b in _rows) b.DropCache();   // 气泡的缓存里烘着旧主题的颜色
         Invalidate();
     }
 
@@ -270,8 +272,7 @@ internal sealed class ChatView : Panel, IThemed, IMessageFilter
     /// 而宽度一变高度就跟着变 —— 一边摆一边量的话，总高会按「上一行的旧宽度」去算，
     /// 滑块的长度和滚动范围就全错了。
     ///
-    /// 侧栏动画期间**不要**调这个，调 <see cref="PlaceRows"/>：动画每帧都在改宽度，
-    /// 逐帧重排等于逐帧把全部消息重新折行一遍。
+    /// 侧栏动画期间不调这个（那是全部消息逐帧重排），调 <see cref="ReflowVisible"/>。
     /// </summary>
     /// <param name="pinBottom">
     /// 摆位之前先把偏移顶到最底。**必须在量完 <see cref="_contentH"/> 之后**才顶得准：
@@ -288,12 +289,7 @@ internal sealed class ChatView : Panel, IThemed, IMessageFilter
             return;
         }
 
-        int clientW = Math.Max(100, ClientSize.Width);
-
-        // 气泡总宽 ≤ 对话区宽度的 90%，同时左右各留 PadL / PadR。两个限制谁先到就听谁的 ——
-        // 窗口窄到 90% 已经放不下两边留白时，留白优先（不然气泡会顶到滑块上）。
-        int maxBubbleW = Math.Max(180, Math.Min((int)(clientW * MaxWidthRatio), clientW - PadL - PadR));
-        int inner = Math.Max(80, maxBubbleW - MessageBubble.PadX * 2);
+        int inner = MaxInner();
 
         // SetMaxInner 内部有早退（内容没被上限卡住就什么都不做），动画结束后的这一趟
         // 因此大部分时候是白跑 —— 但那正是它该被调用的时刻，便宜不便宜另说。
@@ -304,12 +300,52 @@ internal sealed class ChatView : Panel, IThemed, IMessageFilter
         PlaceRows(pinBottom);
     }
 
+    /// <summary>对话区当前给出的气泡内宽上限（90% 与两侧留白，谁先到听谁的）。</summary>
+    private int MaxInner()
+    {
+        int clientW = Math.Max(100, ClientSize.Width);
+        // 气泡总宽 ≤ 对话区宽度的 90%，同时左右各留 PadL / PadR。两个限制谁先到就听谁的 ——
+        // 窗口窄到 90% 已经放不下两边留白时，留白优先（不然气泡会顶到滑块上）。
+        int maxBubbleW = Math.Max(180, Math.Min((int)(clientW * MaxWidthRatio), clientW - PadL - PadR));
+        return Math.Max(80, maxBubbleW - MessageBubble.PadX * 2);
+    }
+
+    /// <summary>
+    /// 侧栏动画的每一帧走的重排：**只重排可见带内的行**（上下各多算一屏，滚动 / 动画
+    /// 中途刚露头的行也已经按新宽度折好了），然后照常摆位。
+    ///
+    /// 每帧成本于是只跟「看得见多少」有关，与会话多长无关 —— 这是「任意长度的对话
+    /// 动画时长一致」那条要求的落点。可见带之外的行保持旧宽度旧高度（它们的宽度
+    /// 反正没人看得见），动画结束由 <see cref="SettleLayout"/> 补一趟全量重排。
+    ///
+    /// SetMaxInner 的早退与块级排版缓存让「同一行下一帧再重排一次」几乎免费，
+    /// 真正花钱的只有「这一帧宽度变了、且这行真的被上限卡住」的那些行。
+    /// </summary>
+    private void ReflowVisible()
+    {
+        if (_rows.Count == 0) return;
+        int inner = MaxInner();
+        int bandTop = -Height, bandBottom = Height * 2;   // 行的 y 是「逻辑 − 偏移」后的视口坐标
+
+        var t0 = Stamp;
+        int reflowed = 0;
+        foreach (var b in _rows)
+        {
+            if (b.Location.Y + b.Height < bandTop || b.Location.Y > bandBottom) continue;
+            b.SetMaxInner(inner);
+            reflowed++;
+        }
+        RecordLayout(Since(t0));
+        Bucket.ReflowRows += reflowed;
+
+        PlaceRows();
+    }
+
     /// <summary>
     /// **便宜的那一趟**：只按当前客户区宽度和每行**已经算好的**高度摆位置。
     ///
-    /// 侧栏动画每帧走的就是它 —— 几个整数减法，外加一次 <c>Invalidate</c>。
-    /// 宽度变了但文字没重排：右对齐的气泡该滑到哪儿就滑到哪儿，位置是跟手的；
-    /// 只有折行还是按旧宽度来的，动画结束由 <see cref="SettleLayout"/> 补一次。
+    /// 几个整数减法，外加一次 <c>Invalidate</c>。侧栏动画的每一帧在
+    /// <see cref="ReflowVisible"/> 重排过可见行之后走它。
     /// </summary>
     private void PlaceRows(bool pinBottom = false)
     {
@@ -348,11 +384,11 @@ internal sealed class ChatView : Panel, IThemed, IMessageFilter
         _hot = -1;
     }
 
-    // ---------------- 动画期：位置跟手、文字不重排 ----------------
+    // ---------------- 动画期：可见行实时重排，其余只挪位置 ----------------
 
     /// <summary>
-    /// 侧栏正在做收展动画。为真时 <see cref="OnResize"/> 只 <see cref="PlaceRows"/>，
-    /// 不 <see cref="ReflowRows"/>。
+    /// 侧栏正在做收展动画。为真时 <see cref="OnResize"/> 走 <see cref="ReflowVisible"/>，
+    /// 不做全量 <see cref="ReflowRows"/>。
     ///
     /// 做成显式开关、由 <c>MainForm.ApplyLayout(liveResize)</c> 一路传进来，而不是在这里
     /// 「猜」现在是不是在动画中：猜的那种写法要么去问定时器（多一条反向依赖），
@@ -403,7 +439,7 @@ internal sealed class ChatView : Panel, IThemed, IMessageFilter
     protected override void OnResize(EventArgs e)
     {
         base.OnResize(e);
-        if (_live) PlaceRows();
+        if (_live) ReflowVisible();
         else ReflowRows();
     }
 
@@ -536,16 +572,30 @@ internal sealed class ChatView : Panel, IThemed, IMessageFilter
         var t0 = Stamp;
         base.OnPaint(e);
         var g = e.Graphics;
+        g.SmoothingMode = SmoothingMode.AntiAlias;
+        // 只对 DrawString（「帮帮」、空会话提示）起作用；TextRenderer 不看这个。
+        g.TextRenderingHint = System.Drawing.Text.TextRenderingHint.AntiAlias;
 
+        // 三遍全局走：先所有气泡的底色 / 装饰（GDI+），再所有文字（共用**一次** HDC 借还），
+        // 最后下划线 / 删除线。拆三遍的原因见 Markdown.Draw 的注释 —— HDC 被攥住期间
+        // 那个 Graphics 一个 GDI+ 调用都不能有。
+        //
+        // 文字直接落在这块不透明的双缓冲上：ClearType 对着真实底色混色才是对的，
+        // 烘进透明位图再贴的老路在亮色主题下会留一圈黑晕（「重影」）。
         var clip = e.ClipRectangle;
+        float visTop = clip.Top, visBottom = clip.Bottom;
+
+        // 脏区之外的行直接跳过。滑块拖动时脏区就那么大，不必把几百条消息全画一遍；
+        // 单行作废（悬浮 / 流式追加）时脏区就是那一行。
         foreach (var b in _rows)
-        {
-            // 脏区之外的行直接跳过。滑块拖动时脏区就那么大，不必把几百条消息全贴一遍。
-            if (!b.Rect.IntersectsWith(clip)) continue;
-            // **不是** g.TranslateTransform + 原地画：GDI 文本不认 Graphics.Transform，
-            // 挪了也白挪。气泡自己画进一张位图，这里 1:1 贴过来（见 MessageBubble.Paint）。
-            b.Paint(g, b.Location);
-        }
+            if (b.Rect.IntersectsWith(clip)) b.DrawBack(g, b.Location, visTop, visBottom);
+
+        using (var dc = Markdown.HoldTextDc(g))
+            foreach (var b in _rows)
+                if (b.Rect.IntersectsWith(clip)) b.DrawText(dc, b.Location, visTop, visBottom);
+
+        foreach (var b in _rows)
+            if (b.Rect.IntersectsWith(clip)) b.DrawOver(g, b.Location, visTop, visBottom);
 
         if (Conv != null && _rows.Count == 0)
         {
@@ -560,7 +610,6 @@ internal sealed class ChatView : Panel, IThemed, IMessageFilter
         var bar = BarRect();
         if (!bar.IsEmpty)
         {
-            g.SmoothingMode = SmoothingMode.AntiAlias;
             float k = _hoverBar || _dragBar ? 0.40f : 0.26f;
             RP.Fill(g, bar, BarW / 2, Theme.Mix(Theme.ChatBg, Theme.TextMain, k));
         }
@@ -608,11 +657,16 @@ internal sealed class ChatView : Panel, IThemed, IMessageFilter
     private sealed class Perf
     {
         public int Frames, Layouts;
+
+        /// <summary>动画期间被重排过的行数（逐帧累加）。它必须 ≈ 帧数 × 可见行数，
+        /// 与总会话长度无关 —— 探针靠它分辨「每帧只重排可见带」和「每帧全量重排」，
+        /// 这两者在耗时上的差距会被机器速度吃掉，行数不会。</summary>
+        public int ReflowRows;
         public double PaintMs, LayoutMs, PaintMax, LayoutMax, WallMs;
 
         public void Reset()
         {
-            Frames = Layouts = 0;
+            Frames = Layouts = ReflowRows = 0;
             PaintMs = LayoutMs = PaintMax = LayoutMax = WallMs = 0;
         }
     }
@@ -699,6 +753,7 @@ internal sealed class ChatView : Panel, IThemed, IMessageFilter
               .Append(",\"animPaintMaxMs\":").Append(Num(_perfAnim.PaintMax))
               .Append(",\"animLayoutMs\":").Append(Num(Avg(_perfAnim.LayoutMs, _perfAnim.Layouts)))
               .Append(",\"animLayoutMaxMs\":").Append(Num(_perfAnim.LayoutMax))
+              .Append(",\"animReflowRows\":").Append(_perfAnim.ReflowRows)
               .Append(",\"idleFrames\":").Append(_perfLive.Frames)
               .Append(",\"idlePaintMs\":").Append(Num(Avg(_perfLive.PaintMs, _perfLive.Frames)))
               .Append(",\"idlePaintMaxMs\":").Append(Num(_perfLive.PaintMax))
@@ -716,7 +771,13 @@ internal sealed class ChatView : Panel, IThemed, IMessageFilter
                   .Append('}');
             }
             sb.Append("]}");
-            File.WriteAllText(RowsPath, sb.ToString(), new UTF8Encoding(false));
+            // 探针随时在读这个文件；直接写会让它撞上写了一半的 JSON（ConvertFrom-Json
+            // 抛异常，探针当成"没有气泡"——0.9.3 的 llm-reply -Reasoning 就踩到了：
+            // 思考块每 40ms 触发一次重排，重写频率高到必然被读到半截）。先写临时文件
+            // 再原子替换，读到的要么是旧的、要么是新的，永远没有半个。
+            var tmp = RowsPath + ".tmp";
+            File.WriteAllText(tmp, sb.ToString(), new UTF8Encoding(false));
+            File.Move(tmp, RowsPath, true);
         }
         catch { /* 调试通道，断掉不影响程序 */ }
     }

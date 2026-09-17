@@ -60,12 +60,6 @@ internal static class Markdown
         /// 由折行的那一处**当场**记下来，不留给别人从宽度上反推。
         /// </summary>
         public bool Wrapped;
-
-        /// <summary>
-        /// 最后一个**有行**的块的首行下标。流式增量重画的脏区起点：它之前的行属于
-        /// 已经写完的块，逐像素稳定（见 MessageBubble.Paint 的增量那一支）。没有行时是 0。
-        /// </summary>
-        public int TailStart;
     }
 
     /// <summary>一条物理行。位置由「前面所有行的 Advance 之和」决定，自己不存 y。</summary>
@@ -1246,7 +1240,9 @@ internal static class Markdown
                 {
                     var cp = proto;
                     cp.Text = s.Substring(i, len);
-                    cp.Width = RunWidth(cp.Text, f);
+                    // 单字走缓存：中文逐字成原子，逐字 MeasureText 一条上万字的回复就是上万次
+                    // GDI 调用；缓存命中后这一步只剩一次字典查找。
+                    cp.Width = len == 1 ? CharWidth(c, f) : RunWidth(cp.Text, f);
                     atoms.Add(cp);
                     i += len;
                     continue;
@@ -1321,7 +1317,7 @@ internal static class Markdown
                 int len = char.IsHighSurrogate(c) && k + 1 < a.Text.Length && char.IsLowSurrogate(a.Text[k + 1]) ? 2 : 1;
                 var piece = a;
                 piece.Text = a.Text.Substring(k, len);
-                piece.Width = RunWidth(piece.Text, a.Font);
+                piece.Width = len == 1 ? CharWidth(c, a.Font) : RunWidth(piece.Text, a.Font);
                 piece.PadX = 0;
                 piece.BreakBefore = at > 0;
                 atoms.Insert(at++, piece);
@@ -1390,17 +1386,34 @@ internal static class Markdown
                 }
 
                 if (a.Text.Length == 0) continue;
-                lb.Runs.Add(new Run
+
+                // 同行内字体 / 颜色 / 样式完全一致且首尾相接的相邻原子**并成一个 Run**。
+                // 中文是一字一原子的，不并的话一行正文就是几十次 DrawText（每次都有不可省的
+                // 固定开销：选字体、ExtTextOut）—— 一份 4200 字的回复曾因此排成 3075 个 Run。
+                // 并完之后一行只剩「逐样式段」那么多个。宽度照旧按原子累加（lb.W 不变），
+                // 只是少建对象、少画几十次。
+                var last = lb.Runs.Count > 0 ? lb.Runs[^1] : null;
+                if (last != null && last.Math == null && last.X < 0 && last.PadX == 0 && a.PadX == 0
+                    && ReferenceEquals(last.Font, a.Font) && last.Ink == a.Ink
+                    && last.Underline == a.Underline && last.Strike == a.Strike && last.Link == a.Link)
                 {
-                    Text = a.Text,
-                    Font = a.Font,
-                    Ink = a.Ink,
-                    Width = a.Width,
-                    PadX = a.PadX,
-                    Underline = a.Underline,
-                    Strike = a.Strike,
-                    Link = a.Link,
-                });
+                    last.Text += a.Text;
+                    last.Width += a.Width;
+                }
+                else
+                {
+                    lb.Runs.Add(new Run
+                    {
+                        Text = a.Text,
+                        Font = a.Font,
+                        Ink = a.Ink,
+                        Width = a.Width,
+                        PadX = a.PadX,
+                        Underline = a.Underline,
+                        Strike = a.Strike,
+                        Link = a.Link,
+                    });
+                }
                 lb.W += a.Advance;
                 if (a.Font.Height > lb.H) { lb.H = a.Font.Height; tall = a.Font; }
             }
@@ -2095,8 +2108,7 @@ internal static class Markdown
     /// 省掉的就是「每 40ms 把一条上万字的回复从头解析、量宽、折行一遍」。
     ///
     /// 条目间共享同一个 <see cref="PhysLine"/> 实例：装配只读它们，块首距落在复制出来的
-    /// 壳上（见 <see cref="Build"/>），绝不原地改。<see cref="Run"/> 同理 ——
-    /// 这也让增量重画能靠引用相等认出「这一行没变」（MessageBubble.Paint 的 SameLine）。
+    /// 壳上（见 <see cref="Build"/>），绝不原地改。<see cref="Run"/> 同理。
     /// </summary>
     private const int BlockCacheMax = 64;
     private static readonly Dictionary<(string src, int cap), BlockLayout> BlockCache = new();
@@ -2124,9 +2136,8 @@ internal static class Markdown
     }
 
     /// <summary>
-    /// 整篇排版 = 逐块排版（走缓存）+ 装配。装配做三件事：把块首距按
-    /// 「是不是第一块、上一块欠多少下内边距」加回各块首行；累出总高；
-    /// 记下最后一个有行的块从哪一行开始（<see cref="Layout.TailStart"/>，增量重画的脏区起点）。
+    /// 整篇排版 = 逐块排版（走缓存）+ 装配。装配做两件事：把块首距按
+    /// 「是不是第一块、上一块欠多少下内边距」加回各块首行；累出总高。
     /// </summary>
     private static Layout Build(string md, int cap)
     {
@@ -2147,8 +2158,6 @@ internal static class Markdown
             float lead = first ? 0f : bl.Lead + padBelow;
             padBelow = bl.PadBelow;
             if (bl.Lines.Count == 0) continue;
-
-            lay.TailStart = lay.Lines.Count;
 
             // 块首距落在首行身上（类注释第三条）。缓存里的行是跨条目共享的，不能原地改 ——
             // 需要非零的距时复制一个壳，Runs / Decors 照样共享（绘制对它们只读）。
@@ -2193,22 +2202,28 @@ internal static class Markdown
     /// <summary>
     /// 画一段排版好的内容，返回**画完之后光标的绝对 y**（调用方拿它接着画下面的东西）。
     ///
-    /// 这里返回绝对值而不是高度：旧版返回的是高度，而唯一的调用方
-    /// （<c>MessageBubble.OnPaint</c>）是把它当绝对 y 用的 —— 于是那条「回复被截断」
-    /// 的说明被画在了气泡顶端附近，而不是正文下面。同样地，这边也不许自己另算一遍高度：
-    /// 每一步都走 <see cref="PhysLine.Advance"/>。
+    /// 三遍的完整版，给离屏渲染（OfflineRender）用。界面（ChatView）不走这里：
+    /// 它把三遍**拆到所有气泡的外面**（DrawBack / DrawText / DrawOver 各自对每个可见气泡
+    /// 调一次），这样整屏的文字共用**一次** HDC 借还，而不是每个气泡一次。
     /// </summary>
     /// <param name="bubble">画在哪个气泡上。装饰色要相对它来混，见 <see cref="Palette"/>。</param>
-    /// <param name="fromLine">
-    /// 只画从这一行起的部分（增量重画用，见 MessageBubble.Paint）。它之前的行一个像素都不碰，
-    /// 但行的 y 坐标仍然从头累加 —— 返回值与完整绘制完全相同。
-    /// </param>
-    public static float Draw(Graphics g, Layout lay, float x, float y, Color bubble, int fromLine = 0)
+    public static float Draw(Graphics g, Layout lay, float x, float y, Color bubble)
     {
-        // 分两遍画，因为这两遍**对 Graphics 的用法互斥**（见下面的 HeldDc）。
-        //
-        // 先把每行的 y 算出来：两遍都要用它，而它是纯累加，算两遍只会给「两遍算得不一样」
-        // 留一条缝。行数不多，一个 float[] 的事。
+        DrawBack(g, lay, x, y, bubble, float.MinValue, float.MaxValue);
+        using (var dc = HoldTextDc(g))
+            DrawText(dc, lay, x, y, bubble, float.MinValue, float.MaxValue);
+        DrawOver(g, lay, x, y, bubble, float.MinValue, float.MaxValue);
+        return y + lay.Height;
+    }
+
+    /// <summary>借一次 HDC 攥住不放（<see cref="HeldDc"/>），给一整屏的文字绘制共用。
+    /// 用 <c>using</c> 包住，Dispose 才真正归还。</summary>
+    internal static IDeviceContext HoldTextDc(Graphics g) => new HeldDc(g);
+
+    /// <summary>每行的行顶 y（绝对坐标）。三遍各算一次：纯累加，比「传一个数组进去还要
+    /// 解释它从哪来」便宜。</summary>
+    private static float[] LineTops(Layout lay, float y)
+    {
         var tops = new float[lay.Lines.Count];
         float cursor = y;
         for (int i = 0; i < lay.Lines.Count; i++)
@@ -2217,15 +2232,30 @@ internal static class Markdown
             tops[i] = cursor;
             cursor += lay.Lines[i].Pitch;
         }
+        return tops;
+    }
 
-        // ---- 第一遍：所有铺在文字**下面**的 GDI+ 东西（装饰块、行内代码底）----
-        //
-        // 必须整遍跑完再动文字：第二遍要把 HDC 借出来攥着不放，而那个 Graphics
-        // 在此期间是**不能用**的。
-        for (int i = fromLine; i < lay.Lines.Count; i++)
+    /// <summary>行裁掉的余量：面板型块的装饰从首行往上退一圈内边距，可见带要紧贴行切的话
+    /// 会把那条上缘切掉。</summary>
+    private const float CullMargin = 40f;
+
+    /// <summary>这一行落在可见带外吗。可见带是与 <paramref name="top"/> 同坐标的绝对 y。</summary>
+    private static bool CulledOut(float top, float pitch, float visTop, float visBottom) =>
+        top + pitch < visTop - CullMargin || top > visBottom + CullMargin;
+
+    /// <summary>
+    /// 第一遍：所有铺在文字**下面**的 GDI+ 东西（装饰块、行内代码底、公式里的线）。
+    /// 必须整遍跑完再动文字：第二遍要把 HDC 借出来攥着不放，而那个 Graphics
+    /// 在此期间是**不能用**的。
+    /// </summary>
+    public static void DrawBack(Graphics g, Layout lay, float x, float y, Color bubble, float visTop, float visBottom)
+    {
+        var tops = LineTops(lay, y);
+        for (int i = 0; i < lay.Lines.Count; i++)
         {
             var pl = lay.Lines[i];
             float top = tops[i];
+            if (CulledOut(top, pl.Pitch, visTop, visBottom)) continue;
             float ttop = top + pl.TextShift;        // 有行内公式的行，文字跟着整行一起下来
 
             foreach (var d in pl.Decors)
@@ -2282,69 +2312,72 @@ internal static class Markdown
                 if (r.X < 0) runX += r.Advance;
             }
         }
+    }
 
-        // ---- 第二遍：所有文字，全程共用**一个** HDC ----
-        //
-        // 为什么非得这样：TextRenderer.DrawText 每调一次就 GetHdc + ReleaseHdc 一次，
-        // 而 ReleaseHdc 会把 GDI+ 的状态判成失效、下一次 GetHdc 再从头建立一遍 ——
-        // 实测一次往返约 1ms，比绘制本身贵两三个数量级。
-        //
-        // 一行正文在这里是**逐词**一个 Run，于是这个开销不是"每帧几十次"而是"每帧几千次"：
-        // 一条 4200 字的回复排成 3075 个 Run，打开这条会话的第一帧整整卡 3 秒
-        // （tools/zoom-wheel.ps1 卡在这一帧上，量出来的"图片没画出来"就是这么来的）。
-        // 摊成一次 GetHdc 之后，同一份内容从 2952ms 降到 139ms。
-        //
-        // 剩下的 139ms 是每次调用自己的固定开销（选中字体、ExtTextOut），**不是** DC 往返；
-        // 想再快就得让排版把一行里同样式、位置又首尾相接的相邻 Run 并成一个
-        // —— 那要动 WrapAtoms 的原子模型，不是这里能顺手改的。
-        //
-        // 不能改用 Graphics.DrawString 绕开：排版是按 TextRenderer.MeasureText 量的，
-        // GDI+ 量、GDI 画（或反过来）会差出一两行 —— 盒子高度是对的、字却溢出去，
-        // 这条在 DrawReason 的注释里已经写过一遍。
-        using (var dc = new HeldDc(g))
-        {
-            for (int i = fromLine; i < lay.Lines.Count; i++)
-            {
-                var pl = lay.Lines[i];
-                float top = tops[i];
-                float ttop = top + pl.TextShift;
-                float runX = x + pl.Indent;
-
-                foreach (var r in pl.Runs)
-                {
-                    float at = r.X >= 0 ? x + r.X : runX;
-
-                    if (r.Math != null)
-                    {
-                        MathGlyphs(dc, r.Math, at, top + pl.Base, bubble);
-                        if (r.X < 0) runX += r.Advance;
-                        continue;
-                    }
-
-                    if (r.Text.Length == 0) continue;
-
-                    TextRenderer.DrawText(dc, r.Text, r.Font,
-                        new Point((int)MathF.Round(at + r.PadX), (int)MathF.Round(ttop)),
-                        Palette.Of(r.Ink, bubble), TFlags);
-
-                    if (r.X < 0) runX += r.Advance;
-                }
-            }
-        }
-
-        // ---- 第三遍：两道线画在文字**上面** ----
-        //
-        // 删除线要横穿字形才叫删除线，压到字底下就等于没有（下划线差得没这么明显，
-        // 但它在旧版里也是画在字上面，没有理由在这里改）。所以它不能并进第一遍。
-        for (int i = fromLine; i < lay.Lines.Count; i++)
+    /// <summary>
+    /// 第二遍：所有文字，全程共用**一个** HDC（<paramref name="dc"/>，来自 <see cref="HoldTextDc"/>）。
+    ///
+    /// 为什么非得攥着一个 DC 不放：TextRenderer.DrawText 每调一次就 GetHdc + ReleaseHdc 一次，
+    /// 而 ReleaseHdc 会把 GDI+ 的状态判成失效、下一次 GetHdc 再从头建立一遍 ——
+    /// 实测一次往返约 1ms，比绘制本身贵两三个数量级。
+    ///
+    /// 不能改用 Graphics.DrawString 绕开：排版是按 TextRenderer.MeasureText 量的，
+    /// GDI+ 量、GDI 画（或反过来）会差出一两行 —— 盒子高度是对的、字却溢出去，
+    /// 这条在 DrawReason 的注释里已经写过一遍。
+    /// </summary>
+    public static void DrawText(IDeviceContext dc, Layout lay, float x, float y, Color bubble, float visTop, float visBottom)
+    {
+        var tops = LineTops(lay, y);
+        for (int i = 0; i < lay.Lines.Count; i++)
         {
             var pl = lay.Lines[i];
-            float top = tops[i] + pl.TextShift;
+            float top = tops[i];
+            if (CulledOut(top, pl.Pitch, visTop, visBottom)) continue;
+            float ttop = top + pl.TextShift;
             float runX = x + pl.Indent;
 
             foreach (var r in pl.Runs)
             {
+                float at = r.X >= 0 ? x + r.X : runX;
+
+                if (r.Math != null)
+                {
+                    MathGlyphs(dc, r.Math, at, top + pl.Base, bubble);
+                    if (r.X < 0) runX += r.Advance;
+                    continue;
+                }
+
                 if (r.Text.Length == 0) continue;
+
+                TextRenderer.DrawText(dc, r.Text, r.Font,
+                    new Point((int)MathF.Round(at + r.PadX), (int)MathF.Round(ttop)),
+                    Palette.Of(r.Ink, bubble), TFlags);
+
+                if (r.X < 0) runX += r.Advance;
+            }
+        }
+    }
+
+    /// <summary>
+    /// 第三遍：两道线画在文字**上面**。
+    ///
+    /// 删除线要横穿字形才叫删除线，压到字底下就等于没有（下划线差得没这么明显，
+    /// 但它在旧版里也是画在字上面，没有理由在这里改）。所以它不能并进第一遍。
+    /// </summary>
+    public static void DrawOver(Graphics g, Layout lay, float x, float y, Color bubble, float visTop, float visBottom)
+    {
+        var tops = LineTops(lay, y);
+        for (int i = 0; i < lay.Lines.Count; i++)
+        {
+            var pl = lay.Lines[i];
+            float top = tops[i];
+            if (CulledOut(top, pl.Pitch, visTop, visBottom)) continue;
+            top += pl.TextShift;
+            float runX = x + pl.Indent;
+
+            foreach (var r in pl.Runs)
+            {
+                if (r.Text.Length == 0) { if (r.X < 0) runX += r.Advance; continue; }
                 float at = r.X >= 0 ? x + r.X : runX;
 
                 if (r.Underline)
@@ -2363,8 +2396,6 @@ internal static class Markdown
                 if (r.X < 0) runX += r.Advance;
             }
         }
-
-        return cursor;
     }
 
     /// <summary>

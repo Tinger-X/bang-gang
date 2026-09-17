@@ -5,25 +5,34 @@
 # real child HWND, so every one of the ~15 animation frames moved N child windows (not part
 # of the parent's double buffer -> tearing) and re-wrapped every message (-> stutter).
 #
-# 0.9.0 made ChatView the only painter and split layout in two:
+# 0.9.0 made ChatView the only painter and split layout in two. 0.9.3 revised WHERE the
+# expensive half runs, on the user's explicit requirement that bubble widths re-wrap LIVE
+# during the animation instead of snapping at the end:
 #
-#   ReflowRows()  re-measures every bubble -- expensive, and now runs ONCE, at the end
-#   PlaceRows()   only repositions rows   -- microseconds, and this is what each frame runs
+#   ReflowRows()      re-measures every bubble -- runs ONCE, at the end (SettleLayout)
+#   ReflowVisible()   re-measures only the rows in the visible band -- runs PER FRAME
+#   PlaceRows()       only repositions rows    -- microseconds
+#
+# The per-frame cost therefore scales with what is on screen, never with how long the
+# conversation is. The probe's evidence for that is animReflowRows (the count of rows
+# re-measured across the whole animation): it must track frames x visible rows, not
+# frames x ALL rows. A frame timing cannot tell those two apart on a fast machine; the
+# row count can.
 #
 # This probe is the only quantitative evidence for that claim. It opens a conversation heavy
 # enough to matter, runs a collapse and an expand, and reads the frame timings ChatView
 # writes into ui-rows.json (animMs / animFrames / animPaintMs / animPaintMaxMs / animLayoutMs
-# / animLayoutMaxMs, plus the non-animation idle* pair as the control group).
+# / animLayoutMaxMs / animReflowRows, plus the non-animation idle* pair as the control group).
 #
 # Why each assertion can fail:
 #
 #   * the sidebar width is read before and after each click. "The animation was fast" and
 #     "the animation never happened" look identical in the timings -- animMs is the wall
 #     clock of the LAST animation, and a stale one from startup reads just as small.
-#   * animLayoutMs is the per-frame LAYOUT cost. This is the number the fix targets: if a
-#     frame went back to re-wrapping every message it would be milliseconds, not the tens of
-#     microseconds a position pass costs. A probe that only looked at paint time would miss
-#     that regression entirely.
+#   * animLayoutMs is the per-frame LAYOUT cost: re-measuring the visible band is a few
+#     milliseconds, re-measuring ALL rows would scale with the conversation. The hard
+#     discriminator between the two is animReflowRows (below); the timing stays as a
+#     sanity bound only, because a fast machine blurs it.
 #   * animPaintMaxMs is the WORST frame, not the average. An animation that is smooth except
 #     for one 300ms hitch stutters for the user and has a fine average.
 #   * the idle* numbers are printed alongside as the control group: the one-off re-wrap and
@@ -256,16 +265,29 @@ try {
             }
         }
 
-        # Per-frame LAYOUT. This is the number the fix targets: a frame that re-wraps every
-        # message is milliseconds; a frame that only repositions rows is microseconds.
+        # Per-frame LAYOUT. 0.9.3 re-wraps the VISIBLE band every frame on purpose (live
+        # bubble widths during the animation), so "layout took milliseconds" is no longer
+        # a fault by itself. The fault this section guards is per-frame work that scales
+        # with CONVERSATION LENGTH, and the number that catches it is animReflowRows:
+        # re-measuring the band costs frames x (rows on screen) -- this fixture puts 4-8
+        # rows in the band, so 12 per frame is generous -- while re-wrapping everything
+        # costs frames x 20, nearly twice the threshold. Machine speed cannot blur a count.
+        foreach ($pair in @(@('collapse', $uiC), @('expand', $uiE))) {
+            $tag = $pair[0]; $u = $pair[1]
+            Write-Output ('  ' + $tag + ' re-wrapped ' + $u.animReflowRows + ' rows over ' + $u.animFrames + ' frames')
+            if ([int]$u.animReflowRows -gt [int]$u.animFrames * 12) {
+                Write-Output ('  FAIL -- ' + $tag + ' re-wrapped more rows than the visible band can hold; per-frame cost scales with the conversation again')
+                $script:fail++
+            }
+        }
         $maxLayout = [Math]::Max([double]$uiC.animLayoutMs, [double]$uiE.animLayoutMs)
         $maxLayoutPeak = [Math]::Max([double]$uiC.animLayoutMaxMs, [double]$uiE.animLayoutMaxMs)
         Write-Output ('  per-frame layout avg worst ' + $maxLayout + 'ms, worst single ' + $maxLayoutPeak + 'ms')
-        if ($maxLayout -gt 2.0 -or $maxLayoutPeak -gt 8.0) {
-            Write-Output '  FAIL -- a frame is re-wrapping the messages instead of only repositioning rows'
+        if ($maxLayout -gt 15.0 -or $maxLayoutPeak -gt 40.0) {
+            Write-Output '  FAIL -- a layout pass took long enough to be a visible hitch'
             $script:fail++
         }
-        else { Write-Output '  OK   frames only reposition rows' }
+        else { Write-Output '  OK   layout stays inside a frame budget' }
 
         # The WORST frame, not the average: one 200ms hitch is a visible stutter and barely
         # moves an average over ~15 frames.
@@ -291,7 +313,7 @@ try {
         else { Write-Output '  OK   the animation finishes in about its nominal time' }
 
         Write-Output ''
-        if ($script:fail -eq 0) { Write-Output 'PASS: the sidebar animation repositions rows, it does not re-wrap them.' }
+        if ($script:fail -eq 0) { Write-Output 'PASS: the sidebar animation re-wraps only the visible band; per-frame cost is flat in conversation length.' }
         else { Write-Output "FAIL: $($script:fail) check(s) failed." }
     }
 } finally {

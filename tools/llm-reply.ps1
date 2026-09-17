@@ -290,7 +290,7 @@ $b2 = $null
 $strip = $null
 $midInk = $null
 $endInk = $null
-$script:amber = $null
+$script:warmRun = $null
 $script:b2r = $null
 
 try {
@@ -404,23 +404,45 @@ try {
         $script:endInk = Get-InkBoxNum $bmp
         $bmp.Dispose()
 
-        # E. the truncation notice, counted by COLOUR inside the finished bubble.
-        # Amber appears nowhere else in the chat -- the accent is blue, the bubbles are
-        # grey/blue, the file chips are white -- so "how much amber is down there" is a
-        # direct reading of whether the notice got painted, and of nothing else.
-        # The box's own fill is only 14% amber onto the bubble (R-B around 23); the
-        # glyphs are the pure ink (R-B around 164). The threshold sits between the two,
-        # so a drawn box with no text in it would not pass on its own.
+        # E. the truncation notice, detected by GEOMETRY inside the finished bubble.
+        # Amber appears nowhere else in the chat -- the accent is blue, the bubbles
+        # are grey/blue, the file chips are white -- so "how much amber is down
+        # there" used to be a direct reading of whether the notice got painted.
+        #
+        # 0.9.3: body text is now ClearType-rendered straight onto the opaque back
+        # buffer (it used to be baked into a transparent bitmap, where ClearType
+        # blended against black and came out grey). True ClearType leaves warm/cool
+        # subpixel fringes on glyph edges, and on diagonal strokes the per-channel
+        # coverage diverges enough that a fringe pixel reads e.g. (145,75,40) --
+        # that passes EVERY hue test the amber ink (176,106,12) also passes: R-B,
+        # G-B, R, B all in range. Measured 8705 such pixels on a plain 680-char
+        # reply. Hue cannot separate fringe from amber any more; geometry can.
+        # A fringe is one isolated pixel on a glyph edge, so warm pixels never line
+        # up: the longest horizontal warm run on that same plain reply is 2. The
+        # notice is a filled BOX nearly the full inner width (~700px) whose fill is
+        # a uniform warm band (14% amber onto the bubble, R-B ~ 23), so the box's
+        # padding rows are warm runs hundreds of pixels long. The metric is
+        # therefore the longest warm horizontal run in any row of the bubble, with
+        # the warm predicate loosened to (R-B)>12, (R-G)>3 so the 14% fill counts
+        # and glyph fringes still do not chain.
+        # Trade-off vs the old count: this detects the box, not the glyphs in it.
+        # That is the regression class this section guards (finish_reason "length"
+        # ignored -> no notice at all); the box's size derives from the warn text,
+        # so an empty box cannot be drawn by the current code.
         $bmp = Get-Crop $script:b2.Left $script:b2.Top ($script:b2.Right - $script:b2.Left) ($script:b2.Bottom - $script:b2.Top)
-        $amber = 0
-        for ($x = 0; $x -lt $bmp.Width; $x++) {
-            for ($y = 0; $y -lt $bmp.Height; $y++) {
+        $best = 0
+        for ($y = 0; $y -lt $bmp.Height; $y++) {
+            $run = 0
+            for ($x = 0; $x -lt $bmp.Width; $x++) {
                 $c = $bmp.GetPixel($x, $y)
-                if (($c.R - $c.B) -gt 60 -and $c.R -gt 120 -and $c.B -lt 170) { $amber++ }
+                if (($c.R - $c.B) -gt 12 -and ($c.R - $c.G) -gt 3) {
+                    $run++
+                    if ($run -gt $best) { $best = $run }
+                } else { $run = 0 }
             }
         }
         $bmp.Dispose()
-        $script:amber = $amber
+        $script:warmRun = $best
         $script:b2r = @{ W = ($script:b2.Right - $script:b2.Left); H = ($script:b2.Bottom - $script:b2.Top) }
     }
 } finally {
@@ -539,22 +561,23 @@ if ($log -match 'llm error: (.+)') {
 
 Write-Output ''
 Write-Output '--- E. what a reasoning model puts on screen ---'
-if ($null -eq $b2 -or $null -eq $script:amber) {
+if ($null -eq $b2 -or $null -eq $script:warmRun) {
     Check $false 'bubble measured again at the end' 'the probe did not get as far as measuring'
 } else {
-    $amber = $script:amber
-    Write-Output ('  final bubble: ' + $script:b2r.W + 'x' + $script:b2r.H + '   amber px: ' + $amber)
+    $warmRun = $script:warmRun
+    Write-Output ('  final bubble: ' + $script:b2r.W + 'x' + $script:b2r.H + '   longest warm run: ' + $warmRun + ' px')
     # The half of E that applies either way: a plain model must NOT sprout an amber
     # box. Without this the -Reasoning assertions below could be satisfied by a
     # warning that fires unconditionally, which would be a worse bug than the one
-    # this change fixes.
+    # this change fixes. Measured on a plain 680-char reply: 2 (glyph fringes
+    # never chain); a painted notice fills rows ~700px wide.
     if (-not $Reasoning) {
-        Check ($amber -eq 0) 'no truncation notice on a normal reply' ($amber.ToString() + ' amber px')
+        Check ($warmRun -lt 60) 'no truncation notice on a normal reply' ('warm run ' + $warmRun + ' px')
     } else {
-        # The amber ink of the notice. Threshold picked so the box's own 14% tint
-        # (R-B ~ 23) is not enough and the glyphs (R-B ~ 164) are: this counts the
-        # words, not just a rectangle that got drawn.
-        Check ($amber -gt 60) 'truncation notice is painted' ($amber.ToString() + ' amber px')
+        # The fill band of the notice box, spanning nearly the whole inner width.
+        # 200 is far below the measured band (~700) and far above any glyph
+        # artifact (single digits).
+        Check ($warmRun -gt 200) 'truncation notice is painted' ('warm run ' + $warmRun + ' px')
     }
 }
 

@@ -1,21 +1,25 @@
 
 using System.Drawing.Drawing2D;
-using System.Drawing.Imaging;
 
 namespace BangGang;
 
 /// <summary>
 /// 一条消息的气泡。**不是控件** —— 位置由 <see cref="ChatView"/> 排，像素由
-/// <see cref="Paint"/> 画在 <see cref="ChatView"/> 的 Graphics 上。
+/// 它的三个绘制阶段画在 <see cref="ChatView"/> 的 Graphics 上。
 ///
 /// 0.9.0 之前它是真实的子 HWND，那次改动的原因是侧栏动画期间的卡顿与破损：
 /// 子窗口**不在父控件的双缓冲里**，父面板重画时先铺自己的底色、子窗口随后才被系统 blit
 /// 上去 —— 中间那一瞬就是用户看到的破损；而每一帧给 N 个气泡 <c>SetBounds</c>
 /// 就是卡顿。改成整块自绘之后，一次 <c>Invalidate</c>、一次双缓冲合成、一次原子 blit。
 ///
-/// 代价见 <see cref="Paint"/>：GDI 文本**不认 <c>Graphics.Transform</c>**，
-/// 所以不能把气泡挪到别处再原地画一遍，只能画进一张位图再贴过去。缓存于是不是优化而是
-/// 必须的 —— 顺带也让动画的每一帧只剩 N 次 <c>DrawImage</c>。
+/// 0.9.3 起**不再烘位图缓存**，绘制拆成三遍（<see cref="DrawBack"/> /
+/// <see cref="DrawText"/> / <see cref="DrawOver"/>），由 <see cref="ChatView"/>
+/// 把三遍提到**所有**气泡的外层 —— 整屏文字共用一次 HDC 借还。
+/// 文字直接落在对话区的不透明双缓冲上：ClearType 对着真实底色混色才是对的，
+/// 画进透明位图再贴的老路会让它对着透明像素（读作黑）混 —— 亮色主题下深字边缘
+/// 一圈黑晕，就是用户报的「重影」。三遍直画 + 逐行裁剪之后，一帧的成本只跟
+/// **看得见的那几行**有关，缓存也就没有了存在必要。
+/// GDI 文本不认 <c>Graphics.Transform</c>，所以文字那一遍只能用绝对坐标画。
 ///
 /// 附件（图片 / 文件）画在气泡**外面、上方**，不占用气泡内部（用户要求）。
 /// 所以整条消息的纵向其实是两段：附件区 + 气泡体，分界是 <see cref="_bubbleTop"/>。
@@ -92,12 +96,6 @@ internal sealed class MessageBubble
     // ---- 附件区（图片 + 文件，和输入框上方那套是同一批卡片） ----
     private const int ChipGapY = 8;       // 换行时上一行的下缘与下一行的上缘
     private const int AttachGap = 8;      // 附件区与**气泡顶缘**之间（附件在气泡外面）
-
-    /// <summary>
-    /// 位图缓存超过这个高度就不留了。一张 W×2400 的 ARGB 大约是 8MB，
-    /// 而这么高的气泡全屏也就看得到一条，缓存它换不来什么。
-    /// </summary>
-    private const int CacheMaxH = 2400;
 
     /// <summary>
     /// 一个附件格子：来源附件 + 缩略图（只有图片、且真的读出来了才有）+ 它的矩形。
@@ -177,21 +175,6 @@ internal sealed class MessageBubble
     /// <summary>指针停在上面那个图片格子的序号，-1 表示没停在任何一格上。</summary>
     private int _hover = -1;
 
-    // ---------------- 位图缓存 ----------------
-
-    private Bitmap? _cache;
-    private int _cacheW, _cacheH;
-
-    // ---- 缓存里烘着的是哪一版内容（增量重画的判据，见 Paint）----
-    // 不能只记「上一版排版」：气泡滚出屏幕时 Paint 不会被调，缓存会落后好几个版本。
-    // 代际号也不能省：行内多出一个词时宽高都可能不变，尺寸对不上号的旧缓存要靠它认出。
-    private int _seq;
-    private Markdown.Layout? _cacheMd;
-    private int _cacheSeq = -1;
-    private float _cacheReasonH, _cacheWarnH;
-    private bool _cacheShowWait;
-    private int _cacheReasonLen = -1, _cacheReasonMs = -1;
-
     public MessageBubble(ChatMessage msg, bool isUser)
     {
         Msg = msg;
@@ -264,24 +247,18 @@ internal sealed class MessageBubble
     }
 
     /// <summary>
-    /// 动画往前走一帧。由 <c>ChatView</c> 的计时器推。
-    ///
-    /// 每一帧都把位图缓存扔掉：缓存里烘的是**上一帧**那三个点，
-    /// 不扔的话动画永远停在第一帧 —— 而且看起来完全正常，就是不动。
+    /// 动画往前走一帧。由 <c>ChatView</c> 的计时器推 —— 气泡自己没有时钟。
     /// </summary>
     public void TickWait()
     {
         if (!_showWait) return;
         _phase++;
-        DropCache();
         Repaint?.Invoke();
     }
 
     /// <summary>依据消息重建内部布局并计算气泡尺寸（附件区在上、气泡体在下）。</summary>
     private void Rebuild()
     {
-        _seq++;     // 内容代际 +1：尺寸没变的追加（行内又多了一个词）靠它认出缓存已旧
-
         // 正文取一次存成局部变量，后面都读它。
         //
         // 两个理由。一是**确实可能是 null**：消息是从磁盘上的 JSON 反序列化回来的，
@@ -367,9 +344,6 @@ internal sealed class MessageBubble
 
         // 重排后悬浮下标可能指到了另一格上（甚至指到了不存在的下标）
         if (_hover >= _chips.Count) _hover = -1;
-        // 位图缓存**不在这里扔**：流式回复的增量重画（见 Paint）要拿旧缓存对比、把没动过的
-        // 前缀像素直接搬过来。真正需要整幅重画的那些变化（主题、悬浮、等待动画的每一帧）
-        // 各自调 DropCache。
     }
 
     /// <summary>
@@ -476,7 +450,6 @@ internal sealed class MessageBubble
     /// </summary>
     public void Dispose()
     {
-        DropCache();
         foreach (var c in _chips) c.Thumb?.Dispose();
         _chips.Clear();
     }
@@ -511,7 +484,6 @@ internal sealed class MessageBubble
         {
             // 指针形状不改（用户要求），所以「这一行能点」只能靠悬浮时文字变个颜色来暗示
             _reasonHover = overHead;
-            DropCache();        // 缓存里烘着的是没悬浮的样子，不扔的话悬浮反馈永远不画
             Repaint?.Invoke();
         }
 
@@ -519,7 +491,6 @@ internal sealed class MessageBubble
         int i = ChipAt(p);
         if (i == _hover) return;
         _hover = i;
-        DropCache();
         Repaint?.Invoke();
     }
 
@@ -529,7 +500,7 @@ internal sealed class MessageBubble
         bool dirty = _hover >= 0 || _reasonHover;
         _hover = -1;
         _reasonHover = false;
-        if (dirty) { DropCache(); Repaint?.Invoke(); }
+        if (dirty) Repaint?.Invoke();
     }
 
     /// <summary>在本气泡上松开左键。</summary>
@@ -573,168 +544,102 @@ internal sealed class MessageBubble
         return null;
     }
 
-    // ---------------- 绘制 ----------------
+    // ---------------- 绘制（三遍，由 ChatView 提到所有气泡的外层） ----------------
 
-    /// <summary>作废位图缓存。改主题后要调 —— 缓存里烘着旧主题的颜色，不扔就换不过来。</summary>
-    public void DropCache()
-    {
-        _cache?.Dispose();
-        _cache = null;
-    }
+    /// <summary>正文底部（截断说明接在它下面）。等首个字符时是预留的那一行。</summary>
+    private float BodyBottom() => BodyTop() + (_showWait ? Markdown.BodyLinePitch() : (_md?.Height ?? 0));
 
     /// <summary>
-    /// 把自己画到对话区的 Graphics 上，左上角落在 <paramref name="at"/>。
+    /// 第一遍：所有铺在文字**下面**的 GDI+ 东西（气泡底 / 描边、附件缩略图、思考块的
+    /// 箭头与底板、等待的三个点、截断说明的底板、以及正文的装饰与公式线）。
     ///
-    /// **为什么必须过一手位图**：GDI 文本（<see cref="TextRenderer"/>）不认
-    /// <c>Graphics.Transform</c> —— <c>TranslateTransform</c> 之后画出来的字仍然在原来的
-    /// 坐标上。所以「把气泡挪到它的位置再原地画一遍」这条路是走不通的，只能整体画进一张
-    /// 位图再贴过去。
-    ///
-    /// 贴过去的顺带好处：圆角之外的像素是**透明的**，压在对话区底色上就是抗锯齿的圆角；
-    /// 而动画的每一帧也只剩 N 次 <c>DrawImage</c>，正是这次改动要的结果。
+    /// 这一遍允许平移变换（GDI+ 认 <c>Graphics.Transform</c>），所以内部全用
+    /// 气泡局部坐标画；<paramref name="visTop"/> / <paramref name="visBottom"/>
+    /// 是 ChatView 坐标系里的可见带，进来先换算成局部的。
     /// </summary>
-    public void Paint(Graphics g, Point at)
+    public void DrawBack(Graphics g, Point at, float visTop, float visBottom)
     {
         if (Width <= 0 || Height <= 0) return;
-
-        if (_cache == null || _cacheSeq != _seq || _cacheW != Width || _cacheH != Height)
-        {
-            // 增量重画（流式回复的主路）：宽度没变、旁白（思考块 / 截断说明 / 等待动画 /
-            // 思考耗时标签）一样没动、而且最后一个块之前的所有行逐行相同 —— 那前缀的像素
-            // 就是旧缓存里的那一份，搬过来就行，只有最后一个块要重画。
-            // 流式期间这条路每 40ms 走一次，省掉的是「每 40ms 把整条消息重画一遍」
-            // （实测一条 4200 字的回复全量要 ~139ms，这条路上只剩最后一个块）。
-            //
-            // 脏区边界取在**块边界**上（Layout.TailStart）：面板型块的装饰（代码块底、
-            // 引用竖线）从首行往上退一圈内边距，跨块边界的缝只有这里切得干净。
-            int from = 0;
-            var old = _cache;
-            var md = _md;     // 取一次存成局部变量：跨语句之后编译器的流分析就丢了（CS8602）
-            if (old != null && _cacheW == Width && md != null && _cacheMd != null
-                && _cacheReasonH == _reasonH && _cacheWarnH == _warnH
-                && !_cacheShowWait && !_showWait
-                && _cacheReasonLen == (Msg.Reasoning ?? "").Length
-                && _cacheReasonMs == Msg.ReasoningMs)
-            {
-                int limit = Math.Min(_cacheMd.TailStart, md.TailStart);
-                int p = 0;
-                while (p < limit && SameLine(_cacheMd.Lines[p], md.Lines[p])) p++;
-                if (p == limit) from = limit;   // 前缀整块稳定才走增量，否则老老实实全画
-            }
-
-            var bmp = new Bitmap(Width, Height, PixelFormat.Format32bppPArgb);
-            using (var bg = Graphics.FromImage(bmp))
-            {
-                bg.SmoothingMode = SmoothingMode.AntiAlias;
-                bg.TextRenderingHint = System.Drawing.Text.TextRenderingHint.AntiAlias;
-                if (from > 0 && old != null && md != null)
-                {
-                    float dirtyY = BodyTop();
-                    for (int i = 0; i < from; i++) dirtyY += md.Lines[i].Advance;
-                    int keep = Math.Min(Math.Max(0, (int)MathF.Floor(dirtyY)), Height);
-                    if (keep > 0)
-                    {
-                        // 1:1 搬稳定前缀（PixelOffsetMode 的理由同 Blit）
-                        bg.PixelOffsetMode = PixelOffsetMode.HighQuality;
-                        bg.DrawImage(old, new Rectangle(0, 0, Width, keep),
-                                     new Rectangle(0, 0, Width, keep), GraphicsUnit.Pixel);
-                    }
-                    bg.SetClip(new Rectangle(0, keep, Width, Height - keep));
-                    Render(bg, from);
-                }
-                else
-                {
-                    bg.Clear(Color.Transparent);
-                    Render(bg, 0);
-                }
-            }
-            old?.Dispose();
-            // 太高的不留缓存，但**这一帧仍然要走位图**（见上面的注释）—— 画完就扔。
-            if (Height <= CacheMaxH)
-            {
-                _cache = bmp; _cacheW = Width; _cacheH = Height;
-                _cacheSeq = _seq;
-                _cacheMd = _md; _cacheReasonH = _reasonH; _cacheWarnH = _warnH;
-                _cacheShowWait = _showWait;
-                _cacheReasonLen = (Msg.Reasoning ?? "").Length;
-                _cacheReasonMs = Msg.ReasoningMs;
-            }
-            else { Blit(g, bmp, at); bmp.Dispose(); return; }
-        }
-        Blit(g, _cache!, at);
-    }
-
-    /// <summary>
-    /// 两版排版里同一行是否逐像素一致。引用相等走快路（块级排版缓存让没动过的块
-    /// **跨版本共享同一个 <see cref="Markdown.PhysLine"/> 实例**，流式期间前缀全是这条路）；
-    /// 首行因块首距被复制过壳（见 Markdown.Build），逐字段比，Runs / Decors 按引用比 ——
-    /// 复制壳时它们也是共享的，内容不同必然引用不同。
-    /// </summary>
-    private static bool SameLine(Markdown.PhysLine a, Markdown.PhysLine b)
-    {
-        if (ReferenceEquals(a, b)) return true;
-        if (a.Pitch != b.Pitch || a.SpaceBefore != b.SpaceBefore || a.Indent != b.Indent
-            || a.LineHeight != b.LineHeight || a.Base != b.Base || a.TextShift != b.TextShift)
-            return false;
-        if (a.Runs.Count != b.Runs.Count || a.Decors.Count != b.Decors.Count) return false;
-        for (int i = 0; i < a.Runs.Count; i++) if (!ReferenceEquals(a.Runs[i], b.Runs[i])) return false;
-        for (int i = 0; i < a.Decors.Count; i++) if (!ReferenceEquals(a.Decors[i], b.Decors[i])) return false;
-        return true;
-    }
-
-    /// <summary>
-    /// 1:1 贴一张位图。<c>PixelOffsetMode</c> 必须校正：不校正的话整块图会被采样到半个像素上，
-    /// 四角的抗锯齿连同一整条气泡的文字一起糊掉（同 <see cref="DrawChip"/> 里那一处）。
-    /// </summary>
-    private static void Blit(Graphics g, Bitmap bmp, Point at)
-    {
-        var off = g.PixelOffsetMode;
-        g.PixelOffsetMode = PixelOffsetMode.HighQuality;
-        g.DrawImage(bmp, at);
-        g.PixelOffsetMode = off;
-    }
-
-    /// <summary>在局部坐标 (0,0) 起把整条消息画出来。<paramref name="fromLine"/> 是增量重画的
-    /// 正文起始行（见 Paint），附件与「帮帮」那几段在增量时已被裁掉，画不画无所谓。</summary>
-    private void Render(Graphics g, int fromLine)
-    {
         Color bg = IsUser ? Theme.UserBubble : Theme.AsstBubble;
+        float vt = visTop - at.Y, vb = visBottom - at.Y;   // 可见带 → 本气泡的局部坐标
+
+        var state = g.Save();
+        g.TranslateTransform(at.X, at.Y);
 
         // 附件先画：它们在气泡**上面**（外面），所以气泡底不能盖住它们。
-        for (int i = 0; i < _chips.Count; i++) DrawChip(g, bg, _chips[i], i == _hover);
-
-        // 只有附件、没有正文：到这儿就完了，下面整块（气泡底、描边、「帮帮」、思考块、
-        // 正文、截断说明）都是气泡体里的东西（见 _bubbleBody）。
-        if (!_bubbleBody) return;
-
-        using (var path = RoundedRect(0, _bubbleTop, Width - 1, Height - _bubbleTop - 1, 12))
-        using (var b = new SolidBrush(bg))
-            g.FillPath(b, path);
-        if (!IsUser)
+        for (int i = 0; i < _chips.Count; i++)
         {
-            using var borderPen = new Pen(Color.FromArgb(150, 226, 230, 236), 1f);
-            using var path2 = RoundedRect(0, _bubbleTop, Width - 1, Height - _bubbleTop - 1, 12);
-            g.DrawPath(borderPen, path2);
+            var c = _chips[i];
+            if (c.Rect.Bottom < vt || c.Rect.Top > vb) continue;
+            DrawChipBack(g, bg, c, i == _hover);
         }
 
-        float x = PadX;
-        if (!IsUser)
+        if (_bubbleBody)
         {
-            using (var hf = Theme.UI(10f, FontStyle.Bold))
-                g.DrawString("帮帮", hf, new SolidBrush(Theme.Accent), x + 2, _bubbleTop + PadY);
-            DrawReason(g, _bubbleTop + PadY + 18, bg);
+            using (var path = RoundedRect(0, _bubbleTop, Width - 1, Height - _bubbleTop - 1, 12))
+            using (var b = new SolidBrush(bg))
+                g.FillPath(b, path);
+            if (!IsUser)
+            {
+                using var borderPen = new Pen(Color.FromArgb(150, 226, 230, 236), 1f);
+                using var path2 = RoundedRect(0, _bubbleTop, Width - 1, Height - _bubbleTop - 1, 12);
+                g.DrawPath(borderPen, path2);
+            }
+
+            if (!IsUser)
+            {
+                using (var hf = Theme.UI(10f, FontStyle.Bold))
+                using (var hb = new SolidBrush(Theme.Accent))
+                    g.DrawString("帮帮", hf, hb, PadX + 2, _bubbleTop + PadY);
+                DrawReasonBack(g, bg, vt, vb);
+            }
+
+            float y = BodyTop();
+            if (_showWait) DrawWait(g, y, bg);
+            else if (_md != null) Markdown.DrawBack(g, _md, PadX, y, bg, vt, vb);
+            if (_warnH > 0) DrawWarningBack(g, bg, vt, vb);
         }
 
-        // 正文的起点**问布局要**，不要在这里把刚才那几段高度再加一遍：
-        // 加漏一段（比如思考块）就会被正文盖住，而且只错几个像素，很难看出来。
-        float y = BodyTop();
-        if (_showWait) y += DrawWait(g, y, bg);
-        else if (_md != null) y = Markdown.Draw(g, _md, x, y, bg, fromLine);
-        if (_warnH > 0) DrawWarning(g, y + WarnGap, bg);
+        g.Restore(state);
     }
 
     /// <summary>
-    /// 画「正在响应」的三个点，返回它占掉的高度（一行正文，见 <see cref="Rebuild"/>）。
+    /// 第二遍：所有文字，走 ChatView 攥住的那一个 HDC（GDI 文本不认平移变换，
+    /// 所以这一遍全部用 <paramref name="at"/> 换算出的**绝对**坐标）。
+    /// </summary>
+    public void DrawText(IDeviceContext dc, Point at, float visTop, float visBottom)
+    {
+        if (Width <= 0 || Height <= 0) return;
+        Color bg = IsUser ? Theme.UserBubble : Theme.AsstBubble;
+        float vt = visTop - at.Y, vb = visBottom - at.Y;
+
+        for (int i = 0; i < _chips.Count; i++)
+        {
+            var c = _chips[i];
+            if (c.Rect.Bottom < vt || c.Rect.Top > vb) continue;
+            DrawChipText(dc, c, at);
+        }
+
+        if (!_bubbleBody) return;
+        if (!IsUser) DrawReasonText(dc, at, vt, vb);
+        if (!_showWait && _md != null)
+            Markdown.DrawText(dc, _md, at.X + PadX, at.Y + BodyTop(), bg, visTop, visBottom);
+        if (_warnH > 0) DrawWarningText(dc, at, vt, vb);
+    }
+
+    /// <summary>第三遍：正文里的下划线 / 删除线（压在文字上面）。</summary>
+    public void DrawOver(Graphics g, Point at, float visTop, float visBottom)
+    {
+        if (Width <= 0 || Height <= 0 || !_bubbleBody || _showWait || _md == null) return;
+        Color bg = IsUser ? Theme.UserBubble : Theme.AsstBubble;
+        var state = g.Save();
+        g.TranslateTransform(at.X, at.Y);
+        Markdown.DrawOver(g, _md, PadX, BodyTop(), bg, visTop - at.Y, visBottom - at.Y);
+        g.Restore(state);
+    }
+
+    /// <summary>
+    /// 画「正在响应」的三个点。
     ///
     /// 让「正在动」这件事**只靠亮度**：三个点各自按相位在气泡底色和强调色之间混，
     /// 位置一个像素都不挪。靠位移的话每一帧整条气泡的观感都在抖，
@@ -742,7 +647,7 @@ internal sealed class MessageBubble
     ///
     /// 点画在内宽的正中：气泡的宽度是内容撑出来的，靠左会在右边留一大块空的。
     /// </summary>
-    private float DrawWait(Graphics g, float top, Color bubble)
+    private void DrawWait(Graphics g, float top, Color bubble)
     {
         float pitch = Markdown.BodyLinePitch();
         const int n = 3;
@@ -760,18 +665,18 @@ internal sealed class MessageBubble
             using var br = new SolidBrush(Theme.Mix(bubble, Theme.Accent, k));
             g.FillEllipse(br, left + i * (r * 2 + gap), cy - r, r * 2, r * 2);
         }
-        return pitch;
     }
 
     /// <summary>
-    /// 画一个附件格子。图片就是那张缩略图本身（44×44 的方图块，不写文件名 ——
-    /// 缩略图比名字好认，「pic.png」和「pic-2.png」看不出区别，两张缩略图一眼就分得开）；
-    /// 别的文件是「底色 + 类别图标 + 名字 + 大小」的小横条，和输入框上方那套完全一样。
+    /// 附件格子的**图形**部分（第一遍）。图片就是那张缩略图本身（44×44 的方图块，
+    /// 不写文件名 —— 缩略图比名字好认，「pic.png」和「pic-2.png」看不出区别，
+    /// 两张缩略图一眼就分得开）；别的文件是「底色 + 类别图标」，
+    /// 名字与大小在 <see cref="DrawChipText"/>（第二遍）。
     ///
     /// 缩略图读不出来的图片格画成文件样式（用扩展名当图标）：**不能悄悄跳过它** ——
     /// 用户明明加了张图，气泡里却什么都没有，那比画一个「打不开」的格子费解得多。
     /// </summary>
-    private void DrawChip(Graphics g, Color bubble, Chip c, bool hover)
+    private void DrawChipBack(Graphics g, Color bubble, Chip c, bool hover)
     {
         if (c.Thumb != null)
         {
@@ -798,20 +703,27 @@ internal sealed class MessageBubble
                                  c.Rect.Top + (DraftStrip.ChipH - DraftStrip.IconSize) / 2,
                                  DraftStrip.IconSize, DraftStrip.IconSize);
         DraftStrip.PaintFileIcon(g, c.Src, icon, bubble);
+    }
 
-        // 文字区。宽度按卡片算出来，量多少画多少（见 DraftStrip.Ellipsize 的注释）。
-        int tx = icon.Right + DraftStrip.TextGap;
+    /// <summary>附件格子的**文字**部分（第二遍）。坐标是绝对坐标（GDI 不认平移变换）。
+    /// 宽度按卡片算出来，量多少画多少（见 DraftStrip.Ellipsize 的注释）。</summary>
+    private static void DrawChipText(IDeviceContext dc, Chip c, Point at)
+    {
+        if (c.Thumb != null) return;   // 图片格没有文字
+        int tx = c.Rect.Left + DraftStrip.IconPad + DraftStrip.IconSize + DraftStrip.TextGap;
         int tw = c.Rect.Right - DraftStrip.TextRight - tx;
         if (tw < 20) return;
 
         string name = DraftStrip.Ellipsize(DraftStrip.DisplayName(c.Src), SF.Get(9.5f), tw);
-        TextRenderer.DrawText(g, name, SF.Get(9.5f), new Rectangle(tx, c.Rect.Top + 6, tw, 18),
+        TextRenderer.DrawText(dc, name, SF.Get(9.5f),
+            new Rectangle(at.X + tx, at.Y + c.Rect.Top + 6, tw, 18),
             Theme.TextMain, TextFormatFlags.Left | TextFormatFlags.NoPrefix
             | TextFormatFlags.SingleLine | TextFormatFlags.EndEllipsis | TextFormatFlags.NoPadding);
 
         string meta = DraftStrip.Ellipsize(AttachTypes.MetaOf(c.Src), SF.Get(8f), tw);
         if (meta.Length > 0)
-            TextRenderer.DrawText(g, meta, SF.Get(8f), new Rectangle(tx, c.Rect.Top + 23, tw, 16),
+            TextRenderer.DrawText(dc, meta, SF.Get(8f),
+                new Rectangle(at.X + tx, at.Y + c.Rect.Top + 23, tw, 16),
                 Theme.TextMuted, TextFormatFlags.Left | TextFormatFlags.NoPrefix
                 | TextFormatFlags.SingleLine | TextFormatFlags.EndEllipsis | TextFormatFlags.NoPadding);
     }
@@ -827,13 +739,10 @@ internal sealed class MessageBubble
     private static Color ChipFill(Color bubble) => Theme.Mix(bubble, Theme.TextMain, 0.08f);
 
     /// <summary>
-    /// 画「思考过程」那块：一行表头（箭头 + 文字，整行可点）+ 展开时的正文框。
-    ///
-    /// 正文用 <see cref="TextRenderer"/> 量、也用 <see cref="TextRenderer"/> 画，
-    /// 两边同一套 flag —— 用 GDI+ 量、GDI 画（或者反过来）会差出一两行，
-    /// 盒子高度是对的、字却溢出去了。
+    /// 「思考过程」那块的**图形**部分（第一遍）：表头的箭头与文字、展开时的正文底板
+    /// 与左侧竖线。正文文字在 <see cref="DrawReasonText"/>（第二遍）。
     /// </summary>
-    private void DrawReason(Graphics g, float top, Color bubble)
+    private void DrawReasonBack(Graphics g, Color bubble, float vt, float vb)
     {
         if (_reasonH <= 0 || IsUser) return;
         string reason = Msg.Reasoning ?? "";
@@ -861,6 +770,7 @@ internal sealed class MessageBubble
         if (!_reasonOpen) return;
 
         float boxY = head.Y + ReasonHeadH + 6;
+        if (boxY + _reasonBodyH < vt || boxY > vb) return;   // 正文框整体在可见带外
         // 底色由调用方传进来（气泡自己的填充色）：这块画在气泡里面，
         // 混错基准就会在气泡上留一块异色的补丁。
         using (var box = RoundedRect(PadX, boxY, _inner - 1, _reasonBodyH - 1, 8))
@@ -870,34 +780,61 @@ internal sealed class MessageBubble
         // 左边一道竖线：这段是「旁白」，不是回答本身。两行以上时全靠它区分。
         using (var rule = new SolidBrush(Theme.Mix(bubble, Theme.Accent, 0.45f)))
             g.FillRectangle(rule, PadX + ReasonPadX, boxY + ReasonPadY - 2, ReasonRuleW - 1, _reasonBodyH - ReasonPadY * 2 + 4);
+    }
 
+    /// <summary>
+    /// 思考正文的**文字**（第二遍）。用 <see cref="TextRenderer"/> 量、也用
+    /// <see cref="TextRenderer"/> 画，两边同一套 flag —— 用 GDI+ 量、GDI 画
+    /// （或者反过来）会差出一两行，盒子高度是对的、字却溢出去了。
+    /// </summary>
+    private void DrawReasonText(IDeviceContext dc, Point at, float vt, float vb)
+    {
+        if (_reasonH <= 0 || IsUser || !_reasonOpen) return;
+        string reason = Msg.Reasoning ?? "";
+        if (reason.Length == 0) return;
+
+        float boxY = _reasonHeader.Y + ReasonHeadH + 6;
+        if (boxY + _reasonBodyH < vt || boxY > vb) return;
         using var f = Theme.UI(10.5f);
-        TextRenderer.DrawText(g, reason, f,
-            new Rectangle((int)(PadX + ReasonPadX + ReasonRuleW), (int)(boxY + ReasonPadY),
+        TextRenderer.DrawText(dc, reason, f,
+            new Rectangle((int)(at.X + PadX + ReasonPadX + ReasonRuleW), (int)(at.Y + boxY + ReasonPadY),
                           ReasonTextW(), (int)(_reasonBodyH - ReasonPadY * 2)),
             Theme.TextMuted, TextFormatFlags.WordBreak | TextFormatFlags.NoPadding);
     }
 
     /// <summary>
-    /// 画「回复被截断」那句。放在正文**下面**而不是塞进正文里：它不是模型说的话，
-    /// 混进正文还会被下一轮当上下文发回给模型。
+    /// 「回复被截断」那句的**底板**（第一遍）。放在正文**下面**而不是塞进正文里：
+    /// 它不是模型说的话，混进正文还会被下一轮当上下文发回给模型。
     /// </summary>
-    private void DrawWarning(Graphics g, float top, Color bubble)
+    private void DrawWarningBack(Graphics g, Color bubble, float vt, float vb)
     {
         string warn = Msg.Warning ?? "";
         if (warn.Length == 0) return;
 
+        float top = BodyBottom() + WarnGap;
         float h = WarnBoxH(warn);
+        if (top + h < vt || top > vb) return;
         using (var box = RoundedRect(PadX, top, _inner - 1, h - 1, 8))
         using (var b = new SolidBrush(Theme.Mix(bubble, WarnInk, 0.14f)))
             g.FillPath(b, box);
         using (var pen = new Pen(Theme.Mix(bubble, WarnInk, 0.5f), 1f))
         using (var box2 = RoundedRect(PadX, top, _inner - 1, h - 1, 8))
             g.DrawPath(pen, box2);
+    }
 
+    /// <summary>截断说明的**文字**（第二遍）。</summary>
+    private void DrawWarningText(IDeviceContext dc, Point at, float vt, float vb)
+    {
+        string warn = Msg.Warning ?? "";
+        if (warn.Length == 0) return;
+
+        float top = BodyBottom() + WarnGap;
+        float h = WarnBoxH(warn);
+        if (top + h < vt || top > vb) return;
         using var f = Theme.UI(10.5f);
-        TextRenderer.DrawText(g, warn, f,
-            new Rectangle(PadX + WarnPad, (int)(top + WarnPad), _inner - WarnPad * 2, (int)(h - WarnPad * 2)),
+        TextRenderer.DrawText(dc, warn, f,
+            new Rectangle(at.X + PadX + WarnPad, (int)(at.Y + top + WarnPad),
+                          _inner - WarnPad * 2, (int)(h - WarnPad * 2)),
             WarnInk, TextFormatFlags.WordBreak | TextFormatFlags.NoPadding);
     }
 
