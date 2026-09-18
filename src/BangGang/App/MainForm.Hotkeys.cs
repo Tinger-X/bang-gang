@@ -35,7 +35,9 @@ partial class MainForm
                 bool settingsOpen = _settingsOverlay.Visible;
                 switch (_settings.Shortcuts[id].Action)
                 {
-                    case "hide": if (!settingsOpen) ToggleVisible(); break;
+                    // 显隐热键在设置打开时照样可用（开了设置想临时藏起窗口看桌面）；
+                    // 截图 / 录音在设置打开时仍然禁用。
+                    case "hide": ToggleVisible(); break;
                     case "shot": if (!settingsOpen) StartScreenshot(); break;
                     case "record": if (!settingsOpen) ToggleOrHoldRecording(); break;
                 }

@@ -74,8 +74,10 @@ public class AppSettings
     public double ChatTemperature { get; set; } = 0.7;
     /// <summary>单次回复的 token 上限；<b>0 = 不限</b>（请求不带 max_tokens，见 <see cref="LlmConfig.MaxTokens"/>）。</summary>
     public int ChatMaxTokens { get; set; } = 2048;
+    /// <summary>出厂时的系统提示词；设置页的「恢复默认」也回到这一段。</summary>
+    public const string DefaultSystemPrompt = "你是帮帮，运行在用户 Windows 桌面上的 AI 助手。回答简洁准确，默认使用中文。";
     /// <summary>系统提示词（每次对话都放在最前面）。留空表示不发送这一段。</summary>
-    public string ChatSystemPrompt { get; set; } = "";
+    public string ChatSystemPrompt { get; set; } = DefaultSystemPrompt;
     /// <summary>强化信息：附在每次提问之后，用来把模型拉回当前话题。留空表示不发送。</summary>
     public string ChatReinforce { get; set; } = "";
 

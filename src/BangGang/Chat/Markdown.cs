@@ -2114,8 +2114,17 @@ internal static class Markdown
         {
             Rect = new RectangleF(left, dy, tableW, rowH[0]),
             Fill = Ink.TableHead,
-            Radius = 6,
+            // 直角：表头色块的外缘就是整张表的外框（下面四条外边框线），
+            // 圆角色块配直角框线会在四个角上各缺一小块。
+            Radius = 0,
         });
+
+        // 外边框：整张表最外面一圈，与内部网格线同一个色。
+        // ly 这时是整张表（含内边距）的高；表体横向占 [left, left + tableW)。
+        first.Decors.Add(new Decor { Rect = new RectangleF(left, dy, tableW, 1f), Fill = Ink.TableLine });
+        first.Decors.Add(new Decor { Rect = new RectangleF(left, dy + ly - 1f, tableW, 1f), Fill = Ink.TableLine });
+        first.Decors.Add(new Decor { Rect = new RectangleF(left, dy + 1f, 1f, ly - 2f), Fill = Ink.TableLine });
+        first.Decors.Add(new Decor { Rect = new RectangleF(left + tableW - 1f, dy + 1f, 1f, ly - 2f), Fill = Ink.TableLine });
         for (int r = 1; r < t.Rows.Count; r++)
             first.Decors.Add(new Decor
             {

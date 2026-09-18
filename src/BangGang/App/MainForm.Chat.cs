@@ -328,7 +328,7 @@ partial class MainForm
             s += $"其中思考占了 {res.ReasoningTokens} tokens —— 推理模型的思考也算在这个上限里。";
         else if (msg.Reasoning.Length > 0)
             s += "推理模型的思考也算在这个上限里。";
-        return s + "调大「设置 → 对话设置 → 最大回复长度」再试。";
+        return s + "调大「设置 → 对话参数 → 最大回复长度」再试。";
     }
 
     /// <summary>用户在输入框的「暂停」上点了：掐掉网络读取，已经收到的部分留在气泡里。</summary>

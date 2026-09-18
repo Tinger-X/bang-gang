@@ -19,7 +19,7 @@ internal sealed class ShortcutsPage : SettingsPage
     private readonly SegmentedControl _recMode = new(RecordModes, 34);
     private string _baseRecMode = "hold";
 
-    public ShortcutsPage() : base("快捷键", "全局热键，至少需要一个修饰键（Ctrl / Alt / Shift）")
+    public ShortcutsPage() : base("快捷按键", "全局热键，至少需要一个修饰键（Ctrl / Alt / Shift）")
     {
         ResetContent();
 
@@ -49,9 +49,18 @@ internal sealed class ShortcutsPage : SettingsPage
                 _caps[action].Set(defs.First(x => x.Action == action));
             _recMode.Select(0, false);
             MarkChanged();
-        });
+        }, NonDefault);
 
         FinishContent();
+    }
+
+    /// <summary>当前值是否已偏离出厂默认（决定底栏「恢复默认」是否显示）。</summary>
+    private bool NonDefault()
+    {
+        var defs = AppSettings.DefaultShortcuts();
+        foreach (var (action, _, _) in Items)
+            if (!Same(_caps[action].Value, defs.First(x => x.Action == action))) return true;
+        return _recMode.SelectedIndex != 0;
     }
 
     public override void Rebind(AppSettings s)

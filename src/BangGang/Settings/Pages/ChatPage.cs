@@ -54,7 +54,7 @@ internal sealed class ChatPage : SettingsPage
     private int _bTemp, _bTokens;
     private string _bSys = "", _bRein = "";
 
-    public ChatPage() : base("对话设置", "这些参数会随每次请求一起发给模型，只影响对话本身")
+    public ChatPage() : base("对话参数", "这些参数会随每次请求一起发给模型，只影响对话本身")
     {
         ResetContent();
 
@@ -70,12 +70,33 @@ internal sealed class ChatPage : SettingsPage
         Stack.Controls.Add(gen);
 
         var prompts = new GroupCard("提示词", "留空表示不发送对应的那一段") { RowH = PromptRowH };
-        prompts.Add(new SettingRow("系统提示词", "每次对话都放在最前面", _sys));
-        prompts.Add(new SettingRow("强化信息", "附在每次提问之后，避免跑题", _rein));
+        // 这两行高 104、右侧是多行文本域：标题贴文本域顶端排，不垂直居中（SettingRow.TopAlign）。
+        prompts.Add(new SettingRow("系统提示词", "每次对话都放在最前面", _sys) { TopAlign = true });
+        prompts.Add(new SettingRow("强化信息", "附在每次提问之后，避免跑题", _rein) { TopAlign = true });
         prompts.Height = prompts.MeasureHeight();
         Stack.Controls.Add(prompts);
 
+        AddFooterAction("恢复默认", () =>
+        {
+            var d = new AppSettings();
+            _temp.Value = (int)Math.Round(d.ChatTemperature * TempScale);
+            _tokens.Value = d.ChatMaxTokens <= 0 ? UnlimitedMark : d.ChatMaxTokens;
+            _sys.Text = d.ChatSystemPrompt;
+            _rein.Text = d.ChatReinforce;
+            MarkChanged();
+        }, NonDefault);
+
         FinishContent();
+    }
+
+    /// <summary>当前值是否已偏离出厂默认（决定底栏「恢复默认」是否显示）。</summary>
+    private bool NonDefault()
+    {
+        var d = new AppSettings();
+        return _temp.Value != (int)Math.Round(d.ChatTemperature * TempScale)
+            || _tokens.Value != (d.ChatMaxTokens <= 0 ? UnlimitedMark : d.ChatMaxTokens)
+            || _sys.Text != d.ChatSystemPrompt
+            || _rein.Text != d.ChatReinforce;
     }
 
     public override void Rebind(AppSettings s)

@@ -70,7 +70,28 @@ internal sealed class UiPage : SettingsPage
         win.Height = win.MeasureHeight();
         Stack.Controls.Add(win);
 
+        AddFooterAction("恢复默认", () =>
+        {
+            var d = new AppSettings();
+            _mode.Select(ModeIndex(d.ThemeMode), false);
+            _accent.Value = Color.FromArgb(d.Accent);
+            _dots.SetValue(Color.FromArgb(d.Accent), raise: false);
+            _opacity.Value = Pct(d.Opacity);
+            _border.On = d.WindowBorder;
+            MarkChanged();
+        }, NonDefault);
+
         FinishContent();
+    }
+
+    /// <summary>当前值是否已偏离出厂默认（决定底栏「恢复默认」是否显示）。</summary>
+    private bool NonDefault()
+    {
+        var d = new AppSettings();
+        return ModeValue(_mode.SelectedIndex) != d.ThemeMode
+            || _accent.Value.ToArgb() != d.Accent
+            || _opacity.Value != Pct(d.Opacity)
+            || _border.On != d.WindowBorder;
     }
 
     private static int ModeIndex(string mode) => mode switch { "light" => 0, "dark" => 1, _ => 2 };

@@ -26,7 +26,7 @@ internal abstract class SettingsPage : Panel, IThemed
     private readonly Label _state = new();
     private readonly PillButton _save;
     private readonly System.Windows.Forms.Timer _stateTimer;
-    private readonly List<PillButton> _footerActions = new();
+    private readonly List<(PillButton Btn, Func<bool>? ShowWhen)> _footerActions = new();
     /// <summary>是否存在未保存的修改。</summary>
     public bool IsDirty { get; private set; }
 
@@ -76,12 +76,16 @@ internal abstract class SettingsPage : Panel, IThemed
         Controls.Add(_save);
     }
 
-    /// <summary>在保存按钮左侧添加一个次级动作按钮（例如快捷键页的“恢复默认”）。</summary>
-    protected PillButton AddFooterAction(string text, Action onClick)
+    /// <summary>
+    /// 在保存按钮左侧添加一个次级动作按钮（例如「恢复默认」）。
+    /// <paramref name="showWhen"/> 非空时，每次状态刷新都会重新求值，按钮仅在它为 true 时显示
+    /// （「恢复默认」靠这个做到「只在设置项不为默认值时出现」）。
+    /// </summary>
+    protected PillButton AddFooterAction(string text, Action onClick, Func<bool>? showWhen = null)
     {
         var b = new PillButton(text, PillButton.Look.Ghost, 112, 38);
         b.Click += (_, _) => onClick();
-        _footerActions.Add(b);
+        _footerActions.Add((b, showWhen));
         Controls.Add(b);
         return b;
     }
@@ -147,6 +151,13 @@ internal abstract class SettingsPage : Panel, IThemed
         }
         _save.Invalidate();
         _state.Invalidate();
+
+        // 条件显示的底栏按钮（「恢复默认」只在值偏离默认时出现）。
+        foreach (var (b, pred) in _footerActions)
+        {
+            if (pred != null) b.Visible = pred();
+        }
+        if (Width > 0) LayoutFooter();
     }
 
     /// <summary>放弃未保存的改动：重新按基线载入并清除状态。</summary>
@@ -187,8 +198,12 @@ internal abstract class SettingsPage : Panel, IThemed
         int y = Height - FooterH + (FooterH - _save.Height) / 2;
         int right = Width - PadX - _save.Width;
         _save.SetBounds(right, y, _save.Width, _save.Height);
-        foreach (var b in _footerActions)
+        foreach (var (b, pred) in _footerActions)
         {
+            // 不能读 b.Visible 判断显隐：Visible 的 getter 会沿父级链向上算，
+            // 页面本身还没显示时读回来恒为 false，按钮于是被跳过、停在旧位置上。
+            bool show = pred == null || pred();
+            if (!show) continue;
             right -= b.Width + 10;
             b.SetBounds(right, y, b.Width, b.Height);
         }

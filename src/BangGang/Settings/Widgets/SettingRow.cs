@@ -50,7 +50,8 @@ internal sealed class SettingRow : Panel, IThemed, IArranged
     public void Arrange()
     {
         int rw = _right.Width, rh = _right.Height;
-        _right.SetBounds(Math.Max(0, Width - rw), Math.Max(0, (Height - rh) / 2), rw, rh);
+        int rightTop = Math.Max(0, (Height - rh) / 2);
+        _right.SetBounds(Math.Max(0, Width - rw), rightTop, rw, rh);
         if (_right is IArranged ra) ra.Arrange();
         int tw = Math.Max(20, Width - rw - 18);
         bool two = !string.IsNullOrEmpty(_desc.Text);
@@ -59,7 +60,10 @@ internal sealed class SettingRow : Panel, IThemed, IArranged
         int dh = TextHeight(_desc);
         if (two)
         {
-            int top = Math.Max(2, (Height - th - dh) / 2);
+            // TopAlign：标题贴着右控件里第一行文字排（多行文本域那种高行用），
+            // 不垂直居中 —— 104px 的行里居中会让标题悬在半空，和输入框对不上。
+            // 9 与 TextArea.PadY 一致：EDIT 的第一行文字从那儿开始。
+            int top = TopAlign ? rightTop + 9 : Math.Max(2, (Height - th - dh) / 2);
             _title.SetBounds(0, top, tw, th);
             _desc.SetBounds(0, top + th, tw, dh);
         }
@@ -80,6 +84,12 @@ internal sealed class SettingRow : Panel, IThemed, IArranged
 
     /// <summary>行右侧的控件（切换服务商时用来定位这一行）。</summary>
     public Control RightControl => _right;
+
+    /// <summary>
+    /// true 时标题 / 说明贴右控件的顶端排（行比右控件高很多时用，例如提示词的多行文本域）；
+    /// false（默认）时整体在行内垂直居中。
+    /// </summary>
+    public bool TopAlign { get; set; }
 
     /// <summary>
     /// 是否参与排布。注意不能用 Control.Visible 判断：父级不可见时它也会返回 false。
