@@ -21,6 +21,11 @@ internal static class Win32
     public const int WM_NCLBUTTONDOWN = 0x00A1;
     public const int HTCAPTION = 0x2;
 
+    // 模态移动 / 缩放循环的开合（HTCAPTION 拖动会收到这一对；本程序的边缘缩放走
+    // 自己的 PreFilter 循环，不会发）
+    public const int WM_ENTERSIZEMOVE = 0x0231;
+    public const int WM_EXITSIZEMOVE = 0x0232;
+
     // 鼠标消息（缩放手柄在消息过滤器里按这几个消息号分流）
     public const int WM_MOUSEMOVE = 0x0200;
     public const int WM_LBUTTONDOWN = 0x0201;

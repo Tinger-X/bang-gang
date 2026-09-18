@@ -260,11 +260,13 @@ internal static class Markdown
     /// 反复命中 —— 切走会话再切回来、切主题（键里不含颜色，见类注释第一条）、
     /// 同一帧里被问两次、以及重排时那些宽度没动过的气泡。
     ///
-    /// <summary>条数上限而不是字节上限：一条消息的排版结果和它自己的长度成正比，
-    /// 而「最近 6 条」在任何真实会话里都远小于一张缩略图。留着不封顶的话，
-    /// 一晚上流式下来的每一段中间状态都会攒在里面。
+    /// <summary>条数上限而不是字节上限：一条消息的排版结果和它自己的长度成正比。
+    /// 24 的来历：侧栏动画期间 <see cref="ChatView.ReflowVisible"/> 把宽度量化到 16px
+    /// 步长，可见带里的几行（4~8 行）× 每行同时存活的几个步进宽度，再加上流式期间
+    /// 同一文本的中间状态，6 条会把这个工作集挤出去、每帧全 miss；24 条在真实会话里
+    /// 仍远小于一张缩略图。不封顶的话，一晚上流式下来的每一段中间状态都会攒在里面。
     /// </summary>
-    private const int CacheMax = 6;
+    private const int CacheMax = 24;
     private static readonly Dictionary<(string text, int cap, string fold), Layout> Cache = new();
     private static readonly Queue<(string text, int cap, string fold)> CacheOrder = new();
 
@@ -2339,8 +2341,9 @@ internal static class Markdown
         return tops;
     }
 
-    /// <summary>行裁掉的余量：面板型块的装饰从首行往上退一圈内边距，可见带要紧贴行切的话
-    /// 会把那条上缘切掉。</summary>
+    /// <summary>行裁掉的余量：只作用于**行**判定（文字 / 行内代码底 / 公式线），多放一圈免得
+    /// 贴着可见带边缘的行忽隐忽现。装饰不走这条 —— 它们按自己的矩形精确求交（见 DrawBack），
+    /// 因为面板型块的整幅装饰挂在首行上、横跨后面所有行。</summary>
     private const float CullMargin = 40f;
 
     /// <summary>这一行落在可见带外吗。可见带是与 <paramref name="top"/> 同坐标的绝对 y。</summary>
@@ -2359,13 +2362,19 @@ internal static class Markdown
         {
             var pl = lay.Lines[i];
             float top = tops[i];
-            if (CulledOut(top, pl.Pitch, visTop, visBottom)) continue;
+            bool lineOut = CulledOut(top, pl.Pitch, visTop, visBottom);
+            // 行出带了但装饰可能还伸在带里：面板型块（代码块底 / 表格框线 / 引用块底）把
+            // 整幅装饰挂在**首行**、横跨后面所有行，按行裁就是「块还在、底没了」。
+            if (lineOut && pl.Decors.Count == 0) continue;
             float ttop = top + pl.TextShift;        // 有行内公式的行，文字跟着整行一起下来
 
             foreach (var d in pl.Decors)
             {
                 var rc = new RectangleF(x + d.Rect.X, ttop + d.Rect.Y, d.Rect.Width, d.Rect.Height);
                 if (rc.Width <= 0 || rc.Height <= 0) continue;
+                // 装饰按**自己的矩形**与可见带求交（CullMargin 只管行判定）：挂在首行的
+                // 整幅面板在首行出带后仍有半截在带里，行裁会把它整个吞掉。
+                if (rc.Bottom < visTop || rc.Top > visBottom) continue;
                 if (d.Fill != Ink.None)
                 {
                     using var br = new SolidBrush(Palette.Of(d.Fill, bubble));
@@ -2387,6 +2396,9 @@ internal static class Markdown
                     else g.DrawRectangle(pen, rc.X, rc.Y, rc.Width, rc.Height);
                 }
             }
+
+            // 文字 / 行内代码底 / 公式线仍按行裁：它们都不跨行。
+            if (lineOut) continue;
 
             float runX = x + pl.Indent;
             for (int ri = 0; ri < pl.Runs.Count; ri++)

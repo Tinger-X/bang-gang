@@ -13,7 +13,7 @@ namespace BangGang;
 public partial class MainForm : Form, IMessageFilter
 {
     public const string WindowTitle = "帮帮";
-    public const string AppVersion = "v0.9.4";
+    public const string AppVersion = "v0.9.5";
 
     private const uint Affinity = Native.WDA_EXCLUDEFROMCAPTURE;
 
@@ -30,8 +30,14 @@ public partial class MainForm : Form, IMessageFilter
     /// <summary>侧栏收起 / 展开动画的帧间隔（毫秒）。</summary>
     private const int SideAnimMs = 18;
 
-    /// <summary>每帧消掉剩余距离的比例。0.28 大约 14 帧（≈250ms）走完，是一条缓出曲线。</summary>
-    private const double SideAnimEase = 0.28;
+    /// <summary>
+    /// 侧栏收起 / 展开动画的**墙钟总时长**（毫秒）。动画是时间驱动的：每一帧按
+    /// 「已过时间 / 总时长」走 ease-out cubic 算出目标宽度（见 <c>MainForm.Sidebar.cs</c>
+    /// 的 <c>SideTick</c>），所以 WM_TIMER 的节拍漂移（18ms 的请求实测落成 ~31ms 一拍）
+    /// 只是让那一帧的采样点更远，墙钟总时长不变。之前「每帧消掉剩余距离的 28%」是
+    /// 帧率驱动的 —— tick 一晚到，同样的步数就要花更长的墙钟，画面上就是节拍在抖。
+    /// </summary>
+    private const int SideAnimDurMs = 300;
 
     private const int ChromeH = 38;
 

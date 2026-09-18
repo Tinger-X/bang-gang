@@ -9,7 +9,7 @@
     <AssemblyName>BangGang</AssemblyName>
     <AssemblyTitle>帮帮</AssemblyTitle>
     <Product>帮帮</Product>
-    <Version>0.9.4</Version>
+    <Version>0.9.5</Version>
     <ApplicationHighDpiMode>PerMonitorV2</ApplicationHighDpiMode>
     <!-- 发布：dotnet publish -c Release -r win-x64 -p:PublishSingleFile=true -p:SelfContained=false -->
   </PropertyGroup>

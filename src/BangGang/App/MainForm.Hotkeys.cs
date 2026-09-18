@@ -42,8 +42,35 @@ partial class MainForm
             }
             return;
         }
+
+        // 拖动期间临时摘掉透明（0.9.5）：Opacity < 1 会把窗口变成分层窗口
+        // （WS_EX_LAYERED + LWA_ALPHA），DWM 对它走慢速合成路径，开销随窗口面积涨 ——
+        // 大窗口拖着发顿的主因就是它。HTCAPTION 模态拖动由系统发出这对消息：进入时
+        // 暂时回到不透明（松手后恢复），整个拖动过程就在快速路径上。
+        // 边缘缩放不发这对消息（走自己的 PreFilter 循环），所以「是移动还是缩放」
+        // 不用在这里分辨。
+        if (m.Msg == Win32.WM_ENTERSIZEMOVE)
+        {
+            if (Opacity < 1.0)
+            {
+                _dragSavedOpacity = Opacity;
+                Opacity = 1.0;
+            }
+        }
+        else if (m.Msg == Win32.WM_EXITSIZEMOVE)
+        {
+            if (_dragSavedOpacity.HasValue)
+            {
+                Opacity = _dragSavedOpacity.Value;
+                _dragSavedOpacity = null;
+            }
+        }
+
         base.WndProc(ref m);
     }
+
+    /// <summary>拖动期间被临时摘掉的透明度；null = 不在「临时不透明」状态。</summary>
+    private double? _dragSavedOpacity;
 
     private void ToggleVisible()
     {

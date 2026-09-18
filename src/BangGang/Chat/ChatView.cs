@@ -48,10 +48,11 @@ namespace BangGang;
 /// <b>动画期间只有看得见的行重排</b>（<see cref="LiveResize"/> / <see cref="ReflowVisible"/> /
 /// <see cref="SettleLayout"/>）：用户要求气泡宽度在动画过程中**实时**跟着变，而不是结束后
 /// 突然跳一次。逐帧对全部消息跑 <c>Markdown.Measure</c> 会让动画时长随对话长度线性膨胀，
-/// 所以动画的每一帧只重排可见带内的行（块级排版缓存让重复重排几乎免费），
-/// 可见带之外的行保持旧宽度旧高度，动画结束由 <see cref="SettleLayout"/> 补一趟全量。
+/// 所以动画的每一帧只重排可见带内的行、且宽度量化到 16px 步长让排版缓存命中，
+/// 可见带之外的行保持旧宽度旧高度；动画结束由 <see cref="SettleLayout"/> 同步补排可见带、
+/// 其余行由排空队列分批补排（<see cref="DrainTick"/>）。
 /// 代价是动画期间总高与滑块按「可见行已重排、其余照旧」的混合状态算 —— 偏一点，
-/// 但滚动范围只会因此略小不会越界，收尾的全量重排把它修正。
+/// 但滚动范围只会因此略小不会越界，收尾与排空把它修正。
 /// </para>
 /// </summary>
 internal sealed class ChatView : Panel, IThemed, IMessageFilter
@@ -106,10 +107,21 @@ internal sealed class ChatView : Panel, IThemed, IMessageFilter
     /// </summary>
     private readonly System.Windows.Forms.Timer _waitTimer = new() { Interval = 110 };
 
+    /// <summary>
+    /// 收尾重排的排空队列：<see cref="SettleLayout"/> 只同步重排可见带（屏幕上正在看的
+    /// 必须立刻对），可见带之外的行记在这里，由 <see cref="_drainTimer"/> 按每 tick
+    /// 一个时间预算分批补排。存气泡引用而不是下标 —— 队列存活期间 _rows 不增删。
+    /// </summary>
+    private readonly List<MessageBubble> _drainQueue = new();
+
+    /// <summary>消化 <see cref="_drainQueue"/> 的时钟。15ms 一拍，每拍最多花 6ms。</summary>
+    private readonly System.Windows.Forms.Timer _drainTimer = new() { Interval = 15 };
+
     public ChatView()
     {
         BackColor = Theme.ChatBg;
         _waitTimer.Tick += (_, _) => { foreach (var b in _rows) b.TickWait(); };
+        _drainTimer.Tick += (_, _) => DrainTick();
         // 特意**不**设 AutoScroll，见类注释。
         //
         // 这三个 flag 在 0.9.0 之前是「设了但没用」的状态（子 HWND 不参与父控件的缓冲）。
@@ -245,6 +257,23 @@ internal sealed class ChatView : Panel, IThemed, IMessageFilter
     {
         int want = Math.Clamp(offset, 0, MaxOffset);
         if (want == _offset) return;
+        // 收尾的排空队列还没跑完时，被这一滚带进可见带的行不能带着旧宽度上屏：
+        // 趁摆位还是旧的（Location 相对旧 _offset），先判断谁将进入可见带，
+        // 给它们同步补排精确宽度，再从队列里摘掉。
+        if (_drainQueue.Count > 0)
+        {
+            int inner = MaxInner();
+            int lo = want - Height, hi = want + Height * 2;   // 文档坐标下的可见带（±一屏）
+            for (int i = _drainQueue.Count - 1; i >= 0; i--)
+            {
+                var b = _drainQueue[i];
+                int docY = b.Location.Y + _offset;            // 摆位里的 y 是视口坐标
+                if (docY + b.Height < lo || docY > hi) continue;
+                b.SetMaxInner(inner);
+                _drainQueue.RemoveAt(i);
+            }
+            if (_drainQueue.Count == 0) _drainTimer.Stop();
+        }
         _offset = want;
         // 有人滚过之后，原来那个「指针停在第几行」就作废了：那一行已经挪到别处去了。
         DropHot();
@@ -280,11 +309,18 @@ internal sealed class ChatView : Panel, IThemed, IMessageFilter
     /// </param>
     private void ReflowRows(bool pinBottom = false)
     {
+        // 全量重排覆盖所有行：收尾留下的排空队列就此作废（Load / 换会话 / 改设置 /
+        // 非动画的窗口缩放都走这里）。两行都在最顶上 —— 空行分支也有 return，不能漏。
+        ClearDrain();
         if (_rows.Count == 0)
         {
             _contentH = 0;
             _offset = 0;
             InvalidateBar();
+            // 整块也要作废：从一条有内容的会话里再点「新建对话」时，`_chatUI.Visible`
+            // 不翻转（它本来就开着），没有这次 Invalidate，旧会话的像素会一直留在
+            // 屏幕上 —— 空会话提示根本没机会画出来。
+            Invalidate();
             DumpRows();
             return;
         }
@@ -318,13 +354,16 @@ internal sealed class ChatView : Panel, IThemed, IMessageFilter
     /// 动画时长一致」那条要求的落点。可见带之外的行保持旧宽度旧高度（它们的宽度
     /// 反正没人看得见），动画结束由 <see cref="SettleLayout"/> 补一趟全量重排。
     ///
-    /// SetMaxInner 的早退与块级排版缓存让「同一行下一帧再重排一次」几乎免费，
-    /// 真正花钱的只有「这一帧宽度变了、且这行真的被上限卡住」的那些行。
+    /// 宽度先**量化到 16px 步长**再喂给 <see cref="MessageBubble.SetMaxInner"/>：
+    /// 排版缓存的键含宽度，一帧一个宽度就是每帧全 miss、每行每帧都真折一次；
+    /// 量化之后一次 256px 的行程里每行最多 16 个真实宽度，除首帧外全部命中。
+    /// 视觉上气泡仍以 16px 的步进**跟着动画走**（用户要的就是这个），收尾由
+    /// <see cref="SettleLayout"/> 按精确宽度补正。
     /// </summary>
     private void ReflowVisible()
     {
         if (_rows.Count == 0) return;
-        int inner = MaxInner();
+        int inner = MaxInner() & ~15;                  // 量化到 16px 步长，见上面的类注释
         int bandTop = -Height, bandBottom = Height * 2;   // 行的 y 是「逻辑 − 偏移」后的视口坐标
 
         var t0 = Stamp;
@@ -407,6 +446,9 @@ internal sealed class ChatView : Panel, IThemed, IMessageFilter
                 // animMs / 平均帧耗时**只反映这一次动画**，不混进开机以来任何别的帧。
                 _perfAnim.Reset();
                 _animClock.Restart();
+                // 上一轮收尾留下的排空队列一并作废：动画期间带内行由 ReflowVisible 按
+                // 量化宽度重排，带外行反正会交给下一次 SettleLayout。
+                ClearDrain();
             }
             else StopAnimClock();
         }
@@ -424,16 +466,63 @@ internal sealed class ChatView : Panel, IThemed, IMessageFilter
     }
 
     /// <summary>
-    /// 动画收尾：先补上那一趟被跳过的重排，再回到「实时重排」的常态。
-    /// 由 <c>MainForm.SideTick</c> 的最后一次 tick 调用。
+    /// 动画收尾：可见带（±一屏）的行**同步**用精确宽度重排（屏幕上正在看的必须立刻对），
+    /// 可见带之外的行记入 <see cref="_drainQueue"/>，由 <see cref="_drainTimer"/> 按每 tick
+    /// 一个时间预算分批补排。由 <c>MainForm.SideTick</c> 的最后一次 tick 调用。
     ///
-    /// 顺序不能反：先 <see cref="ReflowRows"/> 再关开关的话，中间那一趟重排会按
-    /// 「还在动画中」的规则只摆位 —— 文字就永远停在动画中途的折行上了。
+    /// 为什么分批：这里曾是「一次性 <see cref="ReflowRows"/> 全部消息」，会话一长收尾那
+    /// 一帧就是一次看得见的卡顿（sidebar-perf-real.ps1 的注释指认过它）。分批把这笔账
+    /// 摊到动画结束后的若干帧里，每帧最多 6ms；带外行的宽度本来就没人在看，晚几帧
+    /// 折好没有任何视觉代价 —— 唯一要守的是「滚动把它们带进可见带之前必须补排」，
+    /// 那是 <see cref="ScrollTo"/> 里那段追赶。
     /// </summary>
     public void SettleLayout()
     {
-        ReflowRows(pinBottom: IsAtBottom());
+        ClearDrain();
+        int inner = MaxInner();                       // 精确宽度，不做动画期那套 16px 量化
+        int bandTop = -Height, bandBottom = Height * 2;
+        foreach (var b in _rows)
+        {
+            if (b.Location.Y + b.Height < bandTop || b.Location.Y > bandBottom)
+                _drainQueue.Add(b);                   // 带外：分批补排
+            else
+                b.SetMaxInner(inner);                 // 带内：现在就要对
+        }
+        // 离视口近的先排：收尾后用户随手滚一下，迎面遇上的行大概率已经补排过。
+        int mid = Height / 2;
+        _drainQueue.Sort((a, b) =>
+            Math.Abs(a.Location.Y + a.Height / 2 - mid).CompareTo(
+            Math.Abs(b.Location.Y + b.Height / 2 - mid)));
+        PlaceRows(pinBottom: IsAtBottom());
+        if (_drainQueue.Count > 0) _drainTimer.Start();
         LiveResize = false;      // 置假会把动画时长记下来（见 StopAnimClock）
+    }
+
+    /// <summary>清空排空队列并停表。任何「全量重排 / 新动画开始」的入口都要先过它。</summary>
+    private void ClearDrain()
+    {
+        _drainQueue.Clear();
+        _drainTimer.Stop();
+    }
+
+    /// <summary>
+    /// 排空队列的一拍：按时间预算（≤6ms）消化若干条，而不是按条数 —— 行有大有小，
+    /// 按条数会在长文档行上超帧。每批结束补一次摆位（高度可能变了），排空即停。
+    /// </summary>
+    private void DrainTick()
+    {
+        if (IsDisposed) { _drainTimer.Stop(); return; }
+        int inner = MaxInner();
+        var t0 = Stamp;
+        while (_drainQueue.Count > 0)
+        {
+            var b = _drainQueue[0];
+            _drainQueue.RemoveAt(0);
+            b.SetMaxInner(inner);
+            if (Since(t0) >= 6.0) break;
+        }
+        PlaceRows(pinBottom: IsAtBottom());
+        if (_drainQueue.Count == 0) _drainTimer.Stop();
     }
 
     protected override void OnResize(EventArgs e)

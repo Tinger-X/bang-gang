@@ -5,38 +5,31 @@
 # real child HWND, so every one of the ~15 animation frames moved N child windows (not part
 # of the parent's double buffer -> tearing) and re-wrapped every message (-> stutter).
 #
-# 0.9.0 made ChatView the only painter and split layout in two. 0.9.3 revised WHERE the
-# expensive half runs, on the user's explicit requirement that bubble widths re-wrap LIVE
-# during the animation instead of snapping at the end. 0.9.5 made the animation clock-driven
-# (a fixed 300ms ease-out cubic instead of a per-tick exponential step) and chunked the
-# settle re-wrap (visible band synchronously, the rest drained on a 6ms-per-tick budget):
+# 0.9.0 made ChatView the only painter. 0.9.3 made bubble widths re-wrap LIVE during the
+# animation (visible band only, per frame); 0.9.5 made the animation clock-driven (fixed
+# 300ms ease-out cubic), quantized the live width to 16px steps so the layout cache hits,
+# and chunked the settle re-wrap (visible band synchronously, the rest drained on a
+# 6ms-per-tick budget):
 #
-#   ReflowVisible()   re-measures only the rows in the visible band -- runs PER FRAME,
-#                     on a width quantized to 16px steps so the layout cache actually hits
+#   ReflowVisible()   re-measures only the rows in the visible band -- runs PER FRAME
 #   SettleLayout()    re-measures the visible band at the exact width, queues the rest
 #   DrainTick()       re-measures queued rows a few at a time after the animation
 #   PlaceRows()       only repositions rows    -- microseconds
 #
-# The per-frame cost therefore scales with what is on screen, never with how long the
-# conversation is. The probe's evidence for that is animReflowRows (the count of rows
-# re-measured across the whole animation): it must track frames x visible rows, not
-# frames x ALL rows. A frame timing cannot tell those two apart on a fast machine; the
-# row count can.
-#
 # This probe is the only quantitative evidence for that claim. It opens a conversation heavy
 # enough to matter, runs a collapse and an expand, and reads the frame timings ChatView
 # writes into ui-rows.json (animMs / animFrames / animPaintMs / animPaintMaxMs / animLayoutMs
-# / animLayoutMaxMs / animReflowRows, plus the non-animation idle* pair as the control group).
+# / animLayoutMaxMs, plus the non-animation idle* pair as the control group).
 #
 # Why each assertion can fail:
 #
 #   * the sidebar width is read before and after each click. "The animation was fast" and
 #     "the animation never happened" look identical in the timings -- animMs is the wall
 #     clock of the LAST animation, and a stale one from startup reads just as small.
-#   * animLayoutMs is the per-frame LAYOUT cost: re-measuring the visible band is a few
-#     milliseconds, re-measuring ALL rows would scale with the conversation. The hard
-#     discriminator between the two is animReflowRows (below); the timing stays as a
-#     sanity bound only, because a fast machine blurs it.
+#   * animLayoutMs is the per-frame LAYOUT cost. This is the number the fix targets: if a
+#     frame went back to re-wrapping every message it would be milliseconds, not the tens of
+#     microseconds a position pass costs. A probe that only looked at paint time would miss
+#     that regression entirely.
 #   * animPaintMaxMs is the WORST frame, not the average. An animation that is smooth except
 #     for one 300ms hitch stutters for the user and has a fine average.
 #   * the idle* numbers are printed alongside as the control group: the one-off re-wrap and
@@ -44,7 +37,7 @@
 #     "the animation is fast" could just mean "this machine is fast" -- and, worse, a run
 #     where the expensive work had silently moved INTO the animation would look identical.
 #
-# The fixture is 20 messages with a paragraph, a code block and a table each, written into
+# The fixture is 200 messages with a paragraph, a code block and a table each, written into
 # chats\ and removed afterwards, along with settings.json and conversations.json.
 #
 # Usage:  powershell -File tools\sidebar-perf.ps1
@@ -112,7 +105,7 @@ function Write-Fixture {
     if (-not (Test-Path $chatsDir)) { [void](New-Item -ItemType Directory -Force $chatsDir) }
     $now = (Get-Date).ToString('o')
     $msgs = @()
-    for ($i = 1; $i -le 10; $i++) {
+    for ($i = 1; $i -le 100; $i++) {
         $msgs += New-Body 'user' ('question ' + $i + ' about the thing that was asked')
         $msgs += New-Body 'assistant' (New-AssistantText $i)
     }
@@ -120,7 +113,7 @@ function Write-Fixture {
     $file = @{
         Version = 1
         Conversation = @{
-            Id = $script:ConvId; Title = 'sidebar-perf'; CreatedAt = $now; UpdatedAt = $now
+            Id = $script:ConvId; Title = 'sidebar-perf-long'; CreatedAt = $now; UpdatedAt = $now
             Messages = $msgs
         }
     }
@@ -155,10 +148,9 @@ function Get-SidebarW($main) {
 
 # One collapse or expand: click, wait for the animation to settle, report the timings.
 #
-# The wait is 1200ms rather than the 300ms the animation needs, because the readings are
-# only final once the settle re-wrap AND the off-band drain queue have Dumped again.
-# Reading early would compare a run against a half-finished one, and the numbers would
-# differ per run for no real reason.
+# The wait is 1200ms rather than the ~270ms the animation needs, because the readings are
+# only final once the settle re-wrap has Dumped again. Reading early would compare a run
+# against a half-finished one, and the numbers would differ per run for no real reason.
 function Invoke-Anim($main, [string]$Tag) {
     $tr = Get-SideToggle $main
     if ($null -eq $tr) { Write-Output ("  " + $Tag + ' FAIL -- the toggle button is not there'); $script:fail++; return $null }
@@ -193,17 +185,17 @@ try {
         }
         if ($null -eq $list) { throw 'conversation list not found' }
 
-        Write-Output '--- opening the 20-message conversation ---'
+        Write-Output '--- opening the 200-message conversation ---'
         Invoke-MouseClick ([int]($list.Left + ($list.Right - $list.Left) / 2)) ($list.Top + 19)
-        Start-Sleep -Milliseconds 1500
+        Start-Sleep -Milliseconds 8000
         $ui = Get-UiRows
         $rows = @(Get-UiRowList $ui)
         Write-Output ('  rows rendered ' + $rows.Count)
-        if ($rows.Count -ne 20) {
-            Write-Output ('  FAIL -- ' + $rows.Count + ' rows, expected 20; the timings below would be for a lighter screen than intended')
+        if ($rows.Count -ne 200) {
+            Write-Output ('  FAIL -- ' + $rows.Count + ' rows, expected 200; the timings below would be for a lighter screen than intended')
             $script:fail++
         }
-        else { Write-Output '  OK   20 rows, heavy enough to be worth measuring' }
+        else { Write-Output '  OK   200 rows, heavy enough to be worth measuring' }
 
         # ---- collapse --------------------------------------------------------
         Write-Output ''
@@ -276,13 +268,12 @@ try {
             }
         }
 
-        # Per-frame LAYOUT. 0.9.3 re-wraps the VISIBLE band every frame on purpose (live
+        # Per-frame LAYOUT. 0.9.3+ re-wraps the VISIBLE band every frame on purpose (live
         # bubble widths during the animation), so "layout took milliseconds" is no longer
         # a fault by itself. The fault this section guards is per-frame work that scales
         # with CONVERSATION LENGTH, and the number that catches it is animReflowRows:
-        # re-measuring the band costs frames x (rows on screen) -- this fixture puts 4-8
-        # rows in the band, so 12 per frame is generous -- while re-wrapping everything
-        # costs frames x 20, nearly twice the threshold. Machine speed cannot blur a count.
+        # re-measuring the band costs frames x (rows on screen) while re-wrapping everything
+        # costs frames x (all rows). Machine speed cannot blur a count.
         foreach ($pair in @(@('collapse', $uiC), @('expand', $uiE))) {
             $tag = $pair[0]; $u = $pair[1]
             Write-Output ('  ' + $tag + ' re-wrapped ' + $u.animReflowRows + ' rows over ' + $u.animFrames + ' frames')
@@ -296,9 +287,8 @@ try {
         Write-Output ('  per-frame layout avg worst ' + $maxLayout + 'ms, worst single ' + $maxLayoutPeak + 'ms')
         # Worst single frame: typically ~20ms (the first frame re-wraps the whole visible
         # band at a fresh quantized width; later frames hit the layout cache). One-off GC /
-        # JIT noise lands ~40ms -- measured 20.8 / 43.0 / 21.5 across three identical runs.
-        # The regression this guards (per-frame reflow of EVERY row) reads 100ms+ on every
-        # frame, so a 60ms ceiling still catches it decisively without flapping on noise.
+        # JIT noise lands ~40ms. The regression this guards (per-frame reflow of EVERY row)
+        # reads 100ms+ on every frame, so a 60ms ceiling still catches it decisively.
         if ($maxLayout -gt 15.0 -or $maxLayoutPeak -gt 60.0) {
             Write-Output '  FAIL -- a layout pass took long enough to be a visible hitch'
             $script:fail++
@@ -348,4 +338,4 @@ try {
     }
 }
 
-Write-BBDone 'sidebar-perf'
+Write-BBDone 'sidebar-perf-long'

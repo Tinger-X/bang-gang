@@ -433,8 +433,10 @@ internal sealed class InputPanel : Panel, IMessageFilter
     /// （tools/sidebar-anim.ps1 量到的墨迹宽度从 320 变成 356，多出来的部分正好止于旧文字
     /// 的右端）。
     ///
-    /// 侧栏动画一帧最多挪 <c>SideW * SideAnimEase</c> = 72px，文字只走一半即 36px；
-    /// 留白取 48 就永远够不着。留白之外的宽度由 <c>LayoutCard</c> 按两个按钮之间的距离收窄。
+    /// 侧栏动画是时间驱动的 ease-out cubic（300ms，见 MainForm.Sidebar.cs），首帧位移最大：
+    /// 曲线峰值速度 3 × 256px / 300ms ≈ 2.6px/ms，~31ms 的 tick 下一帧最多挪 ~79px，
+    /// 文字只走一半即 ~40px；留白取 48 就永远够不着。留白之外的宽度由
+    /// <c>LayoutCard</c> 按两个按钮之间的距离收窄。
     /// </summary>
     private const int HintPadX = 48;
 

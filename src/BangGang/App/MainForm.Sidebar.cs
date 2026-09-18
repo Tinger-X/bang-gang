@@ -9,15 +9,21 @@ partial class MainForm
     private int _sideW = SideW;          // 当前动画宽度，0 = 完全收起
     private int _sideTarget = SideW;     // 动画目标
 
+    // 时间驱动动画的状态：起点宽度与起跑时刻。曲线由这两者现算，不靠「每帧消掉一个
+    // 固定比例」递推 —— 递推那种写法里 tick 晚到一次，整段动画的墙钟就被拉长一次。
+    private int _sideFrom;
+    private readonly System.Diagnostics.Stopwatch _sideClock = new();
+
     /// <summary>
-    /// 收起 / 展开左侧栏。宽度不是一下跳过去的：<see cref="_sideTimer"/> 每帧把
-    /// <see cref="_sideW"/> 往目标推掉剩余距离的一部分，走一条缓出曲线。
-    /// 图标在这一刻就翻转（而不是等动画结束），点下去马上有反馈。
+    /// 收起 / 展开左侧栏。宽度不是一下跳过去的：<see cref="_sideTimer"/> 的每一帧按
+    /// 「动画已经跑了多久」走一条 ease-out cubic 曲线算出当前宽度（<see cref="SideTick"/>），
+    /// 墙钟总时长恒为 <see cref="SideAnimDurMs"/>。图标在这一刻就翻转（而不是等动画结束），
+    /// 点下去马上有反馈。
     ///
     /// 动画起步前先把系统定时器分辨率提到 1ms（<see cref="SideClockBegin"/>）：
     /// WM_TIMER 的实际节拍受系统分辨率钳制，默认 15.6ms 下 18ms 的间隔会滑成 ~31ms
-    /// 一拍 —— 每帧画得再快（实测 <1ms），画面上也只有 ~30fps 且节拍抖动，
-    /// 「侧栏动画卡」的体感主要来自这里，不是来自绘制。
+    /// 一拍。时间驱动之后节拍漂移不再拉长动画，但它仍决定**帧率**（30fps vs 60fps），
+    /// 所以这一个提升仍然值得。
     /// </summary>
     private void ToggleSidebar()
     {
@@ -25,8 +31,12 @@ partial class MainForm
         _sideTarget = collapse ? 0 : SideW;
         _btnSideToggle.Icon = collapse ? IconButton.Kind.Expand : IconButton.Kind.Collapse;
         _btnSideToggle.Invalidate();
+        // 起点取「此刻的宽度」而不是上一次的起点：动画中途反向点击时，曲线从当前位置
+        // 平滑地折回去，不会从旧起点跳一下。
+        _sideFrom = _sideW;
+        _sideClock.Restart();
         SideClockBegin();
-        _sideTimer.Start();                          // 重复点只是换目标，不会叠出第二个动画
+        _sideTimer.Start();                          // 重复点只是换目标与起点，不会叠出第二个动画
     }
 
     // 动画期间持有 timeBeginPeriod(1) 的证据；Begin/End 必须成对，重复点不能重复 Begin。
@@ -48,19 +58,23 @@ partial class MainForm
 
     private void SideTick()
     {
-        int d = _sideTarget - _sideW;
-
-        // 收尾：snap 到整数目标并停表。不能只判 d == 0 —— 指数逼近永远差一点点。
-        bool done = Math.Abs(d) <= 2;
+        // 时间驱动的 ease-out cubic：t 是「动画已进行的墙钟比例」，e 从 1 陡起步、平缓收尾。
+        // tick 晚到（WM_TIMER 节拍漂移）只是 t 采样得远一点，总时长不变 —— 这正是把它从
+        // 「每帧消掉剩余距离的固定比例」改过来的原因：那种写法下每一次晚到都把墙钟拉长。
+        double t = _sideClock.Elapsed.TotalMilliseconds / SideAnimDurMs;
+        bool done = t >= 1.0;
         if (done)
         {
             _sideW = _sideTarget;
             _sideTimer.Stop();
+            _sideClock.Stop();
             SideClockEnd();
         }
         else
         {
-            _sideW += (int)Math.Round(d * SideAnimEase);
+            double u = 1.0 - t;
+            double e = 1.0 - u * u * u;
+            _sideW = _sideFrom + (int)Math.Round((_sideTarget - _sideFrom) * e);
         }
 
         // 动画中间帧只挪位置（liveResize: true），最后一帧才真正重排一次文字。
@@ -83,6 +97,7 @@ partial class MainForm
     {
         if (_sideTarget > 0) return;
         _sideTimer.Stop();
+        _sideClock.Stop();
         SideClockEnd();
         _sideTarget = SideW;
         _sideW = SideW;
