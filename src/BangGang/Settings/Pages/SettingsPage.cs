@@ -18,6 +18,9 @@ internal abstract class SettingsPage : Panel, IThemed
     protected readonly StackPanel Stack = new();
 
     private readonly ScrollArea _body;
+
+    /// <summary>页面的滚动区（设置浮窗的滚轮路由按光标位置直接喂它，见 SettingsOverlay.PreFilterMessage）。</summary>
+    internal ScrollArea Body => _body;
     private readonly Label _title = new();
     private readonly Label _desc = new();
     private readonly Label _state = new();

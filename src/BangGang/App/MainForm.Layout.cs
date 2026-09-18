@@ -103,10 +103,60 @@ partial class MainForm
 
     // ---------------- 拖动 ----------------
 
+    private bool _winDrag;                 // 自管拖动进行中
+    private Point _dragFrom;               // 按下时的屏幕坐标
+    private Rectangle _dragStart;          // 按下时的窗口矩形
+
+    /// <summary>
+    /// 顶栏拖动。**不走系统的 HTCAPTION 模态移动循环**（0.9.6）：主窗口常年挂着
+    /// WDA_EXCLUDEFROMCAPTURE，实测这种窗口的模态循环是双态的 —— 顺的时候逐帧跟随，
+    /// 卡的时候整条拖动期间窗口一动不动、松手后还在慢慢爬完积压的移动（正是用户报的
+    /// 「鼠标已经从 A 到了 B，窗口还在 A→B 的路上」；tools/drag-perf.ps1 的 C/F/G 腿
+    /// 复现：WDA 腿拖动全程 GetWindowRect 零位移，非 WDA 腿 p95 只有 8px）。
+    /// 模态循环跑在 DefWindowProc 内部，消息过滤器和 WndProc 都插不进去，应用侧无解。
+    /// 所以换成和边缘缩放同一条路：SetCapture + 在 PreFilterMessage 里按
+    /// Cursor.Position 逐条 SetWindowPos。WM_MOUSEMOVE 在队列里自动合并，
+    /// 读到的永远是最新位置，不存在可积压的队列。
+    /// 代价：失去 Aero Snap（拖到屏幕边缘自动最大化）—— 本程序有自己的最大化按钮，
+    /// 且 _maximized 是自管状态（WindowState 恒为 Normal），系统本来也只当普通窗口拖。
+    /// </summary>
     private void BeginWindowDrag()
     {
+        if (_winDrag || _grip != Edge.None) return;
+        _winDrag = true;
+        _dragFrom = Cursor.Position;
+        _dragStart = Bounds;
+        _dragMoves = 0;
+        Win32.SetCapture(Handle);
+        Trace.Log($"drag begin at {_dragFrom.X},{_dragFrom.Y}");
+    }
+
+    /// <summary>自管拖动的逐帧位移：只平移，不改尺寸、不碰 z 序、不抢激活。</summary>
+    private void ApplyWindowDrag(Point screen, bool force = false)
+    {
+        // WDA 窗口的 SetWindowPos 在输入风暴下会反过来堵住消息循环（实测 ~1ms 间隔的
+        // SetCursorPos 横扫里 74 次移动只活下来 2~3 条，见 tools/drag-wda-debug.ps1）。
+        // 真实鼠标 ≤125Hz 完全不受影响，但 1000Hz 的游戏鼠标正好踩在这个量级上，
+        // 所以给一个 5ms 的最低间隔；跳过的一帧由随后的移动或松手时的 force 收尾补齐。
+        long now = Environment.TickCount64;
+        if (!force && now - _dragLastApply < 5) return;
+        _dragLastApply = now;
+        _dragMoves++;
+        Native.SetWindowPos(Handle, IntPtr.Zero,
+            _dragStart.X + screen.X - _dragFrom.X,
+            _dragStart.Y + screen.Y - _dragFrom.Y,
+            0, 0, Native.SWP_NOSIZE | Native.SWP_NOZORDER | Native.SWP_NOACTIVATE);
+    }
+
+    private int _dragMoves;
+    private long _dragLastApply;
+
+    private void EndWindowDrag(string why)
+    {
+        ApplyWindowDrag(Cursor.Position, force: true);   // 收尾对齐光标，别停在节流跳过的那一帧
+        _winDrag = false;
         Win32.ReleaseCapture();
-        _ = Win32.SendMessage(Handle, Win32.WM_NCLBUTTONDOWN, (IntPtr)Win32.HTCAPTION, IntPtr.Zero);
+        Trace.Log($"drag end ({why}) at {Cursor.Position.X},{Cursor.Position.Y} moves={_dragMoves}");
     }
 
     // ---------------- 最大化 / 还原 ----------------
@@ -178,7 +228,9 @@ partial class MainForm
     private Rectangle _gripStart;        // 按下时的窗口矩形
 
     /// <summary>
-    /// 无边框窗口没有系统边框，缩放自然也无从触发。这里在**消息队列这一层**拦一道：
+    /// 无边框窗口没有系统边框可抓，缩放和**顶栏拖动**都由这道消息过滤器自己接手：
+    /// 拖动是 <see cref="_winDrag"/> 那一支（为什么不用系统的 HTCAPTION 模态循环，
+    /// 见 <see cref="BeginWindowDrag"/>）；缩放是下面 <see cref="_grip"/> 那一支 —
     /// 落在窗口外沿 <see cref="GripPx"/> 像素以内的左键按下，改成拖窗口边界，
     /// 而不是交给边缘底下那个控件。
     ///
@@ -188,6 +240,14 @@ partial class MainForm
     /// </summary>
     public bool PreFilterMessage(ref Message m)
     {
+        if (_winDrag)
+        {
+            if (m.Msg == Win32.WM_MOUSEMOVE) { ApplyWindowDrag(Cursor.Position); return true; }
+            if (m.Msg == Win32.WM_LBUTTONUP) { EndWindowDrag("up"); return true; }
+            if (m.Msg == Win32.WM_CAPTURECHANGED) { EndWindowDrag("capture-lost"); return true; }
+            return false;
+        }
+
         if (_grip != Edge.None)
         {
             if (m.Msg == Win32.WM_MOUSEMOVE) { ApplyResize(Cursor.Position); return true; }

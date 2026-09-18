@@ -642,6 +642,9 @@ internal sealed class ChatView : Panel, IThemed, IMessageFilter
         if (m.Msg != WM_MOUSEWHEEL) return false;
         // 看图浮层开着的时候滚轮归它缩放，别拿来滚消息区（见 ImageViewer.AnyOpen）。
         if (ImageViewer.AnyOpen) return false;
+        // 设置浮窗开着的时候滚轮归它：它只是盖在上面的兄弟控件，本控件的 Visible
+        // 照样是 true，不让路的话光标压在卡片上时滚轮会被这里吃掉（见 SettingsOverlay.AnyOpen）。
+        if (SettingsOverlay.AnyOpen) return false;
         if (!Visible || !IsHandleCreated || MaxOffset <= 0) return false;
 
         long lp = m.LParam.ToInt64();

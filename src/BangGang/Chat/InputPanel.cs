@@ -623,6 +623,9 @@ internal sealed class InputPanel : Panel, IMessageFilter
         if (m.Msg != WM_MOUSEWHEEL) return false;
         // 看图浮层开着的时候滚轮归它缩放，别拿来滚文本（见 ImageViewer.AnyOpen）。
         if (ImageViewer.AnyOpen) return false;
+        // 设置浮窗开着的时候滚轮归它（盖在上面的兄弟控件，本控件的 Visible 照样是 true，
+        // 见 SettingsOverlay.AnyOpen）。
+        if (SettingsOverlay.AnyOpen) return false;
         if (!_box.IsHandleCreated || !_box.Visible) return false;
 
         long lp = m.LParam.ToInt64();

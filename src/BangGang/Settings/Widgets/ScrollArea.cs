@@ -73,6 +73,9 @@ internal sealed class ScrollArea : Panel, IThemed
         if (e.Button == MouseButtons.Left && !bar.IsEmpty && bar.Contains(e.Location))
         {
             _dragBar = true;
+            // 滑块只有 6px 宽，不捕获的话光标稍微一偏 MouseMove 就不再送进来，
+            // 拖动看起来就像「滚条死了」；松开时（OnMouseUp）归还。
+            Capture = true;
         }
         else if (e.Button == MouseButtons.Left && bar.Width > 0)
         {
@@ -97,7 +100,7 @@ internal sealed class ScrollArea : Panel, IThemed
         base.OnMouseMove(e);
     }
 
-    protected override void OnMouseUp(MouseEventArgs e) { _dragBar = false; base.OnMouseUp(e); }
+    protected override void OnMouseUp(MouseEventArgs e) { _dragBar = false; Capture = false; base.OnMouseUp(e); }
     protected override void OnMouseLeave(EventArgs e) { if (_hoverBar) { _hoverBar = false; Invalidate(); } base.OnMouseLeave(e); }
 
     /// <summary>鼠标滚轮交给本控件处理（内容控件不再单独滚动）。</summary>

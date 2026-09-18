@@ -316,7 +316,12 @@ function Start-BangGang {
     Remove-Item $script:BBRows -ErrorAction SilentlyContinue
 
     if (-not (Test-Path $script:BBExe)) { throw "debug build missing: $script:BBExe" }
-    $env:BANGGANG_SHOW_IN_CAPTURE = '1'      # only the Debug build honours this
+    # $script:BBNoCaptureEnv = $true starts the Debug build WITH its capture protection
+    # (drag-perf's WDA-isolation leg). The env var lives on this probe process and is
+    # inherited by the child, so clearing it here must not leak into later legs: callers
+    # reset the flag right after their leg.
+    if ($script:BBNoCaptureEnv) { Remove-Item Env:BANGGANG_SHOW_IN_CAPTURE -ErrorAction SilentlyContinue }
+    else { $env:BANGGANG_SHOW_IN_CAPTURE = '1' }      # only the Debug build honours this
     $p = Start-Process -FilePath $script:BBExe -PassThru
     Start-Sleep -Seconds $WaitSeconds
 

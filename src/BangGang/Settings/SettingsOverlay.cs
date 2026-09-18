@@ -10,7 +10,7 @@ namespace BangGang;
 /// 整个浮窗由主窗口内的子控件构成（不是独立顶层窗口），因此主窗口上的
 /// WDA_EXCLUDEFROMCAPTURE 自动覆盖它：对录屏 / 截屏完全不可见。
 /// </summary>
-internal sealed partial class SettingsOverlay : Panel, IPopupHost
+internal sealed partial class SettingsOverlay : Panel, IPopupHost, IMessageFilter
 {
     public event Action<AppSettings>? Applied;
     public event Action<string>? Status;
@@ -323,6 +323,7 @@ internal sealed partial class SettingsOverlay : Panel, IPopupHost
     protected override void OnVisibleChanged(EventArgs e)
     {
         base.OnVisibleChanged(e);
+        AnyOpen = Visible;
         if (Visible)
         {
             LayoutOverlay();               // 先摆好位置（含圆角底图与 Region）
@@ -334,11 +335,49 @@ internal sealed partial class SettingsOverlay : Panel, IPopupHost
             Trace.DumpAfter(_card, "dbg-card", 900);
             Trace.DumpAfter(this, "dbg-overlay", 1000);
             if (_navs.Count > 0) _navs[_sel].Focus();
+            Application.AddMessageFilter(this);
         }
         else
         {
             HideConfirm();
+            Application.RemoveMessageFilter(this);
         }
+    }
+
+    /// <summary>
+    /// 设置浮窗是否开着。给<b>别的</b>消息过滤器看的（<see cref="ChatView"/> 与
+    /// <c>InputPanel</c> 各有一个在吃 <c>WM_MOUSEWHEEL</c>）：浮窗是对话区的兄弟、
+    /// 盖在它上面，对话区的 <c>Visible</c> 照样是 true —— 不让路的话，光标压在浮窗
+    /// 卡片上时滚轮会被底下的对话区先吃掉（0.9.6 修的「设置页滚不动」）。
+    /// 过滤器的注册顺序不可依赖，所以用显式标志让路，同 <see cref="ImageViewer.AnyOpen"/>。
+    /// </summary>
+    internal static bool AnyOpen { get; private set; }
+
+    private const int WM_MOUSEWHEEL = 0x020A;
+
+    /// <summary>
+    /// 浮窗打开期间的滚轮路由：WM_MOUSEWHEEL 投递给**焦点**控件而不是光标下的控件，
+    /// 而打开时焦点在左侧菜单上，光标压在页面正文上滚轮就哪儿也到不了。这里按光标位置
+    /// 把滚轮直接喂给当前页的滚动区（光标在滚动区之外就让路，走默认的焦点路由）。
+    /// 下拉弹层开着时让路：弹层自己握着焦点、自己处理滚轮。
+    /// </summary>
+    public bool PreFilterMessage(ref Message m)
+    {
+        if (m.Msg != WM_MOUSEWHEEL || !Visible) return false;
+        if (DropdownSelect.PopupOpen) return false;
+        if (_pages.Count == 0) return false;
+
+        var area = _pages[_sel].Body;
+        if (!area.IsHandleCreated || !area.Visible) return false;
+
+        long lp = m.LParam.ToInt64();
+        var screen = new Point((short)(lp & 0xFFFF), (short)((lp >> 16) & 0xFFFF));
+        if (!area.ClientRectangle.Contains(area.PointToClient(screen))) return false;
+
+        int notches = (short)((long)m.WParam >> 16) / 120;
+        if (notches == 0) return false;
+        area.ScrollBy(-notches * 60);   // 与 ScrollArea.OnMouseWheel 同一档步长
+        return true;
     }
 
     protected override bool ProcessCmdKey(ref Message msg, Keys keyData)

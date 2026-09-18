@@ -112,6 +112,9 @@ internal sealed class DropdownSelect : Control, IThemed
     // ---- 点击浮窗内任意其它位置都收起（即使是不会获得焦点的控件） ----
     private static DropdownList? _openPopup;
 
+    /// <summary>有没有下拉弹层正开着（设置浮窗的滚轮路由据此让路：弹层握着自己的焦点和滚轮）。</summary>
+    internal static bool PopupOpen => _openPopup != null && !_openPopup.IsDisposed;
+
     /// <summary>全局消息过滤：只要有下拉处于展开状态，点到它以外就收起（并让这次点击继续生效）。</summary>
     private sealed class DropdownClickFilter : IMessageFilter
     {
