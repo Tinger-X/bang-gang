@@ -1,0 +1,37 @@
+# 分析器严重级别的显式表态，给 IDE（VS / Rider / VS Code）和 dotnet format 读。
+# 注意它管的是「哪些建议是本项目有意不采纳的」—— 构建本身在这份文件之前就是 0 警告
+# （编译器那一路见 BangGang.csproj 的 TreatWarningsAsErrors）。
+root = true
+
+[*.cs]
+
+# ── 有意不采纳，关掉 ────────────────────────────────────────────────
+# 单命名空间是本项目明确的设计决定（见 CLAUDE.md「代码结构」那一节：不引入
+# BangGang.Ui 之类的子命名空间，folder 只做物理聚类）。这条规则在这个仓库里
+# 永远是误报，不是「还没来得及改」，所以是 none 而不是 silent。
+dotnet_diagnostic.IDE0130.severity = none
+
+# ── 语法现代化建议：压成 silent ─────────────────────────────────────
+# 全仓库约 130 处（集合表达式、主构造函数、声明式 using、复合赋值…），改与不改
+# 只是口味，零行为差异。silent = 不飘波浪线，但光标放上去仍能从灯泡里手动应用
+# —— 故意不用 none：那样连「我这一处就想写成集合表达式」的重构建议也一起没了。
+# 新增规则不会自动继承这里，要压得显式加一行。
+dotnet_diagnostic.IDE0028.severity = silent   # 集合初始化可简化成集合表达式
+dotnet_diagnostic.IDE0300.severity = silent   # 数组/集合可写成集合表达式
+dotnet_diagnostic.IDE0301.severity = silent   # 空集合可写成 []
+dotnet_diagnostic.IDE0305.severity = silent   # 链式 ToArray/ToList 可写成集合表达式
+dotnet_diagnostic.IDE0290.severity = silent   # 可用主构造函数
+dotnet_diagnostic.IDE0063.severity = silent   # using 语句可写成声明式
+dotnet_diagnostic.IDE0054.severity = silent   # 可用复合赋值
+dotnet_diagnostic.IDE0090.severity = silent   # new() 可省掉类型名
+dotnet_diagnostic.IDE0074.severity = silent   # 可用 ??=
+dotnet_diagnostic.IDE0042.severity = silent   # 可解构变量声明
+dotnet_diagnostic.IDE0017.severity = silent   # 可用对象初始化器
+dotnet_diagnostic.IDE0066.severity = silent   # 可用 switch 表达式
+
+# ── 故意保留默认级别，不压 ──────────────────────────────────────────
+# IDE0060（未使用的参数）：它已经指出 5 处，其中至少两处看着像「行为丢了」而不是
+# 「参数多余」—— KeyCapBox.EndCapture 的 commit（取消与确认走同一条路）、
+# AppSettings.IsUsable 的 anyMod（带不带修饰键结果一样）。压掉等于把线索藏起来。
+# 另外两处是分段控件与参数行留下的占位槽（SegmentedControl 的参数直接叫
+# unusedWidth），那是调用方还在按位置传参的产物，删了要连着改调用点。

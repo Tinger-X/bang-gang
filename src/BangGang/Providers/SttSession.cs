@@ -171,7 +171,6 @@ internal sealed class VolcSttSession : SttSession
 {
     private readonly SttConfig _cfg;
     private ClientWebSocket? _ws;
-    private Task? _recvLoop;
     private readonly TaskCompletionSource _lastPacket = new(TaskCreationOptions.RunContinuationsAsynchronously);
     /// <summary>服务端对全量请求的第一包（连上之后的握手回执）。</summary>
     private readonly TaskCompletionSource _firstFrame = new(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -207,7 +206,8 @@ internal sealed class VolcSttSession : SttSession
         byte[] jsonBytes = Encoding.UTF8.GetBytes(json);
         await SendFrameAsync(0x1, 0x0, 0x1, 0x1, Gzip(jsonBytes, jsonBytes.Length), ct);
 
-        _recvLoop = Task.Run(() => RecvLoopAsync());
+        // 收包循环不 await：它的退出由 Dispose 里的 _ws.Abort() 促成，这里拿到 Task 也没人看
+        _ = Task.Run(() => RecvLoopAsync());
 
         // 双向流式是「先回一包再发音频」：鉴权失败、资源 ID 不对、参数不合法都在这一包里
         // 回错误帧。早失败能把话说清楚（状态栏报「✗ 无法开始转写：…」），
@@ -397,7 +397,6 @@ internal sealed class XfyunSttSession : SttSession
 {
     private readonly SttConfig _cfg;
     private ClientWebSocket? _ws;
-    private Task? _recvLoop;
     private readonly TaskCompletionSource _lastResult = new(TaskCreationOptions.RunContinuationsAsynchronously);
     /// <summary>握手带的 uuid；started 还没到就收尾时，它就是会话 id。</summary>
     private string _uuid = "";
@@ -449,7 +448,8 @@ internal sealed class XfyunSttSession : SttSession
         var ws = new ClientWebSocket();
         await ws.ConnectAsync(new Uri(url), ct);
         _ws = ws;
-        _recvLoop = Task.Run(() => RecvLoopAsync());
+        // 同 bigmodel 那一路：收包循环不 await，退出由 Dispose 里的 _ws.Abort() 促成
+        _ = Task.Run(() => RecvLoopAsync());
         Trace.Log("stt-xfyun: connected");
 
         // 握手成不成、鉴权过不过，由服务端的第一条消息说了算（started 或 error）。

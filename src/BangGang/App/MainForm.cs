@@ -13,7 +13,7 @@ namespace BangGang;
 public partial class MainForm : Form, IMessageFilter
 {
     public const string WindowTitle = "帮帮";
-    public const string AppVersion = "v0.9.13";
+    public const string AppVersion = "v0.9.14";
 
     private const uint Affinity = Native.WDA_EXCLUDEFROMCAPTURE;
 
@@ -65,7 +65,6 @@ public partial class MainForm : Form, IMessageFilter
     private readonly ImageViewer _viewer = new();
     private readonly WindowFrame _frame = new();
 
-    // 定时器
     private readonly System.Windows.Forms.Timer _guardTimer;
     private readonly System.Windows.Forms.Timer _pttTimer;
     private readonly System.Windows.Forms.Timer _statusTimer;

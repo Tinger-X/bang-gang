@@ -69,7 +69,6 @@ internal sealed class WelcomeView : Panel
         float cx = Width / 2f;
         float top = Math.Max(60f, Height / 2f - 200);
 
-        // LOGO
         var logo = new Rectangle((int)cx - 46, (int)top, 92, 92);
         using (var bg = new SolidBrush(Theme.Accent))
             g.FillEllipse(bg, logo);

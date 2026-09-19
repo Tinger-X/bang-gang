@@ -95,7 +95,6 @@ internal static class AudioApi
         int rate = Marshal.ReadInt32(p, 4);
         int blockAlign = Marshal.ReadInt16(p, 12);
         int bits = Marshal.ReadInt16(p, 14);
-        int cbSize = Marshal.ReadInt16(p, 16);
 
         bool isExt = tag == 0xFFFE;
         bool isFloat = tag == 3;
