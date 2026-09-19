@@ -25,10 +25,10 @@ internal sealed record ProviderPreset(
 /// 各接入商的参数表（按官方文档整理）：
 ///   · 对话：所有主流服务商都提供 OpenAI 兼容接口，因此统一为「地址 + Key + 模型」，
 ///     但个别服务商的叫法/必填项不同（火山方舟要“推理接入点 ID”、Ollama 本地不需要 Key）。
-///   · 语音：实时流式接口差异较大（火山引擎要 App ID + Access Token + 资源 ID；
-///     讯飞要 APPID + APIKey + APISecret；阿里云要 AppKey + Token；腾讯云要 AppID + SecretId + SecretKey），
-///     因此每个服务商的输入框数量与标题都不同。
-/// “自定义”永远排在第一位并作为默认项。
+///   · 语音：只保留火山（App ID + Access Token + 资源 ID，二进制帧协议）与讯飞
+///     （APPID + APIKey + APISecret，URL 签名 + JSON 帧）两家内置商家，协议互不相同，
+///     客户端按服务商名分派（见 <c>SttSession</c>）。
+/// “自定义”在对话侧永远排在第一位并作为默认项（语音侧没有自定义档，原因见 Stt 数组注释）。
 /// </summary>
 internal static class Providers
 {
@@ -92,25 +92,20 @@ internal static class Providers
     };
 
     // ---------------- 实时语音转写 ----------------
+    //
+    // 只保留火山与讯飞两家 —— 实时转写走的是两家各自的私有 WebSocket 协议
+    // （火山是二进制帧 + X-Api-* 头，讯飞是 URL 签名 + JSON 帧），客户端代码按
+    // 服务商名分派，因此不存在「自定义」档位：填了地址也没有对应的协议实现。
+    // 预设名保持旧称不变：已存的用户档案（SttProfiles）是按名字索引的。
     public static readonly ProviderPreset[] Stt =
     {
-        new("自定义",
-            new[]
-            {
-                Url("wss://…（实时流式接口）"),
-                new ProviderField("appid", "App ID", "部分服务商鉴权需要，可留空", "App ID / 账号"),
-                new ProviderField("key", "Access Token", "密钥 / Token，仅保存在本机", "Access Token / API Key", true),
-                new ProviderField("model", "模型 / 资源 ID", "服务商的模型或资源 ID", "例如 volc.bigasr.sauc.duration"),
-            },
-            new Dictionary<string, string>()),
-
         new("火山引擎（流式）",
             new[]
             {
                 Url("wss://openspeech.bytedance.com/api/v3/sauc/bigmodel"),
-                new ProviderField("appid", "App ID", "控制台应用的 App ID", "你的 App ID"),
-                new ProviderField("key", "Access Token", "控制台应用的 Access Token", "你的 Access Token", true),
-                new ProviderField("model", "资源 ID", "流式大模型识别资源", "volc.bigasr.sauc.duration"),
+                new ProviderField("appid", "App ID", "控制台语音应用的 App ID", "你的 App ID"),
+                new ProviderField("key", "Access Token", "控制台语音应用的 Access Token", "你的 Access Token", true),
+                new ProviderField("model", "资源 ID", "流式语音识别大模型资源", "volc.bigasr.sauc.duration"),
             },
             new()
             {
@@ -118,68 +113,18 @@ internal static class Providers
                 ["model"] = "volc.bigasr.sauc.duration",
             },
             true, "对应请求头 X-Api-App-Key / X-Api-Access-Key / X-Api-Resource-Id",
-            "https://www.volcengine.com/docs/6561"),
+            "https://docs.volcengine.com/docs/DoubaoVoice/unidirectional-streaming-automatic-speech-recognition-websocket?lang=zh"),
 
         new("讯飞（实时转写）",
             new[]
             {
-                Url("wss://iat-api.xfyun.cn/v2/iat"),
+                Url("wss://office-api-ast-dx.iflyaisol.com/ast/communicate/v1"),
                 new ProviderField("appid", "APPID", "控制台应用的 APPID", "你的 APPID"),
-                new ProviderField("key", "API Key", "控制台应用的 APIKey", "你的 APIKey", true),
-                new ProviderField("secret2", "API Secret", "用于生成鉴权签名", "你的 APISecret", true),
+                new ProviderField("key", "APIKey", "控制台应用的 APIKey", "你的 APIKey", true),
+                new ProviderField("secret2", "APISecret", "签名用：signa = HMAC-SHA1(APISecret, MD5(appid+ts))", "你的 APISecret", true),
             },
-            new() { ["url"] = "wss://iat-api.xfyun.cn/v2/iat" },
-            true, "三项凭证都来自讯飞开放平台控制台",
-            "https://www.xfyun.cn/doc/asr/rtasr/API.html"),
-
-        new("阿里云（实时）",
-            new[]
-            {
-                Url("wss://nls-gateway-cn-shanghai.aliyuncs.com/ws/v1"),
-                new ProviderField("appid", "AppKey", "智能语音交互项目的 AppKey", "你的 AppKey"),
-                new ProviderField("key", "Token", "由 AccessKey 换取的有效 Token", "你的 Token", true),
-                new ProviderField("model", "模型", "paraformer 实时模型", "paraformer-realtime-v2"),
-            },
-            new()
-            {
-                ["url"] = "wss://nls-gateway-cn-shanghai.aliyuncs.com/ws/v1",
-                ["model"] = "paraformer-realtime-v2",
-            },
-            true, "不同地域的网关地址不同，可按需替换",
-            "https://help.aliyun.com/zh/isi/developer-reference/overview-of-real-time-speech-recognition"),
-
-        new("腾讯云（实时）",
-            new[]
-            {
-                Url("wss://asr.cloud.tencent.com/asr/v2/"),
-                new ProviderField("appid", "AppID", "腾讯云账号 AppID", "你的 AppID"),
-                new ProviderField("key", "SecretId", "访问密钥 SecretId", "你的 SecretId", true),
-                new ProviderField("secret2", "SecretKey", "访问密钥 SecretKey", "你的 SecretKey", true),
-            },
-            new() { ["url"] = "wss://asr.cloud.tencent.com/asr/v2/" },
-            true, "地址末尾需拼接 AppID",
-            "https://cloud.tencent.com/document/product/1093/48982"),
-
-        new("Deepgram",
-            new[]
-            {
-                Url("wss://api.deepgram.com/v1/listen"),
-                new ProviderField("key", "API Key", "Deepgram 控制台创建", "你的 API Key", true),
-                new ProviderField("model", "模型", "实时听写模型", "nova-3"),
-            },
-            new() { ["url"] = "wss://api.deepgram.com/v1/listen", ["model"] = "nova-3" },
-            true, "地址可带参数，如 ?language=zh",
-            "https://developers.deepgram.com/docs/streaming"),
-
-        new("OpenAI",
-            new[]
-            {
-                Url("https://api.openai.com/v1"),
-                Key(),
-                new ProviderField("model", "模型", "转写模型（非流式）", "whisper-1"),
-            },
-            new() { ["url"] = "https://api.openai.com/v1", ["model"] = "whisper-1" },
-            true, "Whisper 为整段转写，不是实时流式",
-            "https://platform.openai.com/docs/guides/speech-to-text"),
+            new() { ["url"] = "wss://office-api-ast-dx.iflyaisol.com/ast/communicate/v1" },
+            true, "星火大模型实时语音转写（中英 + 方言混合识别）",
+            "https://www.xfyun.cn/doc/spark/asr_llm/rtasr_llm.html"),
     };
 }

@@ -65,8 +65,9 @@ public class AppSettings
     /// <summary>模型是否支持图片等多媒体输入（多模态）。</summary>
     public bool ChatVision { get; set; } = true;
 
-    // ---------- 实时语音转写（通用流式 STT） ----------
-    public string SttProvider { get; set; } = "自定义";
+    // ---------- 实时语音转写（火山 / 讯飞，见 Providers.Stt） ----------
+    /// <summary>默认选第一个内置商家：语音侧没有「自定义」档（协议按服务商名分派，自定义无从实现）。</summary>
+    public string SttProvider { get; set; } = "火山引擎（流式）";
     public Dictionary<string, Dictionary<string, string>> SttProfiles { get; set; } = new();
 
     // ---------- 对话参数（每次请求都带上，见 ChatPage） ----------
@@ -132,7 +133,10 @@ public class AppSettings
         if (SttProfiles.Count == 0 &&
             (SttApiUrl.Length > 0 || SttAppId.Length > 0 || SttApiKey.Length > 0 || SttModel.Length > 0))
         {
-            SttProfiles["自定义"] = new Dictionary<string, string>
+            // 语音侧的「自定义」档已随预设一起取消（只保留火山 / 讯飞，见 Providers.Stt 注释）；
+            // 旧档案按 URL 认亲：认不出就先按火山档收着，字段对不上由用户到设置页重选。
+            string host = SttApiUrl.Contains("xfyun") || SttApiUrl.Contains("ifly") ? "讯飞（实时转写）" : "火山引擎（流式）";
+            SttProfiles[host] = new Dictionary<string, string>
             {
                 ["url"] = SttApiUrl,
                 ["appid"] = SttAppId,
@@ -141,7 +145,8 @@ public class AppSettings
             };
         }
         if (string.IsNullOrWhiteSpace(ChatProvider)) ChatProvider = "自定义";
-        if (string.IsNullOrWhiteSpace(SttProvider)) SttProvider = "自定义";
+        if (string.IsNullOrWhiteSpace(SttProvider)) SttProvider = "火山引擎（流式）";
+        if (SttProvider == "自定义") SttProvider = "火山引擎（流式）";   // 0.9.8 起语音侧不再有自定义档
     }
 
     // ---------- 外观 ----------

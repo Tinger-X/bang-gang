@@ -95,26 +95,37 @@ internal sealed class WasapiSink
 
     private void PumpLoop(BlockingCollection<float[]> queue)
     {
+        string tag = _loopback ? "sys" : "mic";
         try
         {
             int hr = _client!.Start();
+            Trace.Log($"pump {tag}: start hr={hr:X8}");
             AudioApi.ThrowHr(hr);
 
+            int packets = 0, timeouts = 0;
             while (!_stop)
             {
-                if (!_evt.WaitOne(300)) continue; // 超时继续检查 _stop
+                if (!_evt.WaitOne(300))
+                {
+                    timeouts++;
+                    if (timeouts % 10 == 0) Trace.Log($"pump {tag}: {timeouts}x300ms no event, packets={packets}");
+                    continue; // 超时继续检查 _stop
+                }
 
                 while (true)
                 {
                     hr = _cap!.GetNextPacketSize(out uint n);
-                    if (hr < 0) break;
+                    if (hr < 0) { Trace.Log($"pump {tag}: GetNextPacketSize hr={hr:X8}"); break; }
                     if (n == 0) break;
 
                     hr = _cap.GetBuffer(out IntPtr data, out uint frames, out uint flags,
                                         out _, out _);
-                    if (hr < 0) break;
+                    if (hr < 0) { Trace.Log($"pump {tag}: GetBuffer hr={hr:X8}"); break; }
                     try
                     {
+                        packets++;
+                        if (packets == 1 || packets % 200 == 0)
+                            Trace.Log($"pump {tag}: packet #{packets} frames={frames} flags={flags:X}");
                         if ((flags & AudioApi.AUDCLNT_BUFFERFLAGS_SILENT) != 0)
                             PushSilence(queue, (int)frames);
                         else
@@ -126,8 +137,9 @@ internal sealed class WasapiSink
                     }
                 }
             }
+            Trace.Log($"pump {tag}: exit packets={packets}");
         }
-        catch { /* 采集结束或失败：静默排空已在队列中的数据 */ }
+        catch (Exception ex) { Trace.Log($"pump {tag}: died {ex.GetType().Name} {ex.Message}"); }
         finally
         {
             queue.CompleteAdding();

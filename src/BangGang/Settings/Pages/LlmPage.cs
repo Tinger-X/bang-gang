@@ -40,7 +40,7 @@ internal sealed class LlmPage : SettingsPage
         ResetContent();
 
         _chat.Card = new GroupCard("对话模型", "任何 OpenAI 兼容接口都可接入，支持多模态输入") { RowH = RowH };
-        _stt.Card = new GroupCard("语音转文字", "通用实时（流式）语音转写：按住说话，松开即转写") { RowH = RowH };
+        _stt.Card = new GroupCard("语音转文字", "实时流式转写：按住录音键说话，文字直接进输入框") { RowH = RowH };
         Stack.Controls.Add(_chat.Card);
         Stack.Controls.Add(_stt.Card);
 

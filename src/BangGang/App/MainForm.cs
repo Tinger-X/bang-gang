@@ -13,7 +13,7 @@ namespace BangGang;
 public partial class MainForm : Form, IMessageFilter
 {
     public const string WindowTitle = "帮帮";
-    public const string AppVersion = "v0.9.7";
+    public const string AppVersion = "v0.9.8";
 
     private const uint Affinity = Native.WDA_EXCLUDEFROMCAPTURE;
 
@@ -71,7 +71,7 @@ public partial class MainForm : Form, IMessageFilter
     private readonly System.Windows.Forms.Timer _statusTimer;
     private readonly System.Windows.Forms.Timer _sideTimer;
 
-    private AudioMixRecorder? _recorder;
+    // 录音转写状态在 MainForm.Recording.cs（_dictation 等）
     private bool _overlayActive;
 
     public MainForm()
@@ -361,7 +361,7 @@ public partial class MainForm : Form, IMessageFilter
         SideClockEnd();   // 动画途中关窗也要把 timeBeginPeriod 还回去
         CancelStream();
         UnregisterHotkeys();
-        _recorder?.Stop();
+        _dictation?.Abort();
         base.OnFormClosed(e);
     }
 

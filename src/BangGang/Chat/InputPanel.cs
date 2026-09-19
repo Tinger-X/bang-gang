@@ -802,6 +802,22 @@ internal sealed class InputPanel : Panel, IMessageFilter
 
     public void FocusInput() => _box.Focus();
 
+    /// <summary>
+    /// 实时转写期间整体重写输入框文字（= 用户自己敲的前缀 + 已定稿 + 中间结果）。
+    /// 每次中间结果刷新都会整框替换，所以必须把前缀与定稿一起带上，不能只传增量。
+    /// 光标钉到末尾：录音转写是追加式输入，用户松开按键后接着看到的就是最后那个字。
+    /// </summary>
+    public void SetDictation(string text)
+    {
+        _box.Text = text;
+        if (_box.IsHandleCreated)
+        {
+            _box.SelectionStart = _box.TextLength;
+            _box.SelectionLength = 0;
+            _box.ScrollToCaret();
+        }
+    }
+
     // ---------------- 状态刷新 ----------------
 
     /// <summary>
