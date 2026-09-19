@@ -98,6 +98,23 @@ partial class MainForm
 
     private void SyncDictationText() => _input.SetDictation(_dictPrefix + _dictFinal + _dictPartial);
 
+    /// <summary>
+    /// 新建对话时给正在进行的转写重新起一个头：已经落进输入框的那部分属于上一条对话，
+    /// 不该跟过来。
+    ///
+    /// 非要单独有这一步，是因为 <see cref="SyncDictationText"/> 每次中间结果都**整框重写**：
+    /// 光清输入框的话，下一个 Partial 到达时（几十到几百毫秒）那段字会原样装回去，
+    /// 看上去就像「清空没生效」。录着音照录不误，只是从这句起头 —— 已经定稿的几句跟着
+    /// 上一条对话一起丢掉了，那是对的：它们本来就不属于新对话。
+    /// </summary>
+    private void RebaseDictationDraft()
+    {
+        if (_dictation == null) return;   // 没在录音：这三个字段本来就是空的，也没有谁会重写输入框
+        _dictPrefix = "";
+        _dictFinal = "";
+        _dictPartial = "";
+    }
+
     private void PttTick()
     {
         var sc = _settings.Shortcuts.FirstOrDefault(s => s.Action == "record");

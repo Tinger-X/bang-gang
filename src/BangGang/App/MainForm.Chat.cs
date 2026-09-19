@@ -9,6 +9,12 @@ partial class MainForm
 
     private void NewConversation()
     {
+        // 新对话从空白开始：上一条对话里还没发出去的草稿（正文与附件）不跟着进来。
+        //
+        // 这里是**唯一**的建会话入口 —— 侧栏的「+」、欢迎页的按钮与推荐问题，以及截图 /
+        // 拖放 / 录音那几条 EnsureActive 都经过它，所以清一次就够，不必在每条路上各写一遍。
+        _input.ClearDraft();
+        RebaseDictationDraft();   // 录着音时那次清空会被下一个整框重写装回去，见那里
         var c = new Conversation();
         _conversations.Add(c);
         ActivateConversation(c);
@@ -32,6 +38,10 @@ partial class MainForm
         ChatStore.Delete(c.Id);          // 会话文件跟着删；它的附件不删，见 ChatStore.ImageDir
         if (_active == c)
         {
+            // 草稿跟着这条对话一起走。**必须在这里清**，不能只靠 NewConversation：
+            // 删掉当前这条之后停在欢迎页，用户的下一个动作也可以是点开列表里**另一条**
+            // 对话，那条路不经过 NewConversation，上一条留下的草稿就会在那条对话里冒出来。
+            _input.ClearDraft();
             _active = null;
             _chatUI.Visible = false;
             _welcome.Visible = true;

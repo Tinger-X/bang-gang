@@ -803,6 +803,24 @@ internal sealed class InputPanel : Panel, IMessageFilter
     public void FocusInput() => _box.Focus();
 
     /// <summary>
+    /// 丢掉还没发出去的草稿（正文 + 附件）。
+    ///
+    /// 草稿属于它被敲进去的那条对话：**开一条新的**、或者**把这条删掉**时它就该消失，
+    /// 否则上一段里打了一半的问题会跟着进新对话，用户一条回车就把它发错了地方 ——
+    /// 而屏幕上那句话看着完全正常。
+    /// 调用点见 <c>MainForm.NewConversation</c> / <c>MainForm.DeleteConversation</c>。
+    ///
+    /// 注意**不**在 <c>ActivateConversation</c> 里清：在会话之间点来点去是常事，
+    /// 那时把用户打了一半的字吃掉，是比「草稿跟着走」更糟的一种错。
+    /// </summary>
+    public void ClearDraft()
+    {
+        Draft.Clear();
+        Sync();
+        _box.Text = "";
+    }
+
+    /// <summary>
     /// 实时转写期间整体重写输入框文字（= 用户自己敲的前缀 + 已定稿 + 中间结果）。
     /// 每次中间结果刷新都会整框替换，所以必须把前缀与定稿一起带上，不能只传增量。
     /// 光标钉到末尾：录音转写是追加式输入，用户松开按键后接着看到的就是最后那个字。

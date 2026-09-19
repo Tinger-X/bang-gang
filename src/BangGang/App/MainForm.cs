@@ -13,7 +13,7 @@ namespace BangGang;
 public partial class MainForm : Form, IMessageFilter
 {
     public const string WindowTitle = "帮帮";
-    public const string AppVersion = "v0.9.11";
+    public const string AppVersion = "v0.9.12";
 
     private const uint Affinity = Native.WDA_EXCLUDEFROMCAPTURE;
 
