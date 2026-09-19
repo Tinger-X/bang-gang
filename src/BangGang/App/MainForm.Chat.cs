@@ -9,12 +9,11 @@ partial class MainForm
 
     private void NewConversation()
     {
-        // 新对话从空白开始：上一条对话里还没发出去的草稿（正文与附件）不跟着进来。
+        // 新对话从空白开始：上一条对话里还没发出去的那半句**留在上一条上**，不跟过来
+        // （切会话时存 / 装，见 ActivateConversation）。用户回头再点开上一条，那句还在。
         //
         // 这里是**唯一**的建会话入口 —— 侧栏的「+」、欢迎页的按钮与推荐问题，以及截图 /
-        // 拖放 / 录音那几条 EnsureActive 都经过它，所以清一次就够，不必在每条路上各写一遍。
-        _input.ClearDraft();
-        RebaseDictationDraft();   // 录着音时那次清空会被下一个整框重写装回去，见那里
+        // 拖放 / 录音那几条 EnsureActive 都经过它，所以那一段不用在每条路上各写一遍。
         var c = new Conversation();
         _conversations.Add(c);
         ActivateConversation(c);
@@ -22,6 +21,20 @@ partial class MainForm
 
     private void ActivateConversation(Conversation c)
     {
+        // 草稿跟着对话走：先把现在这条的留下，再把要开的那条的装上。
+        //
+        // 这里是**离开一条对话的唯一出口**，所以「留住草稿」只需要写在这一处 —— 另一个出口是
+        // 把这条删掉（DeleteConversation），那种情况下草稿本来就跟它一起没了，不用留。
+        //
+        // 点的是当前这条就整段跳过：存一遍再装回来会重设 _box.Text，光标于是跳回开头
+        // （见 InputPanel.Apply 里钉光标那一段）—— 用户在列表里点一下自己正开着的那条，
+        // 打了一半的位置就没了，而这中间屏幕上什么都没变。
+        if (_active != c)
+        {
+            if (_active != null) _input.SaveDraftTo(_active);
+            _input.LoadDraftFrom(c);
+            RebaseDictationDraft(_input.Text);   // 录着音时输入框会被下一个中间结果整框重写，见那里
+        }
         _active = c;
         _convTitle.Text = string.IsNullOrWhiteSpace(c.Title) ? "新对话" : c.Title;
         _chatView.Load(c);
@@ -38,11 +51,14 @@ partial class MainForm
         ChatStore.Delete(c.Id);          // 会话文件跟着删；它的附件不删，见 ChatStore.ImageDir
         if (_active == c)
         {
-            // 草稿跟着这条对话一起走。**必须在这里清**，不能只靠 NewConversation：
-            // 删掉当前这条之后停在欢迎页，用户的下一个动作也可以是点开列表里**另一条**
-            // 对话，那条路不经过 NewConversation，上一条留下的草稿就会在那条对话里冒出来。
-            _input.ClearDraft();
+            // 这条对话连同它的草稿一起没了。**不留存**：SaveDraftTo 是给「切走、回头还要回来」
+            // 用的，这里没有回头路。
+            //
+            // 而这一清**必须在这里**，不能只靠 ActivateConversation：删完停在欢迎页，用户的下一个
+            // 动作也可以是点开列表里**另一条**对话，那时装的是那一条自己的草稿，与这条无关 ——
+            // 但输入框里若还留着这条的字，看见的就是「删掉那条的字出现在另一条对话里」。
             _active = null;
+            _input.LoadDraftFrom(null);
             _chatUI.Visible = false;
             _welcome.Visible = true;
             _chatView.Load(null!);

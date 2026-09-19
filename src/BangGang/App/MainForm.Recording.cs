@@ -99,18 +99,21 @@ partial class MainForm
     private void SyncDictationText() => _input.SetDictation(_dictPrefix + _dictFinal + _dictPartial);
 
     /// <summary>
-    /// 新建对话时给正在进行的转写重新起一个头：已经落进输入框的那部分属于上一条对话，
-    /// 不该跟过来。
+    /// 切到另一条对话时给正在进行的转写重新起一个头：已经落进输入框的那部分属于上一条对话
+    /// （它已经作为那条的草稿留在那儿了），新装的 <paramref name="prefix"/> = 这条对话自己的草稿，
+    /// 之后说的话从它后面接着长。
     ///
-    /// 非要单独有这一步，是因为 <see cref="SyncDictationText"/> 每次中间结果都**整框重写**：
-    /// 光清输入框的话，下一个 Partial 到达时（几十到几百毫秒）那段字会原样装回去，
-    /// 看上去就像「清空没生效」。录着音照录不误，只是从这句起头 —— 已经定稿的几句跟着
-    /// 上一条对话一起丢掉了，那是对的：它们本来就不属于新对话。
+    /// 非要单独有这一步，是因为 <see cref="SyncDictationText"/> 每来一个中间结果就**整框重写**：
+    /// 光把上一条的草稿换成这一条的，下一个 Partial 到达时（几十到几百毫秒）就会拿旧的前缀
+    /// 把整框盖回去，看上去就像「切了会话，输入框里的字却没换」。
+    ///
+    /// 录着音照录不误，只是换了起头 —— 切走之前已经定稿的几句留在上一条对话的草稿里，
+    /// 切回来时还在；中间那个还没定稿的半句则跟着这一次切换丢掉（它本来就没有落点）。
     /// </summary>
-    private void RebaseDictationDraft()
+    private void RebaseDictationDraft(string prefix)
     {
         if (_dictation == null) return;   // 没在录音：这三个字段本来就是空的，也没有谁会重写输入框
-        _dictPrefix = "";
+        _dictPrefix = prefix ?? "";
         _dictFinal = "";
         _dictPartial = "";
     }

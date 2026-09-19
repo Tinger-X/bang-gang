@@ -803,21 +803,48 @@ internal sealed class InputPanel : Panel, IMessageFilter
     public void FocusInput() => _box.Focus();
 
     /// <summary>
-    /// 丢掉还没发出去的草稿（正文 + 附件）。
+    /// 把输入框里现在的东西存成 <paramref name="c"/> 的草稿（正文 + 附件）。
     ///
-    /// 草稿属于它被敲进去的那条对话：**开一条新的**、或者**把这条删掉**时它就该消失，
-    /// 否则上一段里打了一半的问题会跟着进新对话，用户一条回车就把它发错了地方 ——
-    /// 而屏幕上那句话看着完全正常。
-    /// 调用点见 <c>MainForm.NewConversation</c> / <c>MainForm.DeleteConversation</c>。
+    /// 草稿属于它被敲进去的那条对话：用户在 A 里打了一半、切到 B 去问另一件事、
+    /// 再切回 A 时那半句还应当在。切走时存、切回来时装，两个调用点挨在
+    /// <c>MainForm.ActivateConversation</c> 里 —— 那里是**离开一条对话的唯一出口**
+    /// （另一个出口是把这条删掉，草稿跟着对话一起没，不必存）。
     ///
-    /// 注意**不**在 <c>ActivateConversation</c> 里清：在会话之间点来点去是常事，
-    /// 那时把用户打了一半的字吃掉，是比「草稿跟着走」更糟的一种错。
+    /// 附件**拷一份**再存：面板里那个列表是活的，用户接着删一张附件、或者按回车发出去，
+    /// 都不该顺手改掉已经留在那条对话上的那份。
     /// </summary>
-    public void ClearDraft()
+    public void SaveDraftTo(Conversation c)
     {
+        c.DraftText = _box.Text;
+        c.DraftFiles = new List<Attachment>(Draft);
+    }
+
+    /// <summary>
+    /// 把 <paramref name="c"/> 的草稿装进输入框。**null 表示空白** —— 「当前没有对话」
+    /// （删掉当前这条、停在欢迎页）就是那种情况。
+    /// </summary>
+    public void LoadDraftFrom(Conversation? c) => Apply(c?.DraftText ?? "", c?.DraftFiles);
+
+    /// <summary>
+    /// 整体换掉输入框的内容。
+    ///
+    /// 不能在外面直接写 <c>Text</c> 与 <c>Draft</c>：附件区、面板高度（<see cref="PreferredHeight"/>
+    /// 依赖 <c>Draft.Count</c>）、发送键的可用状态都要跟着一起变，这三样都归 <see cref="Sync"/> 管。
+    /// 文本框自己那一摊（占位层、滑条）由构造函数里挂的 <c>TextChanged</c> 负责，赋值就够。
+    ///
+    /// 光标钉到末尾：切回来是接着往下打的，停在开头的话第一句会插在旧草稿前面。
+    /// </summary>
+    private void Apply(string text, IReadOnlyList<Attachment>? files)
+    {
+        _box.Text = text ?? "";
         Draft.Clear();
+        if (files != null) Draft.AddRange(files);
         Sync();
-        _box.Text = "";
+        if (_box.IsHandleCreated && _box.TextLength > 0)
+        {
+            _box.SelectionStart = _box.TextLength;
+            _box.SelectionLength = 0;
+        }
     }
 
     /// <summary>

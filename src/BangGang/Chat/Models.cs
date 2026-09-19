@@ -9,6 +9,22 @@ public class Conversation
     public DateTime UpdatedAt { get; set; } = DateTime.Now;
     public List<ChatMessage> Messages { get; set; } = new();
 
+    /// <summary>
+    /// 输入框里还没发出去的那半句（正文）。
+    ///
+    /// **不落盘**：<see cref="ChatStore.Save"/> 只挑 Id / Title / 两个时间 / Messages 这五个字段
+    /// 写进文件，这里加的字段进不去 —— 那是有意的（草稿是临时状态，重启后照旧从头开始，
+    /// 和 0.9.13 之前的行为一致）。将来往 Save 里加字段时别顺手把它带上。
+    ///
+    /// 存在对话上而不是存在输入区里，是因为它天然属于一条对话：切走时留在本条上、切回来再
+    /// 装回去（两端都在 <c>MainForm.ActivateConversation</c>），删掉这条时它跟着一起没 ——
+    /// 换成一张「会话 id → 草稿」的表，就得再记一本账去记住该忘掉谁。
+    /// </summary>
+    public string DraftText { get; set; } = "";
+
+    /// <summary>见 <see cref="DraftText"/>：那半句带着的附件。</summary>
+    public List<Attachment> DraftFiles { get; set; } = new();
+
     /// <summary>依据首条用户消息等生成显示标题。</summary>
     public void RefreshTitle()
     {
