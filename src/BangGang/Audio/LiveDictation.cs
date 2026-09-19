@@ -153,18 +153,21 @@ internal sealed class LiveDictation : IDisposable
                     _ = sys.Next(out float sl, out float sr);
                     _ = mic!.Next(out float ml, out float mr);
                     stereoBuf.Add(sl + ml); stereoBuf.Add(sr + mr);
+                    Note("sys", sl, sr); Note("mic", ml, mr);
                     got = true;
                 }
                 else if (s)
                 {
                     _ = sys.Next(out float sl, out float sr);
                     stereoBuf.Add(sl); stereoBuf.Add(sr);
+                    Note("sys", sl, sr);
                     got = true;
                 }
                 else if (m)
                 {
                     _ = mic!.Next(out float ml, out float mr);
                     stereoBuf.Add(ml); stereoBuf.Add(mr);
+                    Note("mic", ml, mr);
                     got = true;
                 }
                 if (!got) { Thread.Sleep(1); continue; }
@@ -196,7 +199,8 @@ internal sealed class LiveDictation : IDisposable
         for (int i = 0; i < frames; i++)
         {
             float mono = (stereo[i * 2] + stereo[i * 2 + 1]) * 0.5f;
-            if (mono > 1f) mono = 1f; else if (mono < -1f) mono = -1f;
+            if (mono > 1f) { mono = 1f; _clip++; } else if (mono < -1f) { mono = -1f; _clip++; }
+            if (mono > _peak) _peak = mono; else if (-mono > _peak) _peak = -mono;
             short s = (short)(mono * 32767f);
             pending[pendingLen++] = (byte)s;
             pending[pendingLen++] = (byte)(s >> 8);
@@ -204,9 +208,25 @@ internal sealed class LiveDictation : IDisposable
             {
                 _session.SendAsync(pending, pendingLen, CancellationToken.None).GetAwaiter().GetResult();
                 pendingLen = 0;
+                _sentFrames++;
+                if (_sentFrames % 25 == 0)
+                    Trace.Log($"mixer: sent={_sentFrames} peak={_peak:F2} clipped={_clip} sysPeak={_sysPeak:F2} micPeak={_micPeak:F2}");
             }
         }
         return pendingLen;
+    }
+
+    private int _clip;
+    private float _peak;
+    private int _sentFrames;
+    private float _sysPeak, _micPeak;
+
+    /// <summary>Debug-only: track each source's own peak so a starving or echoing path shows up.</summary>
+    private void Note(string which, float l, float r)
+    {
+        float a = Math.Abs(l) > Math.Abs(r) ? Math.Abs(l) : Math.Abs(r);
+        if (which == "sys") { if (a > _sysPeak) _sysPeak = a; }
+        else { if (a > _micPeak) _micPeak = a; }
     }
 
     /// <summary>一路源的读取游标（跨数组保持偏移），与旧录音器里的同款。</summary>

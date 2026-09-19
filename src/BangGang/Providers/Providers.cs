@@ -25,7 +25,7 @@ internal sealed record ProviderPreset(
 /// 各接入商的参数表（按官方文档整理）：
 ///   · 对话：所有主流服务商都提供 OpenAI 兼容接口，因此统一为「地址 + Key + 模型」，
 ///     但个别服务商的叫法/必填项不同（火山方舟要“推理接入点 ID”、Ollama 本地不需要 Key）。
-///   · 语音：只保留火山（App ID + Access Token + 资源 ID，二进制帧协议）与讯飞
+///   · 语音：只保留火山（API Key + 资源 ID，双向流式二进制帧协议）与讯飞
 ///     （APPID + APIKey + APISecret，URL 签名 + JSON 帧）两家内置商家，协议互不相同，
 ///     客户端按服务商名分派（见 <c>SttSession</c>）。
 /// “自定义”在对话侧永远排在第一位并作为默认项（语音侧没有自定义档，原因见 Stt 数组注释）。
@@ -102,18 +102,21 @@ internal static class Providers
         new("火山引擎（流式）",
             new[]
             {
-                Url("wss://openspeech.bytedance.com/api/v3/sauc/bigmodel"),
-                new ProviderField("appid", "App ID", "控制台语音应用的 App ID", "你的 App ID"),
-                new ProviderField("key", "Access Token", "控制台语音应用的 Access Token", "你的 Access Token", true),
-                new ProviderField("model", "资源 ID", "流式语音识别大模型资源", "volc.bigasr.sauc.duration"),
+                Url("wss://openspeech.bytedance.com/api/v3/sauc/bigmodel_async",
+                    "双向流式：bigmodel_async（推荐）/ bigmodel（包进包出）"),
+                new ProviderField("key", "API Key", "控制台「API Key 管理」里创建的 Key（新版控制台只需这一项）",
+                    "你的 API Key", true),
+                new ProviderField("model", "资源 ID",
+                    "新版控制台默认 2.0 小时版 volc.seedasr.sauc.duration；1.0 小时版 volc.bigasr.sauc.duration（并发版把 duration 换成 concurrent）",
+                    "volc.seedasr.sauc.duration"),
             },
             new()
             {
-                ["url"] = "wss://openspeech.bytedance.com/api/v3/sauc/bigmodel",
-                ["model"] = "volc.bigasr.sauc.duration",
+                ["url"] = "wss://openspeech.bytedance.com/api/v3/sauc/bigmodel_async",
+                ["model"] = "volc.seedasr.sauc.duration",
             },
-            true, "对应请求头 X-Api-App-Key / X-Api-Access-Key / X-Api-Resource-Id",
-            "https://docs.volcengine.com/docs/DoubaoVoice/unidirectional-streaming-automatic-speech-recognition-websocket?lang=zh"),
+            true, "双向流式识别，握手头 X-Api-Key / X-Api-Resource-Id / X-Api-Connect-Id",
+            "https://docs.volcengine.com/docs/DoubaoVoice/bidirectional-streaming-automatic-speech-recognition-websocket?lang=zh"),
 
         new("讯飞（实时转写）",
             new[]

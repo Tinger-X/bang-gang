@@ -7,10 +7,15 @@
 #          audio as JSON text frames (status 0/1/2, base64 PCM, format
 #          "audio/L16;rate=16000"), results as JSON: cn.st.rt[].ws[].cw[].w, type "1" =
 #          interim / "0" = final, ls=true = last.
-#   volc:  X-Api-* request headers, then binary frames [0x11, type<<4|flags, ser<<4|comp,
-#          0, BE32 size, payload]; type 0x1 = full request JSON (must carry "bigmodel"),
-#          type 0x2 = gzip'd audio, server answers type 0x9 gzip'd JSON with
-#          result.utterances[].definite, plus a flags-0x3 last-packet marker.
+#   volc:  new-console auth headers (X-Api-Key / X-Api-Resource-Id / X-Api-Connect-Id,
+#          no App ID or Access Token), then bidirectional-streaming binary frames
+#          [0x11, type<<4|flags, ser<<4|comp, 0, (int32 seq), BE32 size, payload];
+#          type 0x1 = full request JSON (must carry "bigmodel"), type 0x2 = gzip'd audio.
+#          The server acks the full request FIRST (that is what the bidirectional flow
+#          is: one response per packet), then answers audio with type 0x9 gzip'd JSON
+#          carrying result.utterances[].definite, and flags its terminal response 0x3.
+#          A rejected key comes back as a type 0xF error frame (code + size + UTF-8
+#          message), which the client must surface at connect time.
 #
 # Both legs assert the SAME user-visible story: hotkey -> status shows the recording dot,
 # a conversation is created on the spot (we start on the welcome page), the interim
@@ -48,6 +53,7 @@ $TICK  = U 0x2713          # "transcription done"
 $CROSS = U 0x2717          # "could not start"
 $VOLC  = U 0x706B,0x5C71,0x5F15,0x64CE,0xFF08,0x6D41,0x5F0F,0xFF09
 $XFY   = U 0x8BAF,0x98DE,0xFF08,0x5B9E,0x65F6,0x8F6C,0x5199,0xFF09
+$VOLCERR = U 0x706B,0x5C71,0x5F15,0x64CE,0x8FD4,0x56DE,0x9519,0x8BEF   # 'volc returned an error'
 
 # ---------------------------------------------------------------------------
 # The fake vendor server. Runs in a Start-Job: everything it needs arrives via
@@ -66,6 +72,7 @@ $server = {
     $listener = $null
     $script:stream = $null
     $script:pending = New-Object byte[] 0
+    $script:volcSeq = 0
 
     function Read-Exact([int]$n) {
         $out = New-Object byte[] $n
@@ -144,17 +151,22 @@ $server = {
         return ,$ms.ToArray()
     }
 
-    # A volc server->client result frame: type 0x9, JSON + gzip. Still a WebSocket
+    # A volc server->client result frame: type 0x9, JSON + gzip. Full server responses
+    # put an int32 sequence between the header and the payload size (flags 0x1 = positive
+    # sequence), which is exactly what the client's parser skips. Still a WebSocket
     # message -- writing the raw volc frame straight to the stream makes the client
     # parse "0x11 0x90 ..." as a WS header and the connection dies on the spot.
-    function Send-VolcResult([string]$json) {
-        $pay = Gzip-B ([Text.Encoding]::UTF8.GetBytes($json))
+    function Send-VolcFrame([byte]$flags, [int]$seq, [byte[]]$pay) {
         $ms = New-Object IO.MemoryStream
         $ms.WriteByte(0x11)
-        $ms.WriteByte(0x90)          # type 0x9, no flags
-        $ms.WriteByte(0x11)          # JSON + gzip
+        $ms.WriteByte([byte](0x90 -bor $flags))   # type 0x9 | flags
+        $ms.WriteByte(0x11)                       # JSON + gzip
         $ms.WriteByte(0)
-        $ms.WriteByte([byte]($pay.Length -shr 24))
+        $ms.WriteByte([byte](($seq -shr 24) -band 0xFF))
+        $ms.WriteByte([byte](($seq -shr 16) -band 0xFF))
+        $ms.WriteByte([byte](($seq -shr 8) -band 0xFF))
+        $ms.WriteByte([byte]($seq -band 0xFF))
+        $ms.WriteByte([byte](($pay.Length -shr 24) -band 0xFF))
         $ms.WriteByte([byte](($pay.Length -shr 16) -band 0xFF))
         $ms.WriteByte([byte](($pay.Length -shr 8) -band 0xFF))
         $ms.WriteByte([byte]($pay.Length -band 0xFF))
@@ -162,10 +174,38 @@ $server = {
         Send-Frame 0x2 ($ms.ToArray())
     }
 
-    # The volc last-packet marker: type 0x9, flags 0x3 (negative sequence + last),
-    # 4-byte sequence, empty payload.
+    function Send-VolcResult([string]$json) {
+        $script:volcSeq++
+        Send-VolcFrame 0x1 $script:volcSeq (Gzip-B ([Text.Encoding]::UTF8.GetBytes($json)))
+    }
+
+    # The volc last-packet marker: type 0x9, flags 0x3 (last packet with a negative
+    # sequence), empty payload. This is how the terminal response is flagged.
     function Send-VolcLast {
-        Send-Frame 0x2 ([byte[]](0x11, 0x93, 0x11, 0x00, 0, 0, 0, 1, 0, 0, 0, 0))
+        $script:volcSeq++
+        Send-VolcFrame 0x3 (0 - $script:volcSeq) (New-Object byte[] 0)
+    }
+
+    # Error frame: header + code(uint32) + message size(uint32) + UTF-8 message,
+    # no JSON and no gzip. A bad API key comes back this way right after the full
+    # client request, which is what lets the client fail fast at connect time.
+    function Send-VolcError([int]$code, [string]$msg) {
+        $mb = [Text.Encoding]::UTF8.GetBytes($msg)
+        $ms = New-Object IO.MemoryStream
+        $ms.WriteByte(0x11)
+        $ms.WriteByte(0xF0)          # type 0xF, no flags
+        $ms.WriteByte(0x10)          # JSON serialization, uncompressed
+        $ms.WriteByte(0)
+        $ms.WriteByte([byte](($code -shr 24) -band 0xFF))
+        $ms.WriteByte([byte](($code -shr 16) -band 0xFF))
+        $ms.WriteByte([byte](($code -shr 8) -band 0xFF))
+        $ms.WriteByte([byte]($code -band 0xFF))
+        $ms.WriteByte([byte](($mb.Length -shr 24) -band 0xFF))
+        $ms.WriteByte([byte](($mb.Length -shr 16) -band 0xFF))
+        $ms.WriteByte([byte](($mb.Length -shr 8) -band 0xFF))
+        $ms.WriteByte([byte]($mb.Length -band 0xFF))
+        $ms.Write($mb, 0, $mb.Length)
+        Send-Frame 0x2 ($ms.ToArray())
     }
 
     try {
@@ -208,17 +248,7 @@ $server = {
         if ($wsKey.Length -eq 0) { throw 'no Sec-WebSocket-Key' }
 
         # ---- credential checks per flavor ----
-        if ($Flavor -eq 'volc') {
-            $tok = ''
-            if ($hdrs.Contains('x-api-access-key')) { $tok = $hdrs['x-api-access-key'] }
-            $app = ''
-            if ($hdrs.Contains('x-api-app-key')) { $app = $hdrs['x-api-app-key'] }
-            $res = ''
-            if ($hdrs.Contains('x-api-resource-id')) { $res = $hdrs['x-api-resource-id'] }
-            L ('hdr-token-ok=' + ($tok -eq 'probe-token'))
-            L ('hdr-appid-ok=' + ($app -eq 'probe-app'))
-            L ('hdr-resource=' + $res)
-        } else {
+        if ($Flavor -eq 'xfyun') {
             $target = ($reqLine -split ' ')[1]
             $q = @{}
             $qi = $target.IndexOf('?')
@@ -243,6 +273,18 @@ $server = {
             $hmac = New-Object Security.Cryptography.HMACSHA1(,[Text.Encoding]::UTF8.GetBytes('probe-secret'))
             $expect = [Convert]::ToBase64String($hmac.ComputeHash([Text.Encoding]::UTF8.GetBytes($hex.ToString())))
             L ('signa-ok=' + ($signa -eq $expect))
+        } else {
+            # New-console auth: an API Key plus a resource id, no App ID / Access Token.
+            $tok = ''
+            if ($hdrs.Contains('x-api-key')) { $tok = $hdrs['x-api-key'] }
+            $res = ''
+            if ($hdrs.Contains('x-api-resource-id')) { $res = $hdrs['x-api-resource-id'] }
+            $cid = ''
+            if ($hdrs.Contains('x-api-connect-id')) { $cid = $hdrs['x-api-connect-id'] }
+            L ('apikey-ok=' + ($tok -eq 'probe-key'))
+            L ('resource=' + $res)
+            L ('connect-id-ok=' + ($cid.Length -gt 10))
+            L ('legacy-headers-absent=' + (-not $hdrs.Contains('x-api-access-key') -and -not $hdrs.Contains('x-api-app-key')))
         }
 
         $accept = [Convert]::ToBase64String(
@@ -286,7 +328,7 @@ $server = {
                 L ('frame #' + $framesSeen + ' op=' + $script:frameOp + ' len=' + $m0.Length + ' ' + $hex)
             }
 
-            if ($Flavor -eq 'volc') {
+            if ($Flavor -ne 'xfyun') {
                 if ($script:frameOp -ne 0x2) { continue }
                 $m = $script:framePayload
                 if ($m.Length -lt 8) { continue }
@@ -311,6 +353,18 @@ $server = {
                     $j = [Text.Encoding]::UTF8.GetString($pl)
                     L ('fullreq-bigmodel=' + $j.Contains('bigmodel'))
                     L ('fullreq-rate=' + $j.Contains('16000'))
+                    L ('fullreq-pcm=' + ($j.Contains('"format":"pcm"') -and $j.Contains('"codec":"raw"')))
+                    L ('fullreq-nonstream=' + $j.Contains('enable_nonstream'))
+                    # Bidirectional streaming acks the full request BEFORE any audio.
+                    # The ack has to be a real full server response (with its sequence),
+                    # otherwise the client sits out its whole connect-time wait.
+                    if ($Flavor -eq 'volcbad') {
+                        Send-VolcError 45000001 'invalid api key'
+                        L 'sent-error'
+                    } else {
+                        Send-VolcResult '{"result":{"text":""}}'
+                        L 'sent-first-response'
+                    }
                 } elseif ($type -eq 0x2) {
                     if ($pl.Length -gt 0) { $audio++ } else { L 'client-empty-last' }
                 }
@@ -323,13 +377,13 @@ $server = {
             }
 
             if (-not $sentInterim -and $audio -ge 2) {
-                if ($Flavor -eq 'volc') { Send-VolcResult $jsonI } else { Send-Text $jsonI }
+                if ($Flavor -ne 'xfyun') { Send-VolcResult $jsonI } else { Send-Text $jsonI }
                 $sentInterim = $true
                 $interimAt = $sw.Elapsed
                 L 'sent-interim'
             }
             if ($sentInterim -and -not $sentFinal -and ($sw.Elapsed - $interimAt).TotalMilliseconds -gt 1500) {
-                if ($Flavor -eq 'volc') { Send-VolcResult $jsonF; Send-VolcLast } else { Send-Text $jsonF }
+                if ($Flavor -ne 'xfyun') { Send-VolcResult $jsonF; Send-VolcLast } else { Send-Text $jsonF }
                 $sentFinal = $true
                 L 'sent-final'
             }
@@ -379,11 +433,13 @@ function Get-FreePort {
 }
 
 function Run-Leg {
-    param([string]$Flavor, [string]$Preset, [string]$Path, [hashtable]$Extra, [string]$Interim, [string]$Final)
+    param([string]$Flavor, [string]$Preset, [string]$Path, [hashtable]$Extra, [string]$Interim, [string]$Final,
+          [switch]$BadKey)
 
     Write-Output ('--- leg ' + $Flavor + ' ---')
     $port = Get-FreePort
-    $profile = @{ url = ('ws://127.0.0.1:' + $port + $Path); appid = 'probe-app'; key = 'probe-key' }
+    $profile = @{ url = ('ws://127.0.0.1:' + $port + $Path); key = 'probe-key' }
+    if ($Flavor -eq 'xfyun') { $profile['appid'] = 'probe-app' }
     foreach ($k in $Extra.Keys) { $profile[$k] = $Extra[$k] }
     Write-SttSettings $Preset $profile
 
@@ -421,6 +477,26 @@ function Run-Leg {
                     }
                 }
                 Write-Output ('  status = ''' + $s + '''')
+                if ($BadKey) {
+                    # The bidirectional flow acks before any audio, so a rejected key shows
+                    # up as an error frame at connect time -- the status strip has to say so
+                    # right there, instead of "connected but never a word".
+                    $sawErr = $false
+                    $lastStatus = $s
+                    $swErr = [Diagnostics.Stopwatch]::StartNew()
+                    while ($swErr.Elapsed.TotalSeconds -lt 10) {
+                        $lastStatus = Get-WinText $status
+                        if ($lastStatus.Contains($VOLCERR) -and $lastStatus.Contains('45000001')) { $sawErr = $true; break }
+                        Start-Sleep -Milliseconds 150
+                    }
+                    Check $sawErr 'a rejected API key fails at connect with the vendor message' ('status = ''' + $lastStatus + '''')
+                    Check $lastStatus.StartsWith($CROSS) 'the failure carries the could-not-start marker' ('status = ''' + $lastStatus + '''')
+                    $edit = Get-InputEditBig2 $main
+                    Check ($edit -eq [IntPtr]::Zero) 'no conversation was created for a failed connect' ''
+                    Save-WindowShot $main (Get-ShotPath ('record-stt-' + $Flavor + '.png'))
+                    return
+                }
+
                 $started = $reacted -and $s.Contains($DOT)
                 $errMsg = ''
                 if ($reacted -and -not $started) { $errMsg = $s }
@@ -497,27 +573,42 @@ function Run-Leg {
     function Has([string]$marker) { foreach ($ln in $lines) { if ($ln.Contains($marker)) { return $true } }; return $false }
 
     Check (Has 'handshake done') 'server completed the WebSocket handshake' ''
-    if ($Flavor -eq 'volc') {
-        Check (Has 'hdr-token-ok=True') 'X-Api-Access-Key arrived on the handshake' ''
-        Check (Has 'hdr-appid-ok=True') 'X-Api-App-Key arrived on the handshake' ''
-        Check (Has 'fullreq-bigmodel=True') 'full request declares the bigmodel' ''
-        Check (Has 'fullreq-rate=True') 'full request declares 16kHz pcm' ''
-    } else {
+    if ($Flavor -eq 'xfyun') {
         Check (Has 'appid-ok=True') 'appid arrived on the handshake query' ''
         Check (Has 'signa-ok=True') 'signa matches the documented HMAC-SHA1 recipe' ''
         Check (Has 'fmt-ok=True') 'first frame declares audio/L16;rate=16000' ''
+    } else {
+        Check (Has 'apikey-ok=True') 'X-Api-Key arrived on the handshake' ''
+        Check (Has 'connect-id-ok=True') 'X-Api-Connect-Id arrived on the handshake' ''
+        Check (Has 'resource=volc.bigasr.sauc.duration') 'X-Api-Resource-Id arrived on the handshake' ''
+        Check (Has 'legacy-headers-absent=True') 'no App ID / Access Token headers (new-console auth)' ''
+        Check (Has 'fullreq-bigmodel=True') 'full request declares the bigmodel' ''
+        Check (Has 'fullreq-rate=True') 'full request declares 16kHz' ''
+        Check (Has 'fullreq-pcm=True') 'full request declares pcm / raw audio' ''
+        Check (Has 'fullreq-nonstream=True') 'full request asks for the non-stream second pass (definite sentences)' ''
     }
-    Check (Has 'sent-interim') 'server sent the interim result' ''
-    Check (Has 'sent-final') 'server sent the final result' ''
-    $frames = 0
-    foreach ($ln in $lines) { if ($ln -match 'audio-frames=(\d+)') { $frames = [int]$Matches[1] } }
-    Check ($frames -ge 3) 'audio frames actually flowed' ('frames = ' + $frames)
+    if ($BadKey) {
+        Check (Has 'sent-error') 'server answered the full request with an error frame' ''
+    } else {
+        if ($Flavor -ne 'xfyun') {
+            # The bidirectional handshake ack: one response before any audio.
+            Check (Has 'sent-first-response') 'server acked the full request before any audio' ''
+        }
+        Check (Has 'sent-interim') 'server sent the interim result' ''
+        Check (Has 'sent-final') 'server sent the final result' ''
+        $frames = 0
+        foreach ($ln in $lines) { if ($ln -match 'audio-frames=(\d+)') { $frames = [int]$Matches[1] } }
+        Check ($frames -ge 3) 'audio frames actually flowed' ('frames = ' + $frames)
+    }
     Write-Output ''
 }
 
 try {
     Run-Leg 'xfyun' $XFY '/ast/communicate/v1' @{ secret2 = 'probe-secret' } 'XF-PART' 'XF-FINAL'
-    Run-Leg 'volc' $VOLC '/api/v3/sauc/bigmodel' @{ key = 'probe-token'; model = 'probe-resource' } 'VC-PART' 'VC-FINAL'
+    Run-Leg 'volc' $VOLC '/api/v3/sauc/bigmodel_async' @{ model = 'volc.bigasr.sauc.duration' } 'VC-PART' 'VC-FINAL'
+    # Control leg: the server answers with an error frame -- the UI must say why,
+    # right there, and leave no empty conversation behind.
+    Run-Leg 'volcbad' $VOLC '/api/v3/sauc/bigmodel_async' @{ model = 'volc.bigasr.sauc.duration' } '' '' -BadKey
 } finally {
     if ($hadSettings) { Set-Content -Path $script:settings -Value $bakSettings -Encoding utf8 -NoNewline }
     else { Remove-Item $script:settings -ErrorAction SilentlyContinue }

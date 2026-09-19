@@ -15,10 +15,13 @@ internal sealed class SttConfig
 {
     public string Provider = "";
     public string Url = "";
+    /// <summary>讯飞的 APPID。火山走新版控制台鉴权，不需要这一项。</summary>
     public string AppId = "";
+    /// <summary>火山的 API Key（X-Api-Key）/ 讯飞的 APIKey。</summary>
     public string ApiKey = "";
+    /// <summary>讯飞签名用的 APISecret（火山用不到）。</summary>
     public string ApiSecret = "";
-    /// <summary>火山的资源 ID（存在档案的 "model" 键下）。讯飞用不到。</summary>
+    /// <summary>火山的资源 ID（存在档案的 "model" 键下，X-Api-Resource-Id）。讯飞用不到。</summary>
     public string ResourceId = "";
 
     /// <summary>把服务商档案读成配置。读不到某项时不抛异常，留空串由 <see cref="Problem"/> 说缺什么。</summary>
@@ -55,6 +58,9 @@ internal sealed class SttConfig
     /// <summary>当前选中的预设；服务商名对不上任何内置商家时为 null。</summary>
     public ProviderPreset? Preset => Array.Find(Providers.Stt, p => p.Name == Provider);
 
+    /// <summary>是不是讯飞那一档 —— 两家的必填项不一样，判断只此一处。</summary>
+    private bool IsXfyun => Provider.Contains("讯飞");
+
     /// <summary>还差什么才能开始转写；齐了返回 null。这句话会直接显示给用户。</summary>
     public string? Problem
     {
@@ -63,18 +69,20 @@ internal sealed class SttConfig
             const string where = "打开「设置 → 模型接入 → 语音转文字」补上。";
             if (Preset == null) return "尚未选择语音转写服务商：" + where;
             if (Url.Length == 0) return "尚未填写语音转写接口地址：" + where;
-            if (AppId.Length == 0) return "尚未填写语音转写的 App ID：" + where;
-            if (ApiKey.Length == 0) return "尚未填写语音转写的 Access Token / APIKey：" + where;
-            if (Provider.Contains("讯飞") && ApiSecret.Length == 0)
+            // 火山走新版控制台鉴权，只要 API Key + 资源 ID；讯飞另要 APPID 与 APISecret。
+            if (IsXfyun && AppId.Length == 0) return "尚未填写语音转写的 APPID：" + where;
+            if (ApiKey.Length == 0)
+                return "尚未填写语音转写的 " + (IsXfyun ? "APIKey" : "API Key") + "：" + where;
+            if (IsXfyun && ApiSecret.Length == 0)
                 return "尚未填写语音转写的 APISecret：" + where;
-            if (Provider.Contains("火山") && ResourceId.Length == 0)
+            if (!IsXfyun && ResourceId.Length == 0)
                 return "尚未填写语音转写的资源 ID：" + where;
             return null;
         }
     }
 
     /// <summary>按服务商名分派协议实现 —— 两家协议互不相同，没有通用实现。</summary>
-    public SttSession CreateSession() => Provider.Contains("讯飞")
+    public SttSession CreateSession() => IsXfyun
         ? new XfyunSttSession(this)
         : new VolcSttSession(this);
 }
@@ -140,16 +148,23 @@ internal abstract class SttSession : IDisposable
 }
 
 /// <summary>
-/// 火山引擎「流式语音识别大模型」单向流式 WebSocket（SAUC bigmodel 协议）。
-/// 文档：https://docs.volcengine.com/docs/DoubaoVoice/unidirectional-streaming-automatic-speech-recognition-websocket
+/// 火山引擎「双向流式语音识别」大模型 WebSocket（SAUC bigmodel 协议）。
+/// 文档：https://docs.volcengine.com/docs/DoubaoVoice/bidirectional-streaming-automatic-speech-recognition-websocket
+///
+/// 接入地址三档：bigmodel_async（双向流式优化版，结果变化才回包，官方推荐）、
+/// bigmodel（每收一包回一包）、bigmodel_nostream（流式输入，收尾才给结果）。
+/// 默认取 <c>bigmodel_async</c>，地址在设置里可改。
 ///
 /// 帧结构：[4 字节头][可选 4 字节序号][4 字节大端负载长度][负载]
 ///   byte0 = 版本(0x1) &lt;&lt;4 | 头长(以 4 字节计, 0x1)
-///   byte1 = 消息类型 &lt;&lt;4 | 类型相关标志（0x2 = 最后一包）
+///   byte1 = 消息类型 &lt;&lt;4 | 类型相关标志（0x1 正序号 / 0x2 最后一包 / 0x3 末包带负序号）
 ///   byte2 = 序列化(0=原始 1=JSON) &lt;&lt;4 | 压缩(0=无 1=gzip)
-/// 客户端：type 0x1 全量请求（JSON+gzip）→ type 0x2 音频帧（raw+gzip）→ flags 0x2 空尾帧。
+/// 客户端：type 0x1 全量请求（JSON+gzip）→ 服务端先回一包 → type 0x2 音频帧（raw+gzip）
+///         → flags 0x2 空尾帧。
 /// 服务端：type 0x9 全量响应（JSON+gzip，含 result.utterances，definite=true 为定稿），
-///         type 0xF 错误（JSON，含 code / message）。
+///         type 0xF 错误（code / size / UTF-8 消息，没有 JSON 也没有 gzip）。
+///
+/// 鉴权走**新版控制台**：只要 API Key 与资源 ID 两个头，没有 App ID / Access Token。
 /// </summary>
 internal sealed class VolcSttSession : SttSession
 {
@@ -157,8 +172,15 @@ internal sealed class VolcSttSession : SttSession
     private ClientWebSocket? _ws;
     private Task? _recvLoop;
     private readonly TaskCompletionSource _lastPacket = new(TaskCreationOptions.RunContinuationsAsynchronously);
+    /// <summary>服务端对全量请求的第一包（连上之后的握手回执）。</summary>
+    private readonly TaskCompletionSource _firstFrame = new(TaskCreationOptions.RunContinuationsAsynchronously);
+    /// <summary>第一包若是个错误帧，把话说清楚留给 ConnectAsync 抛。</summary>
+    private string? _firstError;
+    /// <summary>已经定稿过的分句（按 start_time 去重，缺时间戳时退回按文本去重）。</summary>
+    private readonly HashSet<long> _finalStarts = new();
+    private readonly HashSet<string> _finalTexts = new();
 
-    /// <summary>200ms 一帧：16000 × 2 × 0.2。</summary>
+    /// <summary>200ms 一帧：16000 × 2 × 0.2 —— 双向流式推荐的分包大小。</summary>
     public override int FrameBytes => 6400;
 
     public VolcSttSession(SttConfig cfg) => _cfg = cfg;
@@ -166,25 +188,31 @@ internal sealed class VolcSttSession : SttSession
     public override async Task ConnectAsync(CancellationToken ct)
     {
         var ws = new ClientWebSocket();
-        ws.Options.SetRequestHeader("X-Api-App-Key", _cfg.AppId);
-        ws.Options.SetRequestHeader("X-Api-Access-Key", _cfg.ApiKey);
+        ws.Options.SetRequestHeader("X-Api-Key", _cfg.ApiKey);
         ws.Options.SetRequestHeader("X-Api-Resource-Id", _cfg.ResourceId);
         ws.Options.SetRequestHeader("X-Api-Connect-Id", Guid.NewGuid().ToString());
         await ws.ConnectAsync(new Uri(_cfg.Url), ct);
         _ws = ws;
 
         // 全量请求：音频参数 + 识别参数。show_utterances 让结果按句带 definite 标记，
-        // result_type=single 让定稿按句增量返回（而不是每次全量重发）。
+        // enable_nonstream 开二遍识别（VAD 分句后用语段模型重识别，定稿只在这一路出现）。
         string json = """
             {"user":{"uid":"bang-gang"},
              "audio":{"format":"pcm","codec":"raw","rate":16000,"bits":16,"channel":1},
              "request":{"model_name":"bigmodel","enable_punc":true,"enable_itn":true,
-                        "show_utterances":true,"result_type":"single"}}
+                        "enable_ddc":true,"show_utterances":true,"enable_nonstream":true}}
             """;
         byte[] jsonBytes = Encoding.UTF8.GetBytes(json);
         await SendFrameAsync(0x1, 0x0, 0x1, 0x1, Gzip(jsonBytes, jsonBytes.Length), ct);
 
         _recvLoop = Task.Run(() => RecvLoopAsync());
+
+        // 双向流式是「先回一包再发音频」：鉴权失败、资源 ID 不对、参数不合法都在这一包里
+        // 回错误帧。早失败能把话说清楚（状态栏报「✗ 无法开始转写：…」），
+        // 比「连上了却一个字都不出」强。超时就不等了，照旧往下走。
+        var first = await Task.WhenAny(_firstFrame.Task, Task.Delay(5000, ct));
+        if (first == _firstFrame.Task && _firstError != null)
+            throw new InvalidOperationException(_firstError);
     }
 
     public override Task SendAsync(byte[] pcm, int len, CancellationToken ct) =>
@@ -192,7 +220,7 @@ internal sealed class VolcSttSession : SttSession
 
     public override async Task FinishAsync(CancellationToken ct)
     {
-        // 空负载 + flags 0x2 = 最后一包；之后等服务端的收尾响应（flags 0x2/0x3）。
+        // 空负载 + flags 0x2 = 最后一包；之后等服务端的收尾响应（flags 0x3 负序号）。
         if (_ws?.State == WebSocketState.Open)
             await SendFrameAsync(0x2, 0x2, 0x0, 0x1, Array.Empty<byte>(), ct);
         var done = Task.WhenAny(_lastPacket.Task, Task.Delay(5000, ct));
@@ -230,8 +258,12 @@ internal sealed class VolcSttSession : SttSession
             // 尾帧之后的关闭不算错误
             if (!_lastPacket.Task.IsCompleted) OnFailed("连接中断：" + ex.Message);
             _lastPacket.TrySetResult();
+            _firstFrame.TrySetResult();
         }
     }
+
+    private static int Be32(byte[] b, int off) =>
+        (b[off] << 24) | (b[off + 1] << 16) | (b[off + 2] << 8) | b[off + 3];
 
     private void ParseFrame(byte[] msg)
     {
@@ -240,35 +272,46 @@ internal sealed class VolcSttSession : SttSession
         int type = msg[1] >> 4;
         int flags = msg[1] & 0x0F;
         int comp = msg[2] & 0x0F;
+
+        // 错误帧的负载不是「长度 + 数据」，而是 code(uint32) + size(uint32) + UTF-8 消息，
+        // 既没有 JSON 也不压缩 —— 先于通用解析单独处理，否则读到的「大小」是错误码。
+        if (type == 0xF)
+        {
+            string detail = "未知错误";
+            int p = headerSize;
+            if (p + 8 <= msg.Length)
+            {
+                int code = Be32(msg, p);
+                int len = Be32(msg, p + 4);
+                p += 8;
+                string text = len > 0 && p + len <= msg.Length
+                    ? Encoding.UTF8.GetString(msg, p, len)
+                    : Encoding.UTF8.GetString(msg, p, msg.Length - p);
+                detail = (code + " " + text).Trim();
+            }
+            if (!_firstFrame.Task.IsCompleted) _firstError = "火山引擎返回错误：" + detail;
+            else OnFailed("火山引擎返回错误：" + detail);
+            _firstFrame.TrySetResult();
+            _lastPacket.TrySetResult();
+            return;
+        }
+
         int off = headerSize;
         if (flags is 0x1 or 0x3) off += 4;                 // 带序号
         if (off + 4 > msg.Length) return;
-        int size = (msg[off] << 24) | (msg[off + 1] << 16) | (msg[off + 2] << 8) | msg[off + 3];
+        int size = Be32(msg, off);
         off += 4;
         if (size <= 0 || off + size > msg.Length)
         {
             if (flags is 0x2 or 0x3) _lastPacket.TrySetResult();   // 空尾包
+            _firstFrame.TrySetResult();
             return;
         }
         byte[] payload = new byte[size];
         Array.Copy(msg, off, payload, 0, size);
         if (comp == 0x1) payload = Gunzip(payload);
 
-        if (type == 0xF)
-        {
-            string detail = Encoding.UTF8.GetString(payload);
-            try
-            {
-                using var doc = JsonDocument.Parse(detail);
-                string code = doc.RootElement.TryGetProperty("code", out var c) ? c.ToString() : "?";
-                string message = doc.RootElement.TryGetProperty("message", out var m) ? m.GetString() ?? "" : "";
-                detail = $"{code} {message}".Trim();
-            }
-            catch { }
-            OnFailed("火山引擎返回错误：" + detail);
-            _lastPacket.TrySetResult();
-            return;
-        }
+        _firstFrame.TrySetResult();
         if (type != 0x9) return;
         if (flags is 0x2 or 0x3) _lastPacket.TrySetResult();
 
@@ -282,8 +325,14 @@ internal sealed class VolcSttSession : SttSession
                 {
                     string t = u.TryGetProperty("text", out var x) ? x.GetString() ?? "" : "";
                     bool definite = u.TryGetProperty("definite", out var d) && d.ValueKind == JsonValueKind.True;
-                    if (definite) OnSentence(t);
-                    else OnPartial(t);
+                    if (!definite) { OnPartial(t); continue; }
+
+                    // 每包都是「到目前为止的全部结果」，已定稿的分句会被反复重发 ——
+                    // 不去重的话同一句会在输入框里叠上好几遍。按 start_time 认同一句，
+                    // 服务端没给时间戳时退回按文本认。
+                    long start = u.TryGetProperty("start_time", out var s) && s.TryGetInt64(out var sv) ? sv : -1;
+                    bool seen = start >= 0 ? !_finalStarts.Add(start) : !_finalTexts.Add(t);
+                    if (!seen) OnSentence(t);
                 }
             }
             else if (result.TryGetProperty("text", out var text))
