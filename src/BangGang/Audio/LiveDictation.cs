@@ -99,8 +99,12 @@ internal sealed class LiveDictation : IDisposable
         _running = false;
         _sys?.StopPump();
         _mic?.StopPump();
-        _mixer?.Join(4000);
-        Trace.Log($"dictation: pumps stopped at {sw.ElapsedMilliseconds}ms (mixer alive={_mixer?.IsAlive})");
+        // 等混音线程排空要放到线程池上：它这会儿可能正卡在一次 WebSocket 发送里
+        // （等握手回执最多 3 秒，见 VolcSttSession.SendAsync）。同步 Join 就是让 UI 线程
+        // 陪着一起等 —— 按下停止后界面僵住，而这一步本来就该是「一按就有反应」的。
+        var mixer = _mixer;
+        await Task.Run(() => { try { mixer?.Join(4000); } catch { } });
+        Trace.Log($"dictation: pumps stopped at {sw.ElapsedMilliseconds}ms (mixer alive={mixer?.IsAlive})");
         try { await _session.FinishAsync(CancellationToken.None); }
         catch { /* 收尾失败不挡界面，已收到的部分早已落进输入框 */ }
         Trace.Log($"dictation: stop finished at {sw.ElapsedMilliseconds}ms");

@@ -9,7 +9,7 @@
     <AssemblyName>BangGang</AssemblyName>
     <AssemblyTitle>帮帮</AssemblyTitle>
     <Product>帮帮</Product>
-    <Version>0.9.14</Version>
+    <Version>0.9.15</Version>
     <ApplicationHighDpiMode>PerMonitorV2</ApplicationHighDpiMode>
     <!-- 编译器警告当错误：这份工程本来就是 0 警告（Nullable 开着、没有 NoWarn），
          这条是把它钉住，免得下次 SDK 或某次手滑悄悄带进来一条没人看见的警告。

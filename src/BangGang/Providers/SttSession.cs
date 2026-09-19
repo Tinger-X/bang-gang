@@ -91,10 +91,17 @@ internal sealed class SttConfig
 /// <summary>
 /// 一条实时转写会话。音频由 <c>LiveDictation</c> 切成 <see cref="FrameBytes"/> 一帧喂进来；
 /// 识别结果走事件回抛（都在接收线程上，调用方自己封送回 UI 线程）。
+///
+/// 两个结果事件是**一帧的两个部分**，顺序固定：先把这一帧里新定稿的分句挨个
+/// <see cref="Sentence"/> 出来，再用 <see cref="Partial"/> 整体换掉「在途的那半句」
+/// （<see cref="Partial"/> 收到空串 = 本帧没有在途半句，中间结果该清了）。
+/// 调用方按顺序应用即可，不需要自己判断该不该清中间结果 ——
+/// 「来了一句定稿就顺手把中间结果清掉」是错的：那句定稿未必是屏幕上这半句的归宿，
+/// 清掉就会把用户已经看见的字吞掉（见 <see cref="VolcSttSession"/> 里那段注释）。
 /// </summary>
 internal abstract class SttSession : IDisposable
 {
-    /// <summary>中间结果（同一句会随识别不断改写，直接整体替换显示）。</summary>
+    /// <summary>本帧末尾**在途的半句**（同一句会随识别不断改写，直接整体替换显示）；空串 = 没有。</summary>
     public event Action<string>? Partial;
     /// <summary>一句定稿（追加显示，不再变化）。</summary>
     public event Action<string>? Sentence;
@@ -111,7 +118,17 @@ internal abstract class SttSession : IDisposable
     public abstract Task FinishAsync(CancellationToken ct);
     public abstract void Dispose();
 
+    /// <summary>
+    /// 收尾时等终帧的上限。用户按下停止之后，服务商那边还有活儿没干完：它要把剩下的音频
+    /// 过一遍、把最后那几分句定稿再回过来，双向流式还要等我们的末包。这几秒里**不能**把
+    /// 会话拆掉 —— 拆了在途的结果就跟着没了，用户看到的就是「一停止，末尾的话就丢了」。
+    /// 上限只是防服务商一声不吭地断了，不是「等这么久就够」。
+    /// </summary>
+    protected const int FinishTimeoutMs = 15000;
+
     protected void OnPartial(string t) { if (t.Length > 0) Partial?.Invoke(t); }
+    /// <summary>本帧没有在途的半句 —— 中间结果作废（不是「空文本」，是「没有内容」）。</summary>
+    protected void OnTailDone() => Partial?.Invoke("");
     protected void OnSentence(string t) { if (t.Length > 0) Sentence?.Invoke(t); }
     protected void OnFailed(string m) => Failed?.Invoke(m);
 
@@ -172,10 +189,8 @@ internal sealed class VolcSttSession : SttSession
     private readonly SttConfig _cfg;
     private ClientWebSocket? _ws;
     private readonly TaskCompletionSource _lastPacket = new(TaskCreationOptions.RunContinuationsAsynchronously);
-    /// <summary>服务端对全量请求的第一包（连上之后的握手回执）。</summary>
+    /// <summary>服务端对全量请求的第一包（连上之后的握手回执），也当「可以发音频了」的信号。</summary>
     private readonly TaskCompletionSource _firstFrame = new(TaskCreationOptions.RunContinuationsAsynchronously);
-    /// <summary>第一包若是个错误帧，把话说清楚留给 ConnectAsync 抛。</summary>
-    private string? _firstError;
     /// <summary>已经定稿过的分句（按 start_time 去重，缺时间戳时退回按文本去重）。</summary>
     private readonly HashSet<long> _finalStarts = new();
     private readonly HashSet<string> _finalTexts = new();
@@ -209,16 +224,25 @@ internal sealed class VolcSttSession : SttSession
         // 收包循环不 await：它的退出由 Dispose 里的 _ws.Abort() 促成，这里拿到 Task 也没人看
         _ = Task.Run(() => RecvLoopAsync());
 
-        // 双向流式是「先回一包再发音频」：鉴权失败、资源 ID 不对、参数不合法都在这一包里
-        // 回错误帧。早失败能把话说清楚（状态栏报「✗ 无法开始转写：…」），
-        // 比「连上了却一个字都不出」强。超时就不等了，照旧往下走。
-        var first = await Task.WhenAny(_firstFrame.Task, Task.Delay(5000, ct));
-        if (first == _firstFrame.Task && _firstError != null)
-            throw new InvalidOperationException(_firstError);
+        // **不等**第一包。等着它，等于在「按下热键」和「状态栏说正在转写」之间插进一整个
+        // 网络往返；而这一包只是回执，对界面没有任何用处（讯飞那边一度就在这等，实测
+        // 服务端不回时用户要盯着一个没反应的界面等满 5 秒）。
+        // 它唯一的用处是「音频必须跟在回执后面」，那一步挪到了 SendAsync —— 跑在混音线程上，
+        // 前面有队列垫着，几百毫秒无感。
+        // 鉴权错、资源 ID 不对、参数不合法都会以 0xF 错误帧回来，由 Failed 事件报出去。
     }
 
-    public override Task SendAsync(byte[] pcm, int len, CancellationToken ct) =>
-        SendFrameAsync(0x2, 0x0, 0x0, 0x1, Gzip(pcm, len), ct);
+    public override async Task SendAsync(byte[] pcm, int len, CancellationToken ct)
+    {
+        // 双向流式的顺序是「全量请求 → 服务端回执 → 音频帧」，音频抢在回执前面发包是协议外的
+        // 用法（文档的时序图里没有这一支，服务端不一定接得住）。等在这里而不是 ConnectAsync，
+        // 理由见上面那段。回执没来也别干等：到点照发，服务商认不认由它自己决定。
+        if (!_firstFrame.Task.IsCompleted)
+        {
+            try { await Task.WhenAny(_firstFrame.Task, Task.Delay(3000, ct)); } catch { }
+        }
+        await SendFrameAsync(0x2, 0x0, 0x0, 0x1, Gzip(pcm, len), ct);
+    }
 
     public override async Task FinishAsync(CancellationToken ct)
     {
@@ -234,7 +258,7 @@ internal sealed class VolcSttSession : SttSession
             await SendFrameAsync(0x2, 0x2, 0x0, 0x1, empty, ct);
         }
         Trace.Log($"stt-finish: last packet sent={sent}");
-        var done = Task.WhenAny(_lastPacket.Task, Task.Delay(5000, ct));
+        var done = Task.WhenAny(_lastPacket.Task, Task.Delay(FinishTimeoutMs, ct));
         try { await done; } catch { /* 超时就到此为止，已收到的部分不丢 */ }
         Trace.Log($"stt-finish: terminal={_lastPacket.Task.IsCompleted} after {sw.ElapsedMilliseconds}ms");
     }
@@ -307,12 +331,9 @@ internal sealed class VolcSttSession : SttSession
                     : Encoding.UTF8.GetString(msg, p, msg.Length - p);
                 detail = (code + " " + text).Trim();
             }
-            if (!_firstFrame.Task.IsCompleted) _firstError = "火山引擎返回错误：" + detail;
-            else
-            {
-                Trace.Log("stt-error " + detail);
-                OnFailed("火山引擎返回错误：" + detail);
-            }
+            Trace.Log("stt-error " + detail);
+            OnFailed("火山引擎返回错误：" + detail);
+            // 回执不会来了，别让 SendAsync 那边干等；收尾也别等了。
             _firstFrame.TrySetResult();
             _lastPacket.TrySetResult();
             return;
@@ -325,7 +346,7 @@ internal sealed class VolcSttSession : SttSession
         off += 4;
         if (size <= 0 || off + size > msg.Length)
         {
-            if (flags is 0x2 or 0x3) _lastPacket.TrySetResult();   // 空尾包
+            if (terminal) _lastPacket.TrySetResult();      // 空尾包
             _firstFrame.TrySetResult();
             return;
         }
@@ -334,39 +355,59 @@ internal sealed class VolcSttSession : SttSession
         if (comp == 0x1) payload = Gunzip(payload);
 
         _firstFrame.TrySetResult();
-        if (type != 0x9) return;
-        if (flags is 0x2 or 0x3) _lastPacket.TrySetResult();
-
-        try
+        if (type == 0x9)
         {
-            using var doc = JsonDocument.Parse(payload);
-            if (!doc.RootElement.TryGetProperty("result", out var result)) return;
-            if (result.TryGetProperty("utterances", out var utts) && utts.ValueKind == JsonValueKind.Array)
-            {
-                foreach (var u in utts.EnumerateArray())
-                {
-                    string t = u.TryGetProperty("text", out var x) ? x.GetString() ?? "" : "";
-                    bool definite = u.TryGetProperty("definite", out var d) && d.ValueKind == JsonValueKind.True;
-                    if (!definite) { OnPartial(t); continue; }
+            try { ApplyResult(payload); }
+            catch { /* 单帧解析失败不打断整段转写 */ }
+        }
 
-                    // 每包都是「到目前为止的全部结果」，已定稿的分句会被反复重发 ——
-                    // 不去重的话同一句会在输入框里叠上好几遍。按 start_time 认同一句，
-                    // 服务端没给时间戳时退回按文本认。
-                    long start = u.TryGetProperty("start_time", out var s) && s.TryGetInt64(out var sv) ? sv : -1;
-                    bool seen = start >= 0 ? !_finalStarts.Add(start) : !_finalTexts.Add(t);
-                    if (!seen)
-                    {
-                        Trace.Log($"stt-sentence t={start} '{t}'");
-                        OnSentence(t);
-                    }
-                }
-            }
-            else if (result.TryGetProperty("text", out var text))
+        // 终帧标记放在**结果落完之后**：FinishAsync 拿它当「服务商说完了」，
+        // 提前置位就等于允许收尾流程在一句话还没写进输入框的时候把会话拆掉 ——
+        // 日志上那一毫秒的差，用户看到的就是末尾丢字（0.9.14 的 stt-finish 与
+        // stt-sentence 是同一毫秒打出来的，顺序全看线程调度）。
+        if (terminal) _lastPacket.TrySetResult();
+    }
+
+    /// <summary>
+    /// 把一帧识别结果落成事件。一帧里是「到目前为止的全部结果」：前面是已经定稿的分句，
+    /// 末尾那一条是在途的半句。
+    /// </summary>
+    private void ApplyResult(byte[] payload)
+    {
+        using var doc = JsonDocument.Parse(payload);
+        if (!doc.RootElement.TryGetProperty("result", out var result)) return;
+        if (!result.TryGetProperty("utterances", out var utts) || utts.ValueKind != JsonValueKind.Array)
+        {
+            // 没有分句数组的形态：整段当中间结果
+            if (result.TryGetProperty("text", out var text)) OnPartial(text.GetString() ?? "");
+            return;
+        }
+
+        string tail = "";
+        foreach (var u in utts.EnumerateArray())
+        {
+            string t = u.TryGetProperty("text", out var x) ? x.GetString() ?? "" : "";
+            bool definite = u.TryGetProperty("definite", out var d) && d.ValueKind == JsonValueKind.True;
+            if (!definite) { tail = t; continue; }         // 在途的那句总排在最后，取到最后一条就对了
+
+            // 每包都是「到目前为止的全部结果」，已定稿的分句会被反复重发 ——
+            // 不去重的话同一句会在输入框里叠上好几遍。按 start_time 认同一句，
+            // 服务端没给时间戳时退回按文本认。
+            long start = u.TryGetProperty("start_time", out var s) && s.TryGetInt64(out var sv) ? sv : -1;
+            bool seen = start >= 0 ? !_finalStarts.Add(start) : !_finalTexts.Add(t);
+            if (!seen)
             {
-                OnPartial(text.GetString() ?? "");
+                Trace.Log($"stt-sentence t={start} '{t}'");
+                OnSentence(t);
             }
         }
-        catch { /* 单帧解析失败不打断整段转写 */ }
+
+        // 中间结果**只由本帧自己说了算**：本帧末尾没有在途半句就是「没有」，清掉。
+        // 不能在 OnSentence 里顺手清 —— 那句定稿未必是屏幕上这半句的归宿（服务端分句会变，
+        // 「且没有特」+「特殊要求的情况下」与「且没有特殊要求的情况下」是同一段语音的两种切法），
+        // 顺手清掉屏幕上就少一截，而替换它的那句话往往等不到下一帧才来。
+        if (tail.Length > 0) OnPartial(tail);
+        else OnTailDone();
     }
 
     public override void Dispose()
@@ -402,8 +443,6 @@ internal sealed class XfyunSttSession : SttSession
     private string _uuid = "";
     /// <summary>started 回执里的 sid，收尾消息要把它带回去。</summary>
     private string _sid = "";
-    /// <summary>握手是否已经过去 —— 之后的错误才算「转写出错」，之前的算「连不上」。</summary>
-    private bool _started;
     private int _frames;
     /// <summary>已定稿的分句，按（bg,ed）去重：确定性结果可能被重复下发。</summary>
     private readonly HashSet<string> _finalSegs = new();
@@ -452,12 +491,11 @@ internal sealed class XfyunSttSession : SttSession
         _ = Task.Run(() => RecvLoopAsync());
         Trace.Log("stt-xfyun: connected");
 
-        // 握手成不成、鉴权过不过，由服务端的第一条消息说了算（started 或 error）。
-        // 早失败能把话说清楚（状态栏报「✗ 无法开始转写：讯飞返回错误 35001 …」），
-        // 比「连上了却一个字都不出」强。超时就不等了，照旧往下走。
-        var first = await Task.WhenAny(_handshake.Task, Task.Delay(5000, ct));
-        if (first == _handshake.Task && _connectError != null)
-            throw new InvalidOperationException(_connectError);
+        // **不等**握手回执。原以为服务端总会先回一条 started，拿它当「连上了」的证据好早失败；
+        // 实测它**不保证**发（0.9.14 的日志里有一次连接从头到尾没有 started，识别照常出结果），
+        // 于是每次开录都要把 5 秒超时走满 —— 用户按下热键后盯着一个没反应的界面等五秒，
+        // 才等到「正在转写」。鉴权错、APPID 不匹配、参数不合法都会以 error 帧回来，
+        // 由 Failed 事件报出去（见 ParseMessage），不必在这里堵着等。
     }
 
     /// <summary>音频走二进制消息（不是 JSON），原样发 PCM。</summary>
@@ -480,7 +518,7 @@ internal sealed class XfyunSttSession : SttSession
             await _ws!.SendAsync(Encoding.UTF8.GetBytes(end), WebSocketMessageType.Text, true, ct);
         }
         Trace.Log($"stt-finish: end marker sent={sent} frames={_frames}");
-        var done = Task.WhenAny(_lastResult.Task, Task.Delay(5000, ct));
+        var done = Task.WhenAny(_lastResult.Task, Task.Delay(FinishTimeoutMs, ct));
         try { await done; } catch { /* 超时就到此为止，已收到的部分不丢 */ }
         Trace.Log($"stt-finish: last={_lastResult.Task.IsCompleted} after {sw.ElapsedMilliseconds}ms");
     }
@@ -521,23 +559,15 @@ internal sealed class XfyunSttSession : SttSession
             if (action == "error" || msgType == "error" || code != 0)
             {
                 string detail = ((code != 0 ? code + " " : "") + desc).Trim();
-                if (!_started) _connectError = detail;
-                else
-                {
-                    Trace.Log("stt-error " + detail);
-                    OnFailed("讯飞返回错误：" + detail);
-                }
-                _started = true;
-                _handshake.TrySetResult();
+                Trace.Log("stt-error " + detail);
+                OnFailed("讯飞返回错误：" + detail);
                 _lastResult.TrySetResult();
                 return;
             }
             if (action == "started" || msgType == "started")
             {
-                _started = true;
                 _sid = Str(root, "sid");
                 Trace.Log($"stt-xfyun: started sid={_sid.Length}");
-                _handshake.TrySetResult();
                 return;
             }
             if (!root.TryGetProperty("data", out var data) || data.ValueKind != JsonValueKind.Object) return;
@@ -548,13 +578,11 @@ internal sealed class XfyunSttSession : SttSession
             {
                 string d = Str(data, "desc");
                 if (d.Length == 0) d = "功能异常";
-                if (!_started) _connectError = d;
-                else OnFailed("讯飞：" + d);
-                _started = true;
+                Trace.Log("stt-error " + d);
+                OnFailed("讯飞：" + d);
                 _lastResult.TrySetResult();
                 return;
             }
-            _started = true;
 
             string type = "";
             string seg = "";
@@ -569,7 +597,13 @@ internal sealed class XfyunSttSession : SttSession
             if (text.Length > 0)
             {
                 // type "0" = 确定性结果（整句），"1" = 中间结果；没有该字段时按中间结果走。
-                if (type == "0") { if (_finalSegs.Add(seg.Length > 1 ? seg : text)) OnSentence(text); }
+                if (type == "0")
+                {
+                    if (_finalSegs.Add(seg.Length > 1 ? seg : text)) OnSentence(text);
+                    // 这一句定稿了，它对应的中间结果也就没了 —— 讯飞的中间结果永远属于
+                    // 「正在说的那一句」，两者是一条消息里的两半，不像火山那样一帧全带。
+                    OnTailDone();
+                }
                 else OnPartial(text);
                 Trace.Log($"stt-xfyun: type={type} last={last} '{text}'");
             }
@@ -577,10 +611,6 @@ internal sealed class XfyunSttSession : SttSession
         }
         catch (Exception ex) { Trace.Log("stt-parse-error " + ex.Message); /* 单帧解析失败不打断整段转写 */ }
     }
-
-    private string? _connectError;
-    /// <summary>第一条服务端消息（started 或 error）到了。</summary>
-    private readonly TaskCompletionSource _handshake = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
     private static string ConcatWords(JsonElement data)
     {

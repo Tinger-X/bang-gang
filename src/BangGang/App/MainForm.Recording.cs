@@ -5,6 +5,8 @@ namespace BangGang;
 partial class MainForm
 {
     private LiveDictation? _dictation;
+    /// <summary>这次录音**现建出来**的那条会话（本来就在对话里时是 null），起始失败时要撤掉它。</summary>
+    private Conversation? _dictFresh;
 
     // 转写文字 = 用户自己敲的前缀 + 已定稿 + 中间结果，每次刷新整框重写（见 InputPanel.SetDictation）
     private string _dictPrefix = "";
@@ -50,9 +52,11 @@ partial class MainForm
             using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
             await d.StartAsync(cts.Token);
 
-            // 真的开始录了才建会话：「不在对话中就即刻新建」以录音开始为准，
-            // 接口没连上时不该留下一条空会话。
+            // 真的开始录了才建会话：「不在对话中就即刻新建」以录音开始为准。
+            // 接口没连上时它留不住 —— 起始失败那条路会把它撤回去（见 DropFreshConversation）。
+            bool hadConv = _active != null;
             EnsureActive();
+            _dictFresh = hadConv ? null : _active;
             _dictation = d;
             _dictPrefix = _input.Text;
             _dictFinal = "";
@@ -73,6 +77,10 @@ partial class MainForm
     /// <summary>
     /// 转写事件都在会话的接收线程上抛，先封送回 UI 线程再碰输入框 / 状态栏。
     /// 收尾（StopAsync）期间事件照样要来，所以不按 _dictation 是否为 null 拦截。
+    ///
+    /// 两个结果事件是**一帧的两半**，顺序固定（先分句、后中间结果），见 <see cref="SttSession"/>。
+    /// 这里照着应用即可 —— 尤其**不要**在收到分句时顺手把中间结果清掉：那句分句未必是屏幕上
+    /// 那半句的归宿，清了屏幕上就少一截，用户看到的就是「末尾已经转好的字被删了」。
     /// </summary>
     private void WireDictationEvents(LiveDictation d)
     {
@@ -84,10 +92,19 @@ partial class MainForm
         d.Session.Sentence += t => PostToUi(() =>
         {
             _dictFinal += t;
-            _dictPartial = "";
             SyncDictationText();
         });
-        d.Session.Failed += m => PostToUi(() => _chrome.SetStatus("✗ 转写出错：" + m));
+        d.Session.Failed += m => PostToUi(() =>
+        {
+            // 一个字都还没转出来就报错 —— 那这次转写根本没起来：鉴权、资源 ID、参数不对
+            // 都是服务商在握手期回的，早先靠「连接期堵着等回执」在开始录音前就报出来，
+            // 现在不堵了（见 SttSession.ConnectAsync），改在这里收摊。留一条永远不出字的
+            // 录音只会让用户以为在录，所以连录音一起停掉，并把刚建的那条空会话撤回去。
+            if (_dictation == d && _dictFinal.Length == 0 && _dictPartial.Length == 0)
+                StopRecording("✗ 无法开始转写：" + m);
+            else
+                _chrome.SetStatus("✗ 转写出错：" + m);
+        });
     }
 
     private void PostToUi(Action a)
@@ -134,7 +151,20 @@ partial class MainForm
             && (!sc.Shift || (Win32.GetAsyncKeyState(0x10) & Win32.KEY_DOWN) != 0);
     }
 
-    private async void StopRecording()
+    private void StopRecording() => StopRecording(null);
+
+    /// <summary>
+    /// 停止录音并收尾转写。
+    ///
+    /// 「停止」不是「说完」：用户松手的那一刻，服务商那边还有活儿没干完 —— 剩下这点音频要
+    /// 过一遍、最后那几分句要定稿再回过来（双向流式还要等我们的末包，末包之后才是它把所有
+    /// 结果一次回完的终帧）。所以这里**先等服务商把话说完了再收摊**，等待期间状态栏说
+    /// 「正在完成转写」，用户就知道字还可能再长出来。收尾期间事件照收不误（见
+    /// <see cref="WireDictationEvents"/>），最后那句话是落在输入框里的。
+    /// </summary>
+    /// <param name="failMessage">非空 = 这次转写根本没起来（开始时就报错了），
+    /// 收尾之后报这句，而不是「✓ 转写完成」。</param>
+    private async void StopRecording(string? failMessage)
     {
         var d = _dictation;
         if (d == null) return;
@@ -143,10 +173,12 @@ partial class MainForm
         Trace.Log("record: stop requested");
         try
         {
+            _chrome.SetStatus("● 正在完成转写…");
             await d.StopAsync();
             SyncDictationText();     // 收尾期间定稿的最后一句也要落上
             string note = d.SystemOnlyMic ? "（仅系统声音）" : "";
-            _chrome.SetStatus(_dictFinal.Length + _dictPartial.Length > 0
+            if (failMessage != null) _chrome.SetStatus(failMessage);
+            else _chrome.SetStatus(_dictFinal.Length + _dictPartial.Length > 0
                 ? "✓ 转写完成 " + note
                 : "✓ 转写结束，没有识别到文字 " + note);
         }
@@ -157,6 +189,24 @@ partial class MainForm
         finally
         {
             d.Dispose();
+            if (failMessage != null) DropFreshConversation();
+            else _dictFresh = null;
         }
+    }
+
+    /// <summary>
+    /// 起始就失败的这次录音，把它**现建**的那条会话撤回去 —— 接口没连上不该在侧栏里留下
+    /// 一条空对话。0.9.14 之前是靠「连上才建会话」保证这一点的，代价是开录时要等服务商回执。
+    ///
+    /// 只在它还是空的时候撤：这几百毫秒里用户真往里放了东西（截图、拖文件、打字）就留着 ——
+    /// 撤掉用户的东西比留一条空对话糟得多。
+    /// </summary>
+    private void DropFreshConversation()
+    {
+        var c = _dictFresh;
+        _dictFresh = null;
+        if (c == null || c != _active || c.Messages.Count > 0 || _input.HasContent) return;
+        Trace.Log("record: start failed, dropping the conversation it just created");
+        DeleteConversation(c);
     }
 }
