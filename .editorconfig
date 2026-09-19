@@ -35,3 +35,13 @@ dotnet_diagnostic.IDE0066.severity = silent   # 可用 switch 表达式
 # AppSettings.IsUsable 的 anyMod（带不带修饰键结果一样）。压掉等于把线索藏起来。
 # 另外两处是分段控件与参数行留下的占位槽（SegmentedControl 的参数直接叫
 # unusedWidth），那是调用方还在按位置传参的产物，删了要连着改调用点。
+
+# ── Inno Setup 脚本与语言文件必须带 UTF-8 BOM ───────────────────────
+# Inno 6 在缺 BOM 时按 ANSI 解读脚本：.iss 里的中文会静默变成乱码 —— 不报错，
+# 只是装出来的向导里显示成一片问号。而编辑器（VS Code、dotnet format）另存一次
+# 就可能把 BOM 抹掉，所以在这里钉死。tools/build-installer.ps1 每次编译前也会校验。
+[*.iss]
+charset = utf-8-bom
+
+[*.isl]
+charset = utf-8-bom

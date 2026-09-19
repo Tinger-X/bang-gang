@@ -9,13 +9,22 @@
     <AssemblyName>BangGang</AssemblyName>
     <AssemblyTitle>帮帮</AssemblyTitle>
     <Product>帮帮</Product>
-    <Version>0.9.15</Version>
+    <AssemblyCompany>Tinger</AssemblyCompany>
+    <Copyright>© 2026 Tinger</Copyright>
+    <Version>0.9.16</Version>
     <ApplicationHighDpiMode>PerMonitorV2</ApplicationHighDpiMode>
+    <!-- exe 的图标。主窗口是 ShowInTaskbar=false 的无边框窗体，运行时没有任务栏按钮，
+         所以这个图标只出现在 exe 文件本身和快捷方式上 —— 恰恰是安装包要用的那两处。
+         图标由 tools/make-icon.ps1 从 assets/icon-char.png 生成（多尺寸混合帧），
+         别手改 assets/app.ico。 -->
+    <ApplicationIcon>..\..\assets\app.ico</ApplicationIcon>
     <!-- 编译器警告当错误：这份工程本来就是 0 警告（Nullable 开着、没有 NoWarn），
          这条是把它钉住，免得下次 SDK 或某次手滑悄悄带进来一条没人看见的警告。
          分析器那批 info 级建议不走这里 —— 它们的取舍写在仓库根的 .editorconfig。 -->
     <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
-    <!-- 发布：dotnet publish -c Release -r win-x64 -p:PublishSingleFile=true -p:SelfContained=false -->
+    <!-- 分发走 tools/build-installer.ps1：自包含 publish（目标机不需要装 .NET），
+         再交给 installer/BangGang.iss 打包成每用户安装的 Setup.exe。
+         手动发布的话用：dotnet publish -c Release -r win-x64 -p:SelfContained=true -->
   </PropertyGroup>
 
 </Project>
