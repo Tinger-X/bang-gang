@@ -94,7 +94,8 @@ internal static class Providers
     // ---------------- 实时语音转写 ----------------
     //
     // 只保留火山与讯飞两家 —— 实时转写走的是两家各自的私有 WebSocket 协议
-    // （火山是二进制帧 + X-Api-* 头，讯飞是 URL 签名 + JSON 帧），客户端代码按
+    // （火山是 X-Api-* 头 + 双向流式二进制帧，讯飞是参数排序签名 + 音频走二进制帧，
+    // 两边都不是 OpenAI 那套），客户端代码按
     // 服务商名分派，因此不存在「自定义」档位：填了地址也没有对应的协议实现。
     // 预设名保持旧称不变：已存的用户档案（SttProfiles）是按名字索引的。
     public static readonly ProviderPreset[] Stt =
@@ -122,12 +123,14 @@ internal static class Providers
             new[]
             {
                 Url("wss://office-api-ast-dx.iflyaisol.com/ast/communicate/v1"),
-                new ProviderField("appid", "APPID", "控制台应用的 APPID", "你的 APPID"),
-                new ProviderField("key", "APIKey", "控制台应用的 APIKey", "你的 APIKey", true),
-                new ProviderField("secret2", "APISecret", "签名用：signa = HMAC-SHA1(APISecret, MD5(appid+ts))", "你的 APISecret", true),
+                new ProviderField("appid", "APPID", "控制台应用的 APPID（握手参数 appId）", "你的 APPID"),
+                new ProviderField("key", "APIKey", "控制台应用的 APIKey（握手参数 accessKeyId）", "你的 APIKey", true),
+                new ProviderField("secret2", "APISecret",
+                    "签名密钥 accessKeySecret：signature = Base64(HmacSHA1(secret, 排序拼接的参数串))",
+                    "你的 APISecret", true),
             },
             new() { ["url"] = "wss://office-api-ast-dx.iflyaisol.com/ast/communicate/v1" },
-            true, "星火大模型实时语音转写（中英 + 方言混合识别）",
+            true, "星火大模型实时语音转写（中英 + 202 种方言免切）",
             "https://www.xfyun.cn/doc/spark/asr_llm/rtasr_llm.html"),
     };
 }

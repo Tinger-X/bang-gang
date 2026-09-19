@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.IO.Compression;
 using System.Net.WebSockets;
 using System.Security.Cryptography;
@@ -376,69 +377,112 @@ internal sealed class VolcSttSession : SttSession
 }
 
 /// <summary>
-/// 讯飞星火大模型实时语音转写（rtasr_llm）。
+/// 讯飞「星火大模型实时语音转写」（rtasr_llm）。
 /// 文档：https://www.xfyun.cn/doc/spark/asr_llm/rtasr_llm.html
 ///
-/// 握手：URL 上带 appid / ts(秒级时间戳) / signa，
-///   signa = UrlEncode( Base64( HMAC-SHA1(APISecret, Md5Hex(appid + ts)) ) )。
-/// 音频：JSON 文本帧 {"data":{"status":0|1|2,"format":"audio/L16;rate=16000","encoding":"raw","audio":base64}}，
-///   每帧 40ms（1280 字节），status 0 首帧 / 1 中间 / 2 末帧。
-/// 返回：{"action":"started|result|error","code":"0","data":{...}}；
-///   data.cn.st.type "0" 定稿 / "1" 中间，文字在 cn.st.rt[].ws[].cw[].w，
-///   data.ls == true 表示最后一条。
+/// 握手：URL `wss://office-api-ast-dx.iflyaisol.com/ast/communicate/v1?{请求参数}`，
+///   参数为 appId / accessKeyId / utc / signature / lang / audio_encode / samplerate（+ uuid）。
+///   signature = Base64( HmacSHA1(accessKeySecret, baseString) )，baseString 是把除 signature
+///   外的参数**按参数名升序**排列、键值各自 URL 编码、用 `&` 拼起来。
+///   控制台三件套在这里的角色：APPID → appId，APIKey → accessKeyId，
+///   APISecret → accessKeySecret（只当 HMAC 密钥，不上行）。
+/// 音频：**二进制** WebSocket 消息，16kHz / 16bit / 单声道 PCM，每 40ms 发 1280 字节
+///   （文档：发太快会让引擎出错；间隔超 15 秒服务端主动断开）。
+/// 收尾：文本消息 {"end":true,"sessionId":"<会话 id>"}，会话 id 取 started 回执里的 sid。
+/// 返回：{"action":"started|result|error","code":…,"data":…,"desc":…,"sid":…}；
+///   data.cn.st.type "0" 确定性结果 / "1" 中间结果，文字在 cn.st.rt[].ws[].cw[].w，
+///   data.ls == true 表示最后一帧。
 /// </summary>
 internal sealed class XfyunSttSession : SttSession
 {
     private readonly SttConfig _cfg;
     private ClientWebSocket? _ws;
     private Task? _recvLoop;
-    private bool _first = true;
-    private int _sent;
     private readonly TaskCompletionSource _lastResult = new(TaskCreationOptions.RunContinuationsAsynchronously);
+    /// <summary>握手带的 uuid；started 还没到就收尾时，它就是会话 id。</summary>
+    private string _uuid = "";
+    /// <summary>started 回执里的 sid，收尾消息要把它带回去。</summary>
+    private string _sid = "";
+    /// <summary>握手是否已经过去 —— 之后的错误才算「转写出错」，之前的算「连不上」。</summary>
+    private bool _started;
+    private int _frames;
+    /// <summary>已定稿的分句，按（bg,ed）去重：确定性结果可能被重复下发。</summary>
+    private readonly HashSet<string> _finalSegs = new();
 
-    /// <summary>40ms 一帧：16000 × 2 × 0.04。</summary>
+    /// <summary>40ms 一帧：16000 × 2 × 0.04 —— 文档建议每 40ms 发 1280 字节。</summary>
     public override int FrameBytes => 1280;
 
     public XfyunSttSession(SttConfig cfg) => _cfg = cfg;
 
     public override async Task ConnectAsync(CancellationToken ct)
     {
-        string ts = DateTimeOffset.Now.ToUnixTimeSeconds().ToString();
-        string md5 = Convert.ToHexString(MD5.HashData(Encoding.UTF8.GetBytes(_cfg.AppId + ts))).ToLowerInvariant();
-        string signa = Convert.ToBase64String(HMACSHA1.HashData(Encoding.UTF8.GetBytes(_cfg.ApiSecret), Encoding.UTF8.GetBytes(md5)));
+        _uuid = Guid.NewGuid().ToString("N");
+        var now = DateTimeOffset.Now;
+        // utc 形如 2025-09-04T15:38:07+0800（时区偏移不带冒号）
+        string utc = now.ToString("yyyy-MM-dd'T'HH:mm:ss", CultureInfo.InvariantCulture)
+                     + now.ToString("zzz", CultureInfo.InvariantCulture).Replace(":", "");
+
+        // 除 signature 外的参数按参数名升序，键值各自 URL 编码后拼接
+        var prms = new SortedDictionary<string, string>(StringComparer.Ordinal)
+        {
+            ["accessKeyId"] = _cfg.ApiKey,
+            ["appId"] = _cfg.AppId,
+            ["audio_encode"] = "pcm_s16le",
+            ["lang"] = "autodialect",
+            ["samplerate"] = "16000",
+            ["utc"] = utc,
+            ["uuid"] = _uuid,
+        };
+        var sb = new StringBuilder();
+        foreach (var kv in prms)
+        {
+            if (sb.Length > 0) sb.Append('&');
+            sb.Append(Uri.EscapeDataString(kv.Key)).Append('=').Append(Uri.EscapeDataString(kv.Value));
+        }
+        string baseString = sb.ToString();
+        string signature = Convert.ToBase64String(
+            HMACSHA1.HashData(Encoding.UTF8.GetBytes(_cfg.ApiSecret), Encoding.UTF8.GetBytes(baseString)));
+
         string sep = _cfg.Url.Contains('?') ? "&" : "?";
-        string url = $"{_cfg.Url}{sep}appid={Uri.EscapeDataString(_cfg.AppId)}&ts={ts}&signa={Uri.EscapeDataString(signa)}";
+        string url = _cfg.Url + sep + baseString + "&signature=" + Uri.EscapeDataString(signature);
 
         var ws = new ClientWebSocket();
         await ws.ConnectAsync(new Uri(url), ct);
         _ws = ws;
         _recvLoop = Task.Run(() => RecvLoopAsync());
+        Trace.Log("stt-xfyun: connected");
+
+        // 握手成不成、鉴权过不过，由服务端的第一条消息说了算（started 或 error）。
+        // 早失败能把话说清楚（状态栏报「✗ 无法开始转写：讯飞返回错误 35001 …」），
+        // 比「连上了却一个字都不出」强。超时就不等了，照旧往下走。
+        var first = await Task.WhenAny(_handshake.Task, Task.Delay(5000, ct));
+        if (first == _handshake.Task && _connectError != null)
+            throw new InvalidOperationException(_connectError);
     }
 
+    /// <summary>音频走二进制消息（不是 JSON），原样发 PCM。</summary>
     public override async Task SendAsync(byte[] pcm, int len, CancellationToken ct)
     {
-        int status = _first ? 0 : 1;
-        _first = false;
-        int n = Interlocked.Increment(ref _sent);
-        if (n <= 3 || n % 50 == 0) Trace.Log($"stt-send #{n} bytes={len}");
-        await SendStatusAsync(status, Convert.ToBase64String(pcm, 0, len), ct);
-        if (n <= 3 || n % 50 == 0) Trace.Log($"stt-send #{n} done");
+        if (_ws == null) throw new InvalidOperationException("尚未连接");
+        _frames++;
+        if (_frames <= 3 || _frames % 100 == 0) Trace.Log($"stt-send #{_frames} bytes={len}");
+        await _ws.SendAsync(pcm.AsMemory(0, len), WebSocketMessageType.Binary, true, ct);
     }
 
     public override async Task FinishAsync(CancellationToken ct)
     {
-        if (_ws?.State == WebSocketState.Open)
-            await SendStatusAsync(2, "", ct);
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+        string sid = _sid.Length > 0 ? _sid : _uuid;
+        bool sent = _ws?.State == WebSocketState.Open;
+        if (sent)
+        {
+            string end = "{\"end\":true,\"sessionId\":\"" + sid + "\"}";
+            await _ws!.SendAsync(Encoding.UTF8.GetBytes(end), WebSocketMessageType.Text, true, ct);
+        }
+        Trace.Log($"stt-finish: end marker sent={sent} frames={_frames}");
         var done = Task.WhenAny(_lastResult.Task, Task.Delay(5000, ct));
-        try { await done; } catch { /* 超时就到此为止 */ }
-    }
-
-    private async Task SendStatusAsync(int status, string audioB64, CancellationToken ct)
-    {
-        if (_ws == null) throw new InvalidOperationException("尚未连接");
-        string json = "{\"data\":{\"status\":" + status
-            + ",\"format\":\"audio/L16;rate=16000\",\"encoding\":\"raw\",\"audio\":\"" + audioB64 + "\"}}";
-        await _ws.SendAsync(Encoding.UTF8.GetBytes(json), WebSocketMessageType.Text, true, ct);
+        try { await done; } catch { /* 超时就到此为止，已收到的部分不丢 */ }
+        Trace.Log($"stt-finish: last={_lastResult.Task.IsCompleted} after {sw.ElapsedMilliseconds}ms");
     }
 
     private async Task RecvLoopAsync()
@@ -448,7 +492,6 @@ internal sealed class XfyunSttSession : SttSession
             while (_ws is { State: WebSocketState.Open })
             {
                 byte[] msg = await ReceiveFullAsync(_ws, CancellationToken.None);
-                Trace.Log($"stt-recv bytes={msg.Length}");
                 ParseMessage(Encoding.UTF8.GetString(msg));
             }
         }
@@ -459,59 +502,85 @@ internal sealed class XfyunSttSession : SttSession
         }
     }
 
+    private static string Str(JsonElement e, string name) =>
+        e.TryGetProperty(name, out var v) && v.ValueKind == JsonValueKind.String ? v.GetString() ?? "" : "";
+
     private void ParseMessage(string json)
     {
         try
         {
             using var doc = JsonDocument.Parse(json);
             var root = doc.RootElement;
-            string action = root.TryGetProperty("action", out var a) ? a.GetString() ?? "" : "";
-            if (action == "error")
-            {
-                string desc = root.TryGetProperty("desc", out var d) ? d.GetString() ?? "" : "";
-                string code = root.TryGetProperty("code", out var c) ? c.ToString() : "?";
-                OnFailed($"讯飞返回错误 {code}：{desc}");
-                _lastResult.TrySetResult();
-                return;
-            }
-            if (root.TryGetProperty("code", out var codeEl) && codeEl.ToString() != "0")
-            {
-                string desc = root.TryGetProperty("desc", out var d) ? d.GetString() ?? "" : "";
-                OnFailed($"讯飞返回错误 {codeEl}：{desc}");
-                _lastResult.TrySetResult();
-                return;
-            }
-            if (action != "result") return;   // "started" 等握手回执
-            if (!root.TryGetProperty("data", out var data)) return;
+            // 文档字段表写的是 action，示例里却是 msg_type/res_type —— 两套都认。
+            string action = Str(root, "action");
+            string msgType = Str(root, "msg_type");
+            string desc = Str(root, "desc");
+            int code = root.TryGetProperty("code", out var c) && c.ValueKind == JsonValueKind.Number
+                ? c.GetInt32() : 0;
 
-            // 有的版本 data 是内嵌的 JSON 字符串，再解一层
-            if (data.ValueKind == JsonValueKind.String)
+            if (action == "error" || msgType == "error" || code != 0)
             {
-                using var inner = JsonDocument.Parse(data.GetString()!);
-                HandleResult(inner.RootElement);
+                string detail = ((code != 0 ? code + " " : "") + desc).Trim();
+                if (!_started) _connectError = detail;
+                else
+                {
+                    Trace.Log("stt-error " + detail);
+                    OnFailed("讯飞返回错误：" + detail);
+                }
+                _started = true;
+                _handshake.TrySetResult();
+                _lastResult.TrySetResult();
+                return;
             }
-            else
+            if (action == "started" || msgType == "started")
             {
-                HandleResult(data);
+                _started = true;
+                _sid = Str(root, "sid");
+                Trace.Log($"stt-xfyun: started sid={_sid.Length}");
+                _handshake.TrySetResult();
+                return;
             }
+            if (!root.TryGetProperty("data", out var data) || data.ValueKind != JsonValueKind.Object) return;
+
+            // 功能异常帧（res_type=frc / normal=false）走这里
+            if (Str(data, "res_type") == "frc"
+                || (data.TryGetProperty("normal", out var norm) && norm.ValueKind == JsonValueKind.False))
+            {
+                string d = Str(data, "desc");
+                if (d.Length == 0) d = "功能异常";
+                if (!_started) _connectError = d;
+                else OnFailed("讯飞：" + d);
+                _started = true;
+                _lastResult.TrySetResult();
+                return;
+            }
+            _started = true;
+
+            string type = "";
+            string seg = "";
+            if (data.TryGetProperty("cn", out var cn) && cn.TryGetProperty("st", out var st))
+            {
+                type = Str(st, "type");
+                seg = Str(st, "bg") + "-" + Str(st, "ed");
+            }
+            string text = ConcatWords(data);
+            bool last = data.TryGetProperty("ls", out var ls) && ls.ValueKind == JsonValueKind.True;
+
+            if (text.Length > 0)
+            {
+                // type "0" = 确定性结果（整句），"1" = 中间结果；没有该字段时按中间结果走。
+                if (type == "0") { if (_finalSegs.Add(seg.Length > 1 ? seg : text)) OnSentence(text); }
+                else OnPartial(text);
+                Trace.Log($"stt-xfyun: type={type} last={last} '{text}'");
+            }
+            if (last) _lastResult.TrySetResult();
         }
-        catch { /* 单帧解析失败不打断整段转写 */ }
+        catch (Exception ex) { Trace.Log("stt-parse-error " + ex.Message); /* 单帧解析失败不打断整段转写 */ }
     }
 
-    private void HandleResult(JsonElement data)
-    {
-        bool final = false;
-        if (data.TryGetProperty("cn", out var cn) && cn.TryGetProperty("st", out var st)
-            && st.TryGetProperty("type", out var typeEl))
-            final = typeEl.GetString() == "0";
-
-        string text = ConcatWords(data);
-        if (final) OnSentence(text);
-        else OnPartial(text);
-
-        if (data.TryGetProperty("ls", out var ls) && ls.ValueKind == JsonValueKind.True)
-            _lastResult.TrySetResult();
-    }
+    private string? _connectError;
+    /// <summary>第一条服务端消息（started 或 error）到了。</summary>
+    private readonly TaskCompletionSource _handshake = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
     private static string ConcatWords(JsonElement data)
     {

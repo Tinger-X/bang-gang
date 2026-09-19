@@ -16,15 +16,16 @@
 # Usage:  powershell -File tools\record-live.ps1
 # This file must stay pure ASCII (PS 5.1 reads it as ANSI otherwise).
 
-param([string]$ResourceId = 'volc.seedasr.sauc.duration', [int]$StopDelayMs = 2000,
-      [string]$Tag = 'live')
+param([string]$Provider = 'volc', [string]$ResourceId = 'volc.seedasr.sauc.duration',
+      [int]$StopDelayMs = 2000, [string]$Tag = 'live')
 
 . "$PSScriptRoot\_ui.ps1"
 
 $script:repo = Split-Path $PSScriptRoot -Parent
 $script:dir = Split-Path $script:BBExe -Parent
 $script:settings = Join-Path $script:dir 'settings.json'
-$script:keyFile = Join-Path $script:repo '.local\stt\volcengine.txt'
+$script:credFile = $(if ($Provider -eq 'xfyun') { 'xfyun.txt' } else { 'volcengine.txt' })
+$script:keyFile = Join-Path $script:repo ('.local\stt\' + $script:credFile)
 $script:audio = Join-Path $script:repo '.local\stt\voice-demo.m4a'
 $script:truthFile = Join-Path $script:repo '.local\stt\voice-gt.txt'
 
@@ -107,16 +108,37 @@ try {
 }
 
 $VOLC  = U 0x706B,0x5C71,0x5F15,0x64CE,0xFF08,0x6D41,0x5F0F,0xFF09   # volc preset name
+$XFY   = U 0x8BAF,0x98DE,0xFF08,0x5B9E,0x65F6,0x8F6C,0x5199,0xFF09   # xfyun preset name
 $DOT   = U 0x25CF
 $TICK  = U 0x2713
 
 # ---- the API key lives in .local/ (gitignored); the script never hardcodes it ----
 if (-not (Test-Path $script:keyFile)) { throw ('missing ' + $script:keyFile) }
-$raw = (Get-Content $script:keyFile -Raw).Trim()
-$apiKey = $raw
-$ci = $raw.IndexOf(':')
-if ($ci -ge 0) { $apiKey = $raw.Substring($ci + 1).Trim() }
-if ($apiKey.Length -lt 8) { throw 'no api key in .local/stt/volcengine.txt' }
+function Get-Cred([string]$text, [string]$label) {
+    foreach ($ln in ($text -split "`r?`n")) {
+        if ($ln -match ('^' + $label + '\s*:\s*(.+)$')) { return $Matches[1].Trim() }
+    }
+    return ''
+}
+$apiKey = ''
+$apiSecret = ''
+$appId = ''
+if ($Provider -eq 'xfyun') {
+    # xfyun.txt carries three labelled lines: APPID / APISecret / APIKey
+    $raw = [System.IO.File]::ReadAllText($script:keyFile, [System.Text.Encoding]::UTF8)
+    $appId = Get-Cred $raw 'APPID'
+    $apiSecret = Get-Cred $raw 'APISecret'
+    $apiKey = Get-Cred $raw 'APIKey'
+    if ($appId.Length -lt 4 -or $apiKey.Length -lt 8 -or $apiSecret.Length -lt 8) {
+        throw 'xfyun.txt must carry APPID / APIKey / APISecret'
+    }
+} else {
+    $raw = (Get-Content $script:keyFile -Raw).Trim()
+    $apiKey = $raw
+    $ci = $raw.IndexOf(':')
+    if ($ci -ge 0) { $apiKey = $raw.Substring($ci + 1).Trim() }
+    if ($apiKey.Length -lt 8) { throw 'no api key in .local/stt/volcengine.txt' }
+}
 if (-not (Test-Path $script:audio)) { throw ('missing ' + $script:audio) }
 if (-not (Test-Path $script:truthFile)) { throw ('missing ' + $script:truthFile) }
 # Read as UTF-8 explicitly: PowerShell 5.1's Get-Content defaults to the ANSI codepage,
@@ -133,14 +155,25 @@ $o = @{}
 $o['ThemeMode'] = 'light'
 $o['RecordMode'] = 'toggle'
 $o['Shortcuts'] = @(@{ Action = 'record'; Ctrl = $true; Alt = $false; Shift = $false; Vk = 0x52 })
-$o['SttProvider'] = $VOLC
-$o['SttProfiles'] = @{ $VOLC = @{
+$preset = $VOLC
+$profile = @{
     url = 'wss://openspeech.bytedance.com/api/v3/sauc/bigmodel_async'
     key = $apiKey
     model = $ResourceId
-} }
+}
+if ($Provider -eq 'xfyun') {
+    $preset = $XFY
+    $profile = @{
+        url = 'wss://office-api-ast-dx.iflyaisol.com/ast/communicate/v1'
+        appid = $appId
+        key = $apiKey
+        secret2 = $apiSecret
+    }
+}
+$o['SttProvider'] = $preset
+$o['SttProfiles'] = @{ $preset = $profile }
 ($o | ConvertTo-Json -Depth 8) | Set-Content $script:settings -Encoding utf8
-Write-Output ('resource id = ' + $ResourceId)
+Write-Output ('provider = ' + $Provider + ', credentials loaded')
 
 function Get-InputEditBig($main) {
     foreach ($h in Get-WinKids $main) {
@@ -253,8 +286,9 @@ try {
         $script:ratio = Get-MatchRatio $script:heard $script:ref
         # The reference trails off with "..." (the file is a truncated transcript), so the
         # needle is the last few real characters -- short and distinctive on purpose: a long
-        # needle is scored down by any homophone the model picks (ASR writes 或者说 for
-        # 或者是), which would make this flaky instead of discriminating. The tail sentence
+        # needle gets scored down by every homophone the model picks (the ASR writes a
+        # different but same-sounding word), which would make this flaky not discriminating.
+        # The tail sentence
         # only ever arrives in the vendor's terminal response, so a stop path that cuts the
         # stream early loses exactly these characters and nothing else in the file.
         $speech = ($script:ref -replace '[.]+$', '')
@@ -280,10 +314,10 @@ Write-Output ('--- reference (' + $script:ref.Length + ' chars) ---')
 Write-Output $script:ref
 # The console codepage mangles CJK in the redirected log, so the two texts (and the
 # score) also go to a UTF-8 side file -- that one is the artifact worth reading.
-$report = 'tag = ' + $Tag + ', stop delay = ' + $StopDelayMs + "ms`r`n" +
+$report = 'provider = ' + $Provider + ', tag = ' + $Tag + ', stop delay = ' + $StopDelayMs + "ms`r`n" +
           'similarity = ' + [Math]::Round($script:ratio, 3) +
           ', tail containment = ' + [Math]::Round($script:tailRatio, 2) + "`r`n" +
-          'resource id = ' + $ResourceId + "`r`n`r`n" +
+
           '--- heard (' + $script:heard.Length + ' chars) ---' + "`r`n" + $script:heard + "`r`n`r`n" +
           '--- reference (' + $script:ref.Length + ' chars) ---' + "`r`n" + $script:ref + "`r`n"
 [System.IO.File]::WriteAllText((Get-ShotPath ('record-live-report-' + $Tag + '.txt')), $report, (New-Object Text.UTF8Encoding($false)))
@@ -301,6 +335,7 @@ if (Test-Path $tracePath) {
     $script:sawError = $false
     foreach ($ln in $script:traceTail) {
         if ($ln -match 'stt-finish: terminal=True') { $script:terminalOk = $true }
+        if ($ln -match 'stt-finish: last=True') { $script:terminalOk = $true }
         if ($ln -match 'stt-error') { $script:sawError = $true }
         if ($ln -match 'type=0x9 .*TERMINAL') { $script:sawError = $false }
     }

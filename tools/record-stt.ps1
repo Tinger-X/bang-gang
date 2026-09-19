@@ -3,10 +3,14 @@
 # on this machine, so the "vendor" is a fake WebSocket server in a Start-Job (same move as
 # llm-reply.ps1's fake SSE, one protocol layer lower). Two legs, one per wire format:
 #
-#   xfyun: URL-signed handshake (signa = base64(HMAC-SHA1(APISecret, md5hex(appid+ts)))),
-#          audio as JSON text frames (status 0/1/2, base64 PCM, format
-#          "audio/L16;rate=16000"), results as JSON: cn.st.rt[].ws[].cw[].w, type "1" =
-#          interim / "0" = final, ls=true = last.
+#   xfyun: handshake query carries appId / accessKeyId / utc / lang / audio_encode /
+#          samplerate and a signature = base64(HmacSHA1(accessKeySecret, baseString)),
+#          where baseString is every other parameter sorted by name and URL-encoded and
+#          joined with '&'. Audio is sent as BINARY webSocket messages (1280 bytes = 40ms
+#          of 16k/16bit/mono PCM), and the stream ends with the text message
+#          {"end":true,"sessionId":"<sid>"}. Results are JSON: text at
+#          cn.st.rt[].ws[].cw[].w, cn.st.type "0" = definite / "1" = interim,
+#          ls=true on the last frame.
 #   volc:  new-console auth headers (X-Api-Key / X-Api-Resource-Id / X-Api-Connect-Id,
 #          no App ID or Access Token), then bidirectional-streaming binary frames
 #          [0x11, type<<4|flags, ser<<4|comp, 0, (int32 seq), BE32 size, payload];
@@ -259,20 +263,32 @@ $server = {
                 }
             }
             $appid = ''
-            if ($q.Contains('appid')) { $appid = $q['appid'] }
-            $ts = ''
-            if ($q.Contains('ts')) { $ts = $q['ts'] }
-            $signa = ''
-            if ($q.Contains('signa')) { $signa = $q['signa'] }
+            if ($q.Contains('appId')) { $appid = $q['appId'] }
+            $akid = ''
+            if ($q.Contains('accessKeyId')) { $akid = $q['accessKeyId'] }
+            $sig = ''
+            if ($q.Contains('signature')) { $sig = $q['signature'] }
+            $utc = ''
+            if ($q.Contains('utc')) { $utc = $q['utc'] }
             L ('appid-ok=' + ($appid -eq 'probe-app'))
-            # Recompute the documented signature and compare.
-            $md5 = [Security.Cryptography.MD5]::Create()
-            $h = $md5.ComputeHash([Text.Encoding]::UTF8.GetBytes($appid + $ts))
-            $hex = New-Object Text.StringBuilder
-            foreach ($x in $h) { [void]$hex.Append($x.ToString('x2')) }
+            L ('accesskey-ok=' + ($akid -eq 'probe-key'))
+            L ('audioencode-ok=' + ($q['audio_encode'] -eq 'pcm_s16le'))
+            L ('samplerate-ok=' + ($q['samplerate'] -eq '16000'))
+            L ('lang-set=' + ($q['lang'].Length -gt 0))
+            # utc must look like 2025-09-04T15:38:07+0800 (offset without a colon)
+            L ('utc-format-ok=' + ($utc -match '^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}[+-]\d{4}$'))
+            # Recompute the documented signature: sort the other params by name, URL-encode
+            # key and value, join with '&', HmacSHA1 with accessKeySecret, base64.
+            $names = @($q.Keys | Where-Object { $_ -ne 'signature' } | Sort-Object)
+            $sb = New-Object Text.StringBuilder
+            foreach ($n in $names) {
+                if ($sb.Length -gt 0) { [void]$sb.Append('&') }
+                [void]$sb.Append([Uri]::EscapeDataString($n) + '=' + [Uri]::EscapeDataString($q[$n]))
+            }
             $hmac = New-Object Security.Cryptography.HMACSHA1(,[Text.Encoding]::UTF8.GetBytes('probe-secret'))
-            $expect = [Convert]::ToBase64String($hmac.ComputeHash([Text.Encoding]::UTF8.GetBytes($hex.ToString())))
-            L ('signa-ok=' + ($signa -eq $expect))
+            $expect = [Convert]::ToBase64String($hmac.ComputeHash([Text.Encoding]::UTF8.GetBytes($sb.ToString())))
+            L ('signature-ok=' + ($sig -eq $expect))
+            $script:sid = [Guid]::NewGuid().ToString('N')
         } else {
             # New-console auth: an API Key plus a resource id, no App ID / Access Token.
             $tok = ''
@@ -296,7 +312,8 @@ $server = {
         L 'handshake done'
 
         if ($Flavor -eq 'xfyun') {
-            Send-Text '{"action":"started","code":"0","desc":"success","sid":"probe"}'
+            Send-Text ('{"action":"started","code":0,"desc":"success","sid":"' + $script:sid + '"}')
+            L 'sent-started'
         }
 
         # Result payloads. Interim goes out at the 2nd audio frame, the final one
@@ -305,9 +322,16 @@ $server = {
         # it goes out in the response to the client's end-of-stream packet, never before.
         # A stop path that cuts the connection early loses exactly this and nothing else.
         if ($Flavor -eq 'xfyun') {
-            $jsonI = '{"action":"result","code":"0","data":{"ls":false,"cn":{"st":{"type":"1","rt":[{"ws":[{"cw":[{"w":"' + $Interim + '"}]}]}]}}},"desc":"ok","sid":"probe"}'
-            $jsonF = '{"action":"result","code":"0","data":{"ls":false,"cn":{"st":{"type":"0","rt":[{"ws":[{"cw":[{"w":"' + $Final + '"}]}]}]}}},"desc":"ok","sid":"probe"}'
-            $jsonT = '{"action":"result","code":"0","data":{"ls":true,"cn":{"st":{"type":"0","rt":[{"ws":[{"cw":[{"w":"' + $Tail + '"}]}]}]}}},"desc":"ok","sid":"probe"}'
+            # Documented result shape: data.cn.st.{bg,ed,type} + rt[].ws[].cw[].w, ls on the last.
+            # One format string on one line on purpose: PowerShell only continues an
+            # expression when the operator ends the line, so a '+' leading the next line
+            # starts a NEW statement -- the JSON silently lost everything after seg_id.
+            function Xf([string]$w, [string]$type, [bool]$ls, [int]$bg, [int]$ed) {
+                return ('{{"msg_type":"result","res_type":"asr","seg_id":{0},"data":{{"cn":{{"st":{{"bg":{0},"ed":{1},"type":"{2}","rt":[{{"ws":[{{"cw":[{{"w":"{3}"}}]}}]}}]}}}},"ls":{4}}}}}' -f $bg, $ed, $type, $w, $ls.ToString().ToLower())
+            }
+            $jsonI = Xf $Interim '1' $false 0 500
+            $jsonF = Xf $Final '0' $false 500 2000
+            $jsonT = Xf $Tail '0' $true 90000 95000
         } else {
             $jsonI = '{"result":{"text":"' + $Interim + '","utterances":[{"text":"' + $Interim + '","definite":false,"start_time":100}]}}'
             $jsonF = '{"result":{"text":"' + $Final + '","utterances":[{"text":"' + $Final + '","definite":true,"start_time":2000}]}}'
@@ -391,14 +415,21 @@ $server = {
                     }
                 }
             } else {
-                if ($script:frameOp -ne 0x1) { continue }
-                $o = [Text.Encoding]::UTF8.GetString($script:framePayload) | ConvertFrom-Json
-                $st = [int]$o.data.status
-                if ($st -eq 0) { L ('fmt-ok=' + ($o.data.format -eq 'audio/L16;rate=16000')) }
-                if ($st -le 1) { $audio++ }
-                else {
-                    L 'client-status2'
-                    if (-not $sentTail) { Send-Text $jsonT; $sentTail = $true; L 'sent-tail' }
+                # Audio is BINARY here (no JSON, no base64): 1280 bytes = 40ms of PCM.
+                if ($script:frameOp -eq 0x2) {
+                    # Falls through to the shared interim/final block below: returning the
+                    # audio count is what drives those, exactly like the volc leg.
+                    $n = $script:framePayload.Length
+                    $audio++
+                    if ($audio -eq 1) { L ('audio-frame-bytes-ok=' + ($n -eq 1280)) }
+                }
+                if ($script:frameOp -eq 0x1) {
+                    $txt = [Text.Encoding]::UTF8.GetString($script:framePayload)
+                    if ($txt.Contains('"end"')) {
+                        $e = $txt | ConvertFrom-Json
+                        L ('client-end sessionId-echo-ok=' + ($e.sessionId -eq $script:sid))
+                        if (-not $sentTail) { Send-Text $jsonT; $sentTail = $true; L 'sent-tail' }
+                    }
                 }
             }
 
@@ -465,7 +496,7 @@ function Run-Leg {
     Write-Output ('--- leg ' + $Flavor + ' ---')
     $port = Get-FreePort
     $profile = @{ url = ('ws://127.0.0.1:' + $port + $Path); key = 'probe-key' }
-    if ($Flavor -eq 'xfyun') { $profile['appid'] = 'probe-app' }
+
     foreach ($k in $Extra.Keys) { $profile[$k] = $Extra[$k] }
     Write-SttSettings $Preset $profile
 
@@ -603,9 +634,15 @@ function Run-Leg {
 
     Check (Has 'handshake done') 'server completed the WebSocket handshake' ''
     if ($Flavor -eq 'xfyun') {
-        Check (Has 'appid-ok=True') 'appid arrived on the handshake query' ''
-        Check (Has 'signa-ok=True') 'signa matches the documented HMAC-SHA1 recipe' ''
-        Check (Has 'fmt-ok=True') 'first frame declares audio/L16;rate=16000' ''
+        Check (Has 'appid-ok=True') 'appId arrived on the handshake query' ''
+        Check (Has 'accesskey-ok=True') 'accessKeyId arrived on the handshake query' ''
+        Check (Has 'signature-ok=True') 'the signature matches the documented recipe (sorted params + HmacSHA1 + base64)' ''
+        Check (Has 'audioencode-ok=True') 'audio_encode=pcm_s16le' ''
+        Check (Has 'samplerate-ok=True') 'samplerate=16000' ''
+        Check (Has 'utc-format-ok=True') 'utc is 2025-09-04T15:38:07+0800 shaped' ''
+        Check (Has 'sent-started') 'server answered the handshake with started' ''
+        Check (Has 'audio-frame-bytes-ok=True') 'audio arrived as 1280-byte binary frames' ''
+        Check (Has 'sessionId-echo-ok=True') 'the end message carried the sid the server issued' ''
     } else {
         Check (Has 'apikey-ok=True') 'X-Api-Key arrived on the handshake' ''
         Check (Has 'connect-id-ok=True') 'X-Api-Connect-Id arrived on the handshake' ''
@@ -634,7 +671,7 @@ function Run-Leg {
 }
 
 try {
-    Run-Leg 'xfyun' $XFY '/ast/communicate/v1' @{ secret2 = 'probe-secret' } 'XF-PART' 'XF-FINAL' 'XF-TAIL'
+    Run-Leg 'xfyun' $XFY '/ast/communicate/v1' @{ appid = 'probe-app'; secret2 = 'probe-secret' } 'XF-PART' 'XF-FINAL' 'XF-TAIL'
     Run-Leg 'volc' $VOLC '/api/v3/sauc/bigmodel_async' @{ model = 'volc.seedasr.sauc.duration' } 'VC-PART' 'VC-FINAL' 'VC-TAIL'
     # Control leg: the server answers with an error frame -- the UI must say why,
     # right there, and leave no empty conversation behind.
