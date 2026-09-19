@@ -60,7 +60,7 @@ $VOLCERR = U 0x706B,0x5C71,0x5F15,0x64CE,0x8FD4,0x56DE,0x9519,0x8BEF   # 'volc r
 # param(), everything it has to say is written to $LogPath at the end.
 # ---------------------------------------------------------------------------
 $server = {
-    param([int]$Port, [string]$Flavor, [string]$LogPath, [string]$Interim, [string]$Final)
+    param([int]$Port, [string]$Flavor, [string]$LogPath, [string]$Interim, [string]$Final, [string]$Tail)
 
     # Log lines go straight to the file: Stop-Job kills the job WITHOUT running finally,
     # so a "collect lines, write at the end" design loses everything exactly when the
@@ -301,18 +301,24 @@ $server = {
 
         # Result payloads. Interim goes out at the 2nd audio frame, the final one
         # 1.5s later, so the probe can see both.
+        # The tail sentence is what the vendor can only produce once the stream ENDS:
+        # it goes out in the response to the client's end-of-stream packet, never before.
+        # A stop path that cuts the connection early loses exactly this and nothing else.
         if ($Flavor -eq 'xfyun') {
             $jsonI = '{"action":"result","code":"0","data":{"ls":false,"cn":{"st":{"type":"1","rt":[{"ws":[{"cw":[{"w":"' + $Interim + '"}]}]}]}}},"desc":"ok","sid":"probe"}'
-            $jsonF = '{"action":"result","code":"0","data":{"ls":true,"cn":{"st":{"type":"0","rt":[{"ws":[{"cw":[{"w":"' + $Final + '"}]}]}]}}},"desc":"ok","sid":"probe"}'
+            $jsonF = '{"action":"result","code":"0","data":{"ls":false,"cn":{"st":{"type":"0","rt":[{"ws":[{"cw":[{"w":"' + $Final + '"}]}]}]}}},"desc":"ok","sid":"probe"}'
+            $jsonT = '{"action":"result","code":"0","data":{"ls":true,"cn":{"st":{"type":"0","rt":[{"ws":[{"cw":[{"w":"' + $Tail + '"}]}]}]}}},"desc":"ok","sid":"probe"}'
         } else {
-            $jsonI = '{"result":{"text":"' + $Interim + '","utterances":[{"text":"' + $Interim + '","definite":false}]}}'
-            $jsonF = '{"result":{"text":"' + $Final + '","utterances":[{"text":"' + $Final + '","definite":true}]}}'
+            $jsonI = '{"result":{"text":"' + $Interim + '","utterances":[{"text":"' + $Interim + '","definite":false,"start_time":100}]}}'
+            $jsonF = '{"result":{"text":"' + $Final + '","utterances":[{"text":"' + $Final + '","definite":true,"start_time":2000}]}}'
+            $jsonT = '{"result":{"text":"' + $Tail + '","utterances":[{"text":"' + $Tail + '","definite":true,"start_time":90000}]}}'
         }
 
         $audio = 0
         $framesSeen = 0
         $sentInterim = $false
         $sentFinal = $false
+        $sentTail = $false
         $sw = [Diagnostics.Stopwatch]::StartNew()
         $interimAt = [TimeSpan]::Zero
 
@@ -348,6 +354,13 @@ $server = {
                     $pl = New-Object byte[] $size
                     [Array]::Copy($m, $off, $pl, 0, $size)
                     if ($comp -eq 1) { $pl = Gunzip-B $pl }
+                } elseif ($comp -eq 1) {
+                    # The vendor is strict here and so is this leg: a packet that declares
+                    # gzip but carries nothing decodes as "unable to ungzip payload: EOF"
+                    # and the whole end-of-stream handshake is rejected -- which is exactly
+                    # how the tail sentence gets lost. 0.9.10 was that bug.
+                    L 'ERROR-last-packet-ungzippable'
+                    break
                 }
                 if ($type -eq 0x1) {
                     $j = [Text.Encoding]::UTF8.GetString($pl)
@@ -366,14 +379,27 @@ $server = {
                         L 'sent-first-response'
                     }
                 } elseif ($type -eq 0x2) {
-                    if ($pl.Length -gt 0) { $audio++ } else { L 'client-empty-last' }
+                    if ($pl.Length -gt 0) { $audio++ }
+                    elseif ($flags -eq 0x2 -or $flags -eq 0x3) {
+                        L 'client-empty-last'
+                        if (-not $sentTail) {
+                            Send-VolcResult $jsonT
+                            Send-VolcLast
+                            $sentTail = $true
+                            L 'sent-tail'
+                        }
+                    }
                 }
             } else {
                 if ($script:frameOp -ne 0x1) { continue }
                 $o = [Text.Encoding]::UTF8.GetString($script:framePayload) | ConvertFrom-Json
                 $st = [int]$o.data.status
                 if ($st -eq 0) { L ('fmt-ok=' + ($o.data.format -eq 'audio/L16;rate=16000')) }
-                if ($st -le 1) { $audio++ } else { L 'client-status2' }
+                if ($st -le 1) { $audio++ }
+                else {
+                    L 'client-status2'
+                    if (-not $sentTail) { Send-Text $jsonT; $sentTail = $true; L 'sent-tail' }
+                }
             }
 
             if (-not $sentInterim -and $audio -ge 2) {
@@ -383,7 +409,7 @@ $server = {
                 L 'sent-interim'
             }
             if ($sentInterim -and -not $sentFinal -and ($sw.Elapsed - $interimAt).TotalMilliseconds -gt 1500) {
-                if ($Flavor -ne 'xfyun') { Send-VolcResult $jsonF; Send-VolcLast } else { Send-Text $jsonF }
+                if ($Flavor -ne 'xfyun') { Send-VolcResult $jsonF } else { Send-Text $jsonF }
                 $sentFinal = $true
                 L 'sent-final'
             }
@@ -434,7 +460,7 @@ function Get-FreePort {
 
 function Run-Leg {
     param([string]$Flavor, [string]$Preset, [string]$Path, [hashtable]$Extra, [string]$Interim, [string]$Final,
-          [switch]$BadKey)
+          [string]$Tail, [switch]$BadKey)
 
     Write-Output ('--- leg ' + $Flavor + ' ---')
     $port = Get-FreePort
@@ -445,7 +471,7 @@ function Run-Leg {
 
     $logPath = Get-ShotPath ('record-stt-server-' + $Flavor + '.log')
     if (Test-Path $logPath) { Remove-Item $logPath -Force }
-    $job = Start-Job -ScriptBlock $server -ArgumentList $port, $Flavor, $logPath, $Interim, $Final
+    $job = Start-Job -ScriptBlock $server -ArgumentList $port, $Flavor, $logPath, $Interim, $Final, $Tail
     Start-Sleep -Milliseconds 600
     if ($job.State -ne 'Running' -and $job.State -ne 'Blocked') {
         Write-Output ('  server job died at startup: ' + $job.State)
@@ -539,12 +565,15 @@ function Run-Leg {
                 while ($sw3.Elapsed.TotalSeconds -lt 12) {
                     $lastText = Get-WinText $edit
                     $lastStatus = Get-WinText $status
-                    $okText = ($lastText -eq $Final)
+                    $okText = ($lastText -eq ($Final + $Tail))
                     $okStatus = $lastStatus.StartsWith($TICK)
                     if ($okText -and $okStatus) { break }
                     Start-Sleep -Milliseconds 150
                 }
-                Check $okText 'after stop the box holds exactly the finalized sentence' ('box = ''' + $lastText + '''')
+                # ($Final + $Tail): the tail sentence only exists as a response to the
+                # end-of-stream packet, so it is what a stop path that hangs up too early
+                # drops on the floor. Asserting on the whole string catches that.
+                Check $okText 'after stop the box holds the final sentence AND the tail' ('box = ''' + $lastText + '''')
                 Check $okStatus 'status reports completion' ('status = ''' + $lastStatus + '''')
                 Save-WindowShot $main (Get-ShotPath ('record-stt-' + $Flavor + '.png'))
             }
@@ -580,7 +609,7 @@ function Run-Leg {
     } else {
         Check (Has 'apikey-ok=True') 'X-Api-Key arrived on the handshake' ''
         Check (Has 'connect-id-ok=True') 'X-Api-Connect-Id arrived on the handshake' ''
-        Check (Has 'resource=volc.bigasr.sauc.duration') 'X-Api-Resource-Id arrived on the handshake' ''
+        Check (Has 'resource=volc.seedasr.sauc.duration') 'X-Api-Resource-Id arrived on the handshake' ''
         Check (Has 'legacy-headers-absent=True') 'no App ID / Access Token headers (new-console auth)' ''
         Check (Has 'fullreq-bigmodel=True') 'full request declares the bigmodel' ''
         Check (Has 'fullreq-rate=True') 'full request declares 16kHz' ''
@@ -596,6 +625,7 @@ function Run-Leg {
         }
         Check (Has 'sent-interim') 'server sent the interim result' ''
         Check (Has 'sent-final') 'server sent the final result' ''
+        Check (Has 'sent-tail') 'server sent the tail sentence in the end-of-stream response' ''
         $frames = 0
         foreach ($ln in $lines) { if ($ln -match 'audio-frames=(\d+)') { $frames = [int]$Matches[1] } }
         Check ($frames -ge 3) 'audio frames actually flowed' ('frames = ' + $frames)
@@ -604,11 +634,11 @@ function Run-Leg {
 }
 
 try {
-    Run-Leg 'xfyun' $XFY '/ast/communicate/v1' @{ secret2 = 'probe-secret' } 'XF-PART' 'XF-FINAL'
-    Run-Leg 'volc' $VOLC '/api/v3/sauc/bigmodel_async' @{ model = 'volc.bigasr.sauc.duration' } 'VC-PART' 'VC-FINAL'
+    Run-Leg 'xfyun' $XFY '/ast/communicate/v1' @{ secret2 = 'probe-secret' } 'XF-PART' 'XF-FINAL' 'XF-TAIL'
+    Run-Leg 'volc' $VOLC '/api/v3/sauc/bigmodel_async' @{ model = 'volc.seedasr.sauc.duration' } 'VC-PART' 'VC-FINAL' 'VC-TAIL'
     # Control leg: the server answers with an error frame -- the UI must say why,
     # right there, and leave no empty conversation behind.
-    Run-Leg 'volcbad' $VOLC '/api/v3/sauc/bigmodel_async' @{ model = 'volc.bigasr.sauc.duration' } '' '' -BadKey
+    Run-Leg 'volcbad' $VOLC '/api/v3/sauc/bigmodel_async' @{ model = 'volc.seedasr.sauc.duration' } '' '' '' -BadKey
 } finally {
     if ($hadSettings) { Set-Content -Path $script:settings -Value $bakSettings -Encoding utf8 -NoNewline }
     else { Remove-Item $script:settings -ErrorAction SilentlyContinue }

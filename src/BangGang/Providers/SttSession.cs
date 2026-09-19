@@ -179,6 +179,7 @@ internal sealed class VolcSttSession : SttSession
     /// <summary>已经定稿过的分句（按 start_time 去重，缺时间戳时退回按文本去重）。</summary>
     private readonly HashSet<long> _finalStarts = new();
     private readonly HashSet<string> _finalTexts = new();
+    private int _frames;
 
     /// <summary>200ms 一帧：16000 × 2 × 0.2 —— 双向流式推荐的分包大小。</summary>
     public override int FrameBytes => 6400;
@@ -221,10 +222,20 @@ internal sealed class VolcSttSession : SttSession
     public override async Task FinishAsync(CancellationToken ct)
     {
         // 空负载 + flags 0x2 = 最后一包；之后等服务端的收尾响应（flags 0x3 负序号）。
-        if (_ws?.State == WebSocketState.Open)
-            await SendFrameAsync(0x2, 0x2, 0x0, 0x1, Array.Empty<byte>(), ct);
+        // 空负载也必须走一遍 gzip：压缩位一旦声明了 gzip，服务端就会去解压，
+        // 空字节流解出来是 "unable to ungzip payload: EOF"，整条收尾被拒 ——
+        // 用户听到的就是「末尾那句永远不出现」。20 字节的空 gzip 才是自洽的。
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+        bool sent = _ws?.State == WebSocketState.Open;
+        if (sent)
+        {
+            byte[] empty = Gzip(Array.Empty<byte>(), 0);
+            await SendFrameAsync(0x2, 0x2, 0x0, 0x1, empty, ct);
+        }
+        Trace.Log($"stt-finish: last packet sent={sent}");
         var done = Task.WhenAny(_lastPacket.Task, Task.Delay(5000, ct));
         try { await done; } catch { /* 超时就到此为止，已收到的部分不丢 */ }
+        Trace.Log($"stt-finish: terminal={_lastPacket.Task.IsCompleted} after {sw.ElapsedMilliseconds}ms");
     }
 
     private async Task SendFrameAsync(byte type, byte flags, byte ser, byte comp, byte[] payload, CancellationToken ct)
@@ -273,6 +284,12 @@ internal sealed class VolcSttSession : SttSession
         int flags = msg[1] & 0x0F;
         int comp = msg[2] & 0x0F;
 
+        _frames++;
+        bool terminal = flags is 0x2 or 0x3;
+        if (terminal || type == 0xF || _frames <= 3 || _frames % 20 == 0)
+            Trace.Log($"stt-frame #{_frames} type=0x{type:X} flags=0x{flags:X} len={msg.Length}"
+                      + (terminal ? " TERMINAL" : ""));
+
         // 错误帧的负载不是「长度 + 数据」，而是 code(uint32) + size(uint32) + UTF-8 消息，
         // 既没有 JSON 也不压缩 —— 先于通用解析单独处理，否则读到的「大小」是错误码。
         if (type == 0xF)
@@ -290,7 +307,11 @@ internal sealed class VolcSttSession : SttSession
                 detail = (code + " " + text).Trim();
             }
             if (!_firstFrame.Task.IsCompleted) _firstError = "火山引擎返回错误：" + detail;
-            else OnFailed("火山引擎返回错误：" + detail);
+            else
+            {
+                Trace.Log("stt-error " + detail);
+                OnFailed("火山引擎返回错误：" + detail);
+            }
             _firstFrame.TrySetResult();
             _lastPacket.TrySetResult();
             return;
@@ -332,7 +353,11 @@ internal sealed class VolcSttSession : SttSession
                     // 服务端没给时间戳时退回按文本认。
                     long start = u.TryGetProperty("start_time", out var s) && s.TryGetInt64(out var sv) ? sv : -1;
                     bool seen = start >= 0 ? !_finalStarts.Add(start) : !_finalTexts.Add(t);
-                    if (!seen) OnSentence(t);
+                    if (!seen)
+                    {
+                        Trace.Log($"stt-sentence t={start} '{t}'");
+                        OnSentence(t);
+                    }
                 }
             }
             else if (result.TryGetProperty("text", out var text))

@@ -120,6 +120,7 @@ partial class MainForm
         if (d == null) return;
         _dictation = null;
         _pttTimer.Stop();
+        Trace.Log("record: stop requested");
         try
         {
             await d.StopAsync();

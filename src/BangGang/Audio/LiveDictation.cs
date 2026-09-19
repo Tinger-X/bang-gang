@@ -95,12 +95,15 @@ internal sealed class LiveDictation : IDisposable
     public async Task StopAsync()
     {
         if (!_running) return;
+        var sw = System.Diagnostics.Stopwatch.StartNew();
         _running = false;
         _sys?.StopPump();
         _mic?.StopPump();
         _mixer?.Join(4000);
+        Trace.Log($"dictation: pumps stopped at {sw.ElapsedMilliseconds}ms (mixer alive={_mixer?.IsAlive})");
         try { await _session.FinishAsync(CancellationToken.None); }
         catch { /* 收尾失败不挡界面，已收到的部分早已落进输入框 */ }
+        Trace.Log($"dictation: stop finished at {sw.ElapsedMilliseconds}ms");
     }
 
     public void Dispose() => _session.Dispose();

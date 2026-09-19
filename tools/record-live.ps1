@@ -16,7 +16,8 @@
 # Usage:  powershell -File tools\record-live.ps1
 # This file must stay pure ASCII (PS 5.1 reads it as ANSI otherwise).
 
-param([string]$ResourceId = 'volc.seedasr.sauc.duration')
+param([string]$ResourceId = 'volc.seedasr.sauc.duration', [int]$StopDelayMs = 2000,
+      [string]$Tag = 'live')
 
 . "$PSScriptRoot\_ui.ps1"
 
@@ -150,10 +151,10 @@ function Get-InputEditBig($main) {
     return [IntPtr]::Zero
 }
 
-# Longest-common-subsequence ratio: how much of the reference the box actually contains,
+# Longest-common-subsequence length: how much of $b the string $a actually contains,
 # insensitive to insertions/deletions (ASR punctuation and ITN differ from the truth file).
-function Get-MatchRatio([string]$a, [string]$b) {
-    if ($a.Length -eq 0 -or $b.Length -eq 0) { return 0.0 }
+function Get-LcsLen([string]$a, [string]$b) {
+    if ($a.Length -eq 0 -or $b.Length -eq 0) { return 0 }
     $prev = New-Object int[] ($b.Length + 1)
     $cur = New-Object int[] ($b.Length + 1)
     for ($i = 1; $i -le $a.Length; $i++) {
@@ -164,7 +165,18 @@ function Get-MatchRatio([string]$a, [string]$b) {
         $tmp = $prev; $prev = $cur; $cur = $tmp
         for ($j = 0; $j -le $b.Length; $j++) { $cur[$j] = 0 }
     }
-    return (2.0 * $prev[$b.Length]) / ($a.Length + $b.Length)
+    return $prev[$b.Length]
+}
+
+function Get-MatchRatio([string]$a, [string]$b) {
+    if ($a.Length -eq 0 -or $b.Length -eq 0) { return 0.0 }
+    return (2.0 * (Get-LcsLen $a $b)) / ($a.Length + $b.Length)
+}
+
+# How much of the reference's TAIL made it into the box -- the whole point of this leg.
+function Get-ContainRatio([string]$text, [string]$needle) {
+    if ($needle.Length -eq 0) { return 0.0 }
+    return (1.0 * (Get-LcsLen $text $needle)) / $needle.Length
 }
 
 try {
@@ -214,8 +226,10 @@ try {
             Start-Sleep -Milliseconds 200
         }
         $player.Stop()
-        # Let the tail of the last sentence come back before we cut the stream.
-        Start-Sleep -Milliseconds 2000
+        # How long to keep recording after the audio ends. 0 = the "user hits stop the
+        # instant the speech stops" case, which is where an unfinished tail sentence
+        # would go missing if the stop path cut the vendor off too early.
+        if ($StopDelayMs -gt 0) { Start-Sleep -Milliseconds $StopDelayMs }
 
         # Interim text should already be on screen while still recording.
         $mid = Get-WinText $edit
@@ -237,9 +251,20 @@ try {
         $script:heard = ($lastText -replace '\s', '')
         $script:ref = $script:truth
         $script:ratio = Get-MatchRatio $script:heard $script:ref
+        # The reference trails off with "..." (the file is a truncated transcript), so the
+        # needle is the last few real characters -- short and distinctive on purpose: a long
+        # needle is scored down by any homophone the model picks (ASR writes 或者说 for
+        # 或者是), which would make this flaky instead of discriminating. The tail sentence
+        # only ever arrives in the vendor's terminal response, so a stop path that cuts the
+        # stream early loses exactly these characters and nothing else in the file.
+        $speech = ($script:ref -replace '[.]+$', '')
+        $tailLen = [Math]::Min(3, $speech.Length)
+        $script:tailRef = $speech.Substring($speech.Length - $tailLen)
+        $script:tailRatio = Get-ContainRatio $script:heard $script:tailRef
         Check ($script:heard.Length -gt 0) 'the live service returned text' ('chars = ' + $script:heard.Length)
         Check ($script:ratio -ge 0.6) 'the transcript matches the reference recording' ('similarity = ' + [Math]::Round($script:ratio, 3))
-        Save-WindowShot $main (Get-ShotPath 'record-live.png')
+        Check ($script:tailRatio -ge 0.9) 'the tail sentence survived the stop' ('tail = ''' + $script:tailRef + ''' contained ' + [Math]::Round($script:tailRatio, 2))
+        Save-WindowShot $main (Get-ShotPath ('record-live-' + $Tag + '.png'))
     }
 } finally {
     try { if ($player) { $player.Close() } } catch {}
@@ -255,17 +280,32 @@ Write-Output ('--- reference (' + $script:ref.Length + ' chars) ---')
 Write-Output $script:ref
 # The console codepage mangles CJK in the redirected log, so the two texts (and the
 # score) also go to a UTF-8 side file -- that one is the artifact worth reading.
-$report = 'similarity = ' + [Math]::Round($script:ratio, 3) + "`r`n" +
+$report = 'tag = ' + $Tag + ', stop delay = ' + $StopDelayMs + "ms`r`n" +
+          'similarity = ' + [Math]::Round($script:ratio, 3) +
+          ', tail containment = ' + [Math]::Round($script:tailRatio, 2) + "`r`n" +
           'resource id = ' + $ResourceId + "`r`n`r`n" +
           '--- heard (' + $script:heard.Length + ' chars) ---' + "`r`n" + $script:heard + "`r`n`r`n" +
           '--- reference (' + $script:ref.Length + ' chars) ---' + "`r`n" + $script:ref + "`r`n"
-[System.IO.File]::WriteAllText((Get-ShotPath 'record-live-report.txt'), $report, (New-Object Text.UTF8Encoding($false)))
+[System.IO.File]::WriteAllText((Get-ShotPath ('record-live-report-' + $Tag + '.txt')), $report, (New-Object Text.UTF8Encoding($false)))
 $tracePath = Join-Path $script:dir 'ui-trace.log'
+$script:traceTail = @()
 if (Test-Path $tracePath) {
-    foreach ($ln in @(Get-Content $tracePath | Where-Object { $_ -match 'record|dictation|stt-' } | Select-Object -Last 10)) {
-        Write-Output ('  trace| ' + $ln)
+    $script:traceTail = @(Get-Content $tracePath | Where-Object { $_ -match 'record|dictation|stt-' } | Select-Object -Last 40)
+    foreach ($ln in @($script:traceTail | Select-Object -Last 10)) { Write-Output ('  trace| ' + $ln) }
+    # Deterministic end-of-stream check: the vendor answers the last packet with a normal
+    # response (type 0x9, negative sequence). If the packet is malformed it answers with an
+    # error frame instead, and whatever the tail sentence was dies with it. The live audio
+    # may or may not leave words pending at stop time (so the box assertion above can be
+    # lucky), but this one is always either there or not.
+    $script:terminalOk = $false
+    $script:sawError = $false
+    foreach ($ln in $script:traceTail) {
+        if ($ln -match 'stt-finish: terminal=True') { $script:terminalOk = $true }
+        if ($ln -match 'stt-error') { $script:sawError = $true }
+        if ($ln -match 'type=0x9 .*TERMINAL') { $script:sawError = $false }
     }
 }
+Check ($script:terminalOk -and -not $script:sawError) 'the end-of-stream handshake was accepted by the vendor' ('terminal=' + $script:terminalOk + ' error=' + $script:sawError)
 
 Write-Output ''
 if ($script:fail -eq 0) { Write-Output 'ALL CHECKS PASSED' } else { Write-Output ('' + $script:fail + ' CHECK(S) FAILED') }
