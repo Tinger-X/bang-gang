@@ -23,7 +23,7 @@ namespace BangGang;
 /// </summary>
 internal sealed class DraftStrip : Control
 {
-    // ---------- 几何。动任何一个都要重跑 tools/draft-strip.ps1 看一眼 ----------
+    // ---------- 几何 ----------
 
     /// <summary>本区域自身的高度 = 卡片 + 上边给删除按钮让出的那半个。<c>InputPanel</c> 按它让位。</summary>
     public const int RowH = TopPad + ChipH;

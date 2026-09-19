@@ -25,7 +25,7 @@ internal sealed class WelcomeView : Panel
         // ResizeRedraw 必须开：整块内容是照着 Width / Height 现场摆的（居中、上下留白），
         // 而不带 CS_HREDRAW/CS_VREDRAW 的窗口在尺寸变化时只有 Windows 补画的那一条新增区域
         // 会重画，中间的原像素原样留着 —— 表现成「窗口拉大了，欢迎页还停在旧宽度居中」。
-        // 这是实测到的那个 bug 本身（tools/resize-lag.ps1 少了这一行就 FAIL），不是预防性写法。
+        // 这是实测到的那个 bug 本身，不是预防性写法。
         SetStyle(ControlStyles.OptimizedDoubleBuffer | ControlStyles.UserPaint
                | ControlStyles.AllPaintingInWmPaint | ControlStyles.ResizeRedraw, true);
     }

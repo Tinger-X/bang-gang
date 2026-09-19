@@ -471,7 +471,7 @@ internal sealed class ChatView : Panel, IThemed, IMessageFilter
     /// 一个时间预算分批补排。由 <c>MainForm.SideTick</c> 的最后一次 tick 调用。
     ///
     /// 为什么分批：这里曾是「一次性 <see cref="ReflowRows"/> 全部消息」，会话一长收尾那
-    /// 一帧就是一次看得见的卡顿（sidebar-perf-real.ps1 的注释指认过它）。分批把这笔账
+    /// 一帧就是一次看得见的卡顿。分批把这笔账
     /// 摊到动画结束后的若干帧里，每帧最多 6ms；带外行的宽度本来就没人在看，晚几帧
     /// 折好没有任何视觉代价 —— 唯一要守的是「滚动把它们带进可见带之前必须补排」，
     /// 那是 <see cref="ScrollTo"/> 里那段追赶。
@@ -822,9 +822,8 @@ internal sealed class ChatView : Panel, IThemed, IMessageFilter
             // RectangleToScreen 给的就是 CenterScreen 落位**之前**的位置（写出来是
             // (8,-7)+偏移 = 264,79，而同一刻窗口的 GetWindowRect 是 360,120），探针照它
             // 点击会全程落在别的地方，最后报成程序的问题。
-            // 逐级累加 Left/Top 是纯布局量，跟窗口此刻在屏幕上的哪儿无关，所以不会过期；
-            // 换个窗口位置，探针重新锚一次就行（tools\_ui.ps1 的 Get-UiRows）。
-            // 顶层窗口无边框，客户区原点就是窗口矩形原点，探针那两个坐标系因此是同一个。
+            // 逐级累加 Left/Top 是纯布局量，跟窗口此刻在屏幕上的哪儿无关，所以不会过期。
+            // 顶层窗口无边框，客户区原点就是窗口矩形原点，两个坐标系因此是同一个。
             int offX = 0, offY = 0;
             var top = TopLevelControl;
             for (var c = (Control?)this; c != null && c != top; c = c.Parent)

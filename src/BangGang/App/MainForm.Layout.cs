@@ -111,8 +111,7 @@ partial class MainForm
     /// 顶栏拖动。**不走系统的 HTCAPTION 模态移动循环**（0.9.6）：主窗口常年挂着
     /// WDA_EXCLUDEFROMCAPTURE，实测这种窗口的模态循环是双态的 —— 顺的时候逐帧跟随，
     /// 卡的时候整条拖动期间窗口一动不动、松手后还在慢慢爬完积压的移动（正是用户报的
-    /// 「鼠标已经从 A 到了 B，窗口还在 A→B 的路上」；tools/drag-perf.ps1 的 C/F/G 腿
-    /// 复现：WDA 腿拖动全程 GetWindowRect 零位移，非 WDA 腿 p95 只有 8px）。
+    /// 「鼠标已经从 A 到了 B，窗口还在 A→B 的路上」）。
     /// 模态循环跑在 DefWindowProc 内部，消息过滤器和 WndProc 都插不进去，应用侧无解。
     /// 所以换成和边缘缩放同一条路：SetCapture + 在 PreFilterMessage 里按
     /// Cursor.Position 逐条 SetWindowPos。WM_MOUSEMOVE 在队列里自动合并，
@@ -135,7 +134,7 @@ partial class MainForm
     private void ApplyWindowDrag(Point screen, bool force = false)
     {
         // WDA 窗口的 SetWindowPos 在输入风暴下会反过来堵住消息循环（实测 ~1ms 间隔的
-        // SetCursorPos 横扫里 74 次移动只活下来 2~3 条，见 tools/drag-wda-debug.ps1）。
+        // SetCursorPos 横扫里 74 次移动只活下来 2~3 条）。
         // 真实鼠标 ≤125Hz 完全不受影响，但 1000Hz 的游戏鼠标正好踩在这个量级上，
         // 所以给一个 5ms 的最低间隔；跳过的一帧由随后的移动或松手时的 force 收尾补齐。
         long now = Environment.TickCount64;

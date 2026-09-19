@@ -88,7 +88,7 @@ internal static class OfflineRender
     ///
     /// 坐标一律给**位图里的绝对像素**（<c>+pad</c> 之后的），并且跟 <see cref="Markdown.Draw"/>
     /// 一样先累加 <c>SpaceBefore</c> 再取 <c>Pitch</c> —— 少加这一项的话每行的 y 都会少一截，
-    /// 于是照着这个数去 <c>tools/zoom.ps1</c> 裁出来的那块总是偏上，量半天量的是上一行。
+    /// 于是照着这个数裁出来的那块总是偏上，量半天量的是上一行。
     ///
     /// <c>shift</c> 是 <see cref="PhysLine.TextShift"/>：行内公式比正文高时整行往下推的量。
     /// 它和 <c>base</c> 是一对 —— 公式坐在 <c>base</c> 上、文字坐在 <c>base - shift</c> 上，

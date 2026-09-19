@@ -94,7 +94,7 @@ internal static class Ui
     /// 本程序的字号下两者差 1px（22 vs 23），看着无所谓，但多行 EDIT 只画**完整装得下**的行：
     /// 它按 23 算「这一行放不放得下」，我们按 22 算盒子高度，于是 3 * 22 = 66 的盒子它只画
     /// 2 行，剩下二十多像素空着 —— 就是「才两行就开始往上滚、底部明明还放得下一行却空着」。
-    /// 盒子高度取成行距的整数倍，两个数才对得上（实测见 tools/edit-lines.ps1）。
+    /// 盒子高度取成行距的整数倍，两个数才对得上。
     ///
     /// 也不要用 <c>Font.GetHeight()</c>：那是 GDI+ 按 DPI 折算的行高，同样不等于 GDI 的
     /// tmHeight（换字号 / 换 DPI 时会再分家）。这里问的就是 EDIT 自己排版用的那个 DC。
@@ -128,7 +128,6 @@ internal static class Ui
     /// 1) **EDIT 把单行文字顶对齐在自己的客户区里** —— 同一串字，盒子高 18 和 24，
     ///    墨迹都从第 5 行开始。也就是说<strong>盒子的上边缘决定文字位置</strong>，
     ///    盒子加高只会把多出来的空间全部留在下方，文字不会跟着往下走。
-    ///    （见 tools/hint-align.ps1，纯 WinForms 复现，不依赖本程序。）
     ///
     /// 2) WinForms 把单行 TextBox 的高度锁死在 <c>PreferredHeight</c>（≈ 字体行高，
     ///    不含任何余量），而雅黑这类 CJK 字体的下缘实笔略超出 GDI 报的行高，
@@ -167,7 +166,7 @@ internal static class Ui
 /// 为什么竖直方向用 <see cref="TextFormatFlags.Top"/> 而不是 VerticalCenter：
 /// EDIT 把单行文字**顶对齐**在自己的客户区里，VerticalCenter 则按矩形高度居中 ——
 /// 两者只在「矩形高度恰好等于行高」时才碰巧重合，盒子一加余量就错开 3px。
-/// 实测 Top 与 EDIT 的墨迹逐像素一致（tools/hint-align.ps1），且与矩形高度无关。
+/// 实测 Top 与 EDIT 的墨迹逐像素一致，且与矩形高度无关。
 ///
 /// 为什么必须是浮在 TextBox 之上的独立子控件：TextBox 会用不透明底色铺满
 /// 自己的客户区，父层 <c>OnPaint</c> 里画的占位文字会被它整片盖掉。

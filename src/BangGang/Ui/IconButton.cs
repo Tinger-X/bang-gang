@@ -37,9 +37,7 @@ internal sealed class IconButton : Control, IThemed
     /// 按钮当前是否可点（发送键的「不可点击」状态）。
     ///
     /// 用自定义标志而不是 <see cref="Control.Enabled"/>：后者给窗口挂上 <c>WS_DISABLED</c>，
-    /// 鼠标消息整个绕开按钮落到父面板上，<c>WindowFromPoint</c> 于是命中面板而不是按钮 ——
-    /// tools/settings-over-chat.ps1 的 A 段（「底行每个控件在自己的中心点上都得被点中」）
-    /// 会因此报假失败，而那条探针守的是真问题（按钮被 Fill 的兄弟控件盖住）。
+    /// 鼠标消息整个绕开按钮落到父面板上，<c>WindowFromPoint</c> 于是命中面板而不是按钮。
     /// 这里只关掉两件事：悬浮高亮，以及点下去有没有反应。
     /// </summary>
     public bool Clickable
@@ -288,7 +286,6 @@ internal sealed class IconButton : Control, IThemed
     /// 且两个上弯要互相**嵌套**（内弯整个落在外弯里面）；少一条读出来就是锯齿而不是回形针。
     ///
     /// 笔宽要**除以**缩放系数：<c>ScaleTransform</c> 是连笔宽一起缩的。
-    /// 设计稿与调参过程见 tools/glyph-preview.ps1。
     /// </summary>
     private static void DrawPaperclip(Graphics g, float cx, float cy, float box, Color ink)
     {

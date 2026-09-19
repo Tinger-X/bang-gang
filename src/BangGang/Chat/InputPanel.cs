@@ -43,7 +43,7 @@ internal sealed class InputPanel : Panel, IMessageFilter
     /// </summary>
     public int PreferredHeight => PanelH + (Draft.Count > 0 ? DraftStrip.RowH : 0);
 
-    // ---------- 卡片几何。动任何一个都要重跑 tools/input-check.ps1 看一眼 ----------
+    // ---------- 卡片几何 ----------
 
     private const int CardMarginX = 16;       // 卡片到窗口左右缘
     private const int CardMarginTop = 8;
@@ -231,8 +231,7 @@ internal sealed class InputPanel : Panel, IMessageFilter
         _ph.BringToFront();
         _box.Resize += (_, _) => UpdatePh();
 
-        // 底部工具行的提示文字。**必须是 Label（Static）**：tools/settings-over-chat.ps1 就是靠
-        // 「底行里那个宽 Static」认出它的，换成自绘控件那条探针会直接判失败。
+        // 底部工具行的提示文字。**必须是 Label（Static）**，别换成自绘控件。
         _hint = new Label
         {
             AutoSize = false,
@@ -347,7 +346,6 @@ internal sealed class InputPanel : Panel, IMessageFilter
         // 的行，矮 1px 就整整少一行）、**可见行数由同一个行距算**（见 UpdateBar）。
         // 任一处对不上，「盒子里能看见几行」和「代码以为能看见几行」就会分家 —— 表现出来
         // 就是用户报的「才两行就开始往上滚、底部明明还放得下一行却空着、也不出滚动条」。
-        // 实测见 tools/edit-lines.ps1。
         int lineH = LineH();
         int lines = Math.Clamp((boxBottom - boxTop) / lineH, 1, MaxLines);
         int boxH = lines * lineH;
@@ -368,8 +366,7 @@ internal sealed class InputPanel : Panel, IMessageFilter
         // 整串字就得重新居中、重画一遍，而这个 Label 的 WM_PAINT 与父面板那一次重画是**两条
         // 独立的路径**（两个窗口各自的队列），谁先谁后不定：屏幕上于是交替出现「文字已经按新
         // 宽度居中了」和「文字还停在按旧宽度算出来的位置」两种帧 —— 用户报的
-        // 「展开 / 收起时底部提示信息左右抖动、不是平滑过渡」就是它。0.7.31 之前量到的那一帧
-        // 反向位移（tools/sidebar-anim.ps1 量的是字形墨迹的重心，一帧退回 5px）也是它。
+        // 「展开 / 收起时底部提示信息左右抖动、不是平滑过渡」就是它。
         //
         // 固定宽度之后，这个 Label 在动画里**只平移、不变尺寸**：居中偏移成了常量，
         // 内容跟尺寸无关，于是无论 Windows 是直接搬像素还是让它自己重画，屏幕上的结果都一样 ——
@@ -429,9 +426,7 @@ internal sealed class InputPanel : Panel, IMessageFilter
     ///
     /// 标签在侧栏动画里只平移，而**平移腾出来的那一条**（往左移就是右侧那条）要等父面板重画
     /// 才被擦掉；在擦掉之前，屏幕上留着的是标签原来压在那儿的像素。文字居中时它离标签边缘
-    /// 只有十几像素，那条带子就直接压在字形的尾巴上 —— 于是有一帧能看到「字的尾巴拖在后面」
-    /// （tools/sidebar-anim.ps1 量到的墨迹宽度从 320 变成 356，多出来的部分正好止于旧文字
-    /// 的右端）。
+    /// 只有十几像素，那条带子就直接压在字形的尾巴上 —— 于是有一帧能看到「字的尾巴拖在后面」。
     ///
     /// 侧栏动画是时间驱动的 ease-out cubic（300ms，见 MainForm.Sidebar.cs），首帧位移最大：
     /// 曲线峰值速度 3 × 256px / 300ms ≈ 2.6px/ms，~31ms 的 tick 下一帧最多挪 ~79px，
@@ -616,7 +611,7 @@ internal sealed class InputPanel : Panel, IMessageFilter
     /// 这里补上：光标压在文本框上时，把滚轮折算成 EM_LINESCROLL 直接送给它。
     ///
     /// 用消息里的屏幕坐标而不是 <c>Cursor.Position</c>：后者要等这条消息被处理时才读，
-    /// UI 线程一忙就读到已经走掉的鼠标位置（同一个坑见 <c>_ui.ps1</c> 里 Invoke-Drag 的注释）。
+    /// UI 线程一忙就读到已经走掉的鼠标位置。
     /// </summary>
     public bool PreFilterMessage(ref Message m)
     {
