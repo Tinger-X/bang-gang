@@ -20,3 +20,6 @@ dist/
 shoots/
 build/
 .local/
+
+# 内部工程约定：给 AI 助手看的取舍记录，随源码发布没有意义（0.9.17 起不再跟踪）
+CLAUDE.md
