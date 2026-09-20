@@ -33,6 +33,30 @@
   #define MyAppVersion "0.0.0"
 #endif
 
+; 同一份脚本出两个安装包，差别只有两处：打哪棵 publish 目录，以及装之前要不要
+; 检查本机的 .NET 运行时。
+;
+; 判定用的是「有没有传 /DSelfContained」这个**定义与否**，而不是它的值。ISPP 的
+; #if 拿整数当条件时并不按 0=假 来算 —— 实测 /DSelfContained=0 照样走真分支，
+; 两个包会静默编成一模一样（症状是 ISCC 打三条 "Variable never used"，因为 #else
+; 那段根本没被包含进去）。#ifdef 没有这层歧义，所以别给它补什么默认值。
+;
+;   传 /DSelfContained=1  → 自带 .NET 8 运行时，目标机什么都不用装（~49MB）
+;   不传                  → 不自带，目标机需预装 .NET 8 Desktop Runtime（~2MB）
+
+; 要打进安装包的 publish 目录，相对本文件所在的 installer\。
+;
+; 刻意推出来、而不是让构建脚本传路径进来：/D 传进来的值会走 ISPP 的表达式解析，
+; 带反斜杠的 Windows 路径得额外加引号才安全；推导则两边只共享一个约定（目录名），
+; 改的时候记得 tools\build-installer.ps1 里也有一份同名目录。
+#ifndef PublishDir
+  #ifdef SelfContained
+    #define PublishDir "..\build\publish\selfcontained"
+  #else
+    #define PublishDir "..\build\publish\frameworkdependent"
+  #endif
+#endif
+
 [Setup]
 AppId={#MyAppId}
 AppName={#MyAppName}
@@ -57,7 +81,12 @@ ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
 ; 相对本文件（installer\）解析。
 OutputDir=..\dist\installer
-OutputBaseFilename=BangGang-Setup-{#MyAppVersion}
+; 文件名必须区分开：两个包是同一个 AppId、同一个版本号，只有这一处能把它们分开。
+#ifdef SelfContained
+OutputBaseFilename=BangGang-Setup-{#MyAppVersion}-with-runtime
+#else
+OutputBaseFilename=BangGang-Setup-{#MyAppVersion}-without-runtime
+#endif
 SetupIconFile=..\assets\app.ico
 Compression=lzma2/max
 SolidCompression=yes
@@ -81,16 +110,36 @@ Name: "english"; MessagesFile: "compiler:Default.isl"
 Name: "desktopicon"; Description: "创建桌面快捷方式"; GroupDescription: "附加任务："; Flags: unchecked
 
 [Files]
-; 整个自包含 publish 目录树一次打包。
-;   ignoreversion —— 强制按 publish 结果覆盖。默认的「版本相同就跳过」在自包含场景
-;     是错的：框架 dll 的版本跨我们两个 release 不变，但换 SDK 时内容会变，
-;     跳过就会新旧混装。
-Source: "..\build\bin\Release\net8.0-windows\win-x64\publish\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
+; 整棵 publish 目录树一次打包（哪一棵由构建脚本用 /DPublishDir 决定）。
+;   ignoreversion —— 强制按 publish 结果覆盖。默认的「版本相同就跳过」在这里是错的：
+;     框架 dll 的版本跨我们两个 release 不变，但换 SDK 时内容会变，跳过就会新旧混装。
+Source: "{#PublishDir}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 
 [Icons]
 ; 直接放在「所有程序」根下，不为单 exe 应用再套一层目录。
 Name: "{autoprograms}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; WorkingDir: "{app}"
 Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; WorkingDir: "{app}"; Tasks: desktopicon
+
+#ifdef SelfContained
+#else
+; 只有「不自带运行时」这个包需要这一段。
+;
+; 从「自带运行时」那个包换装到这个包时，上一版那 ~160MB 运行时 dll **不会**被 Inno
+; 自动清掉 —— [Files] 只覆盖和新增，从不删除。实测换装后目录仍是 466 个文件 / 165MB，
+; 而且因为 coreclr / hostfxr 都还在，应用会继续按自包含的方式跑，跟这个包宣称的行为
+; 对不上。所以这里先清一遍（[InstallDelete] 在 [Files] 之前执行）。
+;
+; **这个通配符是安全的，也是全文唯一允许用通配符的地方**：应用的用户数据是
+; settings.json / chats\ / images\ / crash.log，没有一个是 .dll。千万不要把它扩成
+; *.json / *.log / 整个目录 —— settings.json 就是 .json，那样会直接删掉用户的聊天记录。
+;
+; 已知残留：通配符**不递归**，所以各语言子目录里的 *.resources.dll（cs\ de\ zh-Hans\
+; runtimes\ 等，约 20MB）会留下来。要清掉它们就得按目录删，而那正是唯一可能误伤
+; chats\ / images\ 的操作 —— 权衡下来宁可留 20MB 惰性文件。这一条只有「先装自带运行时
+; 的包、再换装这个包」才会遇到；从头装这个包是干净的 5MB。
+[InstallDelete]
+Type: files; Name: "{app}\*.dll"
+#endif
 
 [Run]
 Filename: "{app}\{#MyAppExeName}"; Description: "立即运行 {#MyAppName}"; Flags: nowait postinstall skipifsilent
@@ -98,6 +147,64 @@ Filename: "{app}\{#MyAppExeName}"; Description: "立即运行 {#MyAppName}"; Fla
 [Code]
 var
   RemoveUserData: Boolean;
+
+// 注意 #if 这里只能写正条件：ISPP 表达式不认 C 风格的 ! ，也不认 Pascal 的 not
+// （两种写法都在这个位置报过 "Error on line … Column …"，且错误信息是空的）。
+// 要否定就把分支反过来写，见下面用 #else 分出来的那段。
+#ifdef SelfContained
+// 自包含的包把 .NET 8 运行时一起打进去了，不必也不能再查本机 —— 查了反而会挡住
+// 本来装得上的机器。
+#else
+// .NET 8 的桌面运行时装在 {pf}\dotnet\shared\Microsoft.WindowsDesktop.App\8.0.x。
+// 这里只认 8.x：默认的 roll-forward 策略是 Minor，装了 .NET 9 也满足不了一个针对
+// 8.0 编译的应用，所以不能看见 dotnet 目录就当通过。
+function HasDotNet8DesktopRuntime(): Boolean;
+var
+  FindRec: TFindRec;
+  Base: String;
+begin
+  Result := False;
+  Base := ExpandConstant('{pf}\dotnet\shared\Microsoft.WindowsDesktop.App');
+  if FindFirst(Base + '\8.*', FindRec) then
+  begin
+    Result := True;
+    FindClose(FindRec);
+  end;
+end;
+#endif
+
+function InitializeSetup(): Boolean;
+var
+  Choice, Rc: Integer;
+  Msg: String;
+begin
+  Result := True;
+
+#ifdef SelfContained
+  // 自带运行时，没有要先决条件。
+#else
+  // 静默安装不弹这个：那种场景下没人能回答问题，多半还是脚本在按已知环境部署。
+  if (not WizardSilent) and (not HasDotNet8DesktopRuntime()) then
+  begin
+    Msg := '未检测到 .NET 8 桌面运行时。' + #13#10 + #13#10 +
+           '这个安装包不自带运行时，装完之后帮帮无法启动，' + #13#10 +
+           '需要另外安装 .NET 8 Desktop Runtime（约 55 MB）。' + #13#10 + #13#10 +
+           '是：打开下载页面，稍后再装帮帮' + #13#10 +
+           '否：仍然继续安装' + #13#10 +
+           '取消：退出安装';
+    Choice := MsgBox(Msg, mbConfirmation, MB_YESNOCANCEL);
+    if Choice = IDYES then
+    begin
+      ShellExec('open', 'https://dotnet.microsoft.com/download/dotnet/8.0',
+                '', '', SW_SHOWNORMAL, ewNoWait, Rc);
+      // 让他先把运行时装上，别在这台机器上留一个跑不起来的帮帮。
+      Result := False;
+    end
+    else if Choice = IDCANCEL then
+      Result := False;
+  end;
+#endif
+end;
 
 function InitializeUninstall(): Boolean;
 var

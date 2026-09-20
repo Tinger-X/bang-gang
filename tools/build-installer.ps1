@@ -1,24 +1,30 @@
-# build-installer.ps1 -- publish BangGang self-contained and pack it into a
-# per-user Windows installer at dist\installer\.
+# build-installer.ps1 -- publish BangGang and pack it into per-user Windows
+# installers at dist\installer\.
 #
-# Pipeline: read the version out of BangGang.csproj -> dotnet publish
-# (self-contained win-x64, so the target machine needs no .NET install) ->
-# compile installer\BangGang.iss with Inno Setup's command-line compiler.
+# Two flavours come out of the same installer\BangGang.iss:
 #
-# The Inno Setup toolchain is expected as a portable directory rather than a
-# system install (see -FetchToolchain). ISCC.exe is searched in .local\innosetup
-# first, then in the usual system install locations.
+#   with-runtime     self-contained publish. Ships the .NET 8 desktop runtime,
+#                    so the target machine needs nothing preinstalled. ~49 MB.
+#   without-runtime  framework-dependent publish. ~2 MB, but the target machine
+#                    must already have the .NET 8 Desktop Runtime -- the
+#                    installer checks for it and says so before doing anything.
+#
+# Both share one AppId, so they upgrade over each other in place.
 #
 # ASCII-only on purpose: PowerShell 5.1 reads a BOM-less script as ANSI, so any
 # non-ASCII byte here would be a syntax error. All Chinese lives in the .iss.
 #
 # Usage:
 #   powershell -ExecutionPolicy Bypass -File tools\build-installer.ps1
+#   powershell -ExecutionPolicy Bypass -File tools\build-installer.ps1 -Flavor SelfContained
 #   powershell -ExecutionPolicy Bypass -File tools\build-installer.ps1 -FetchToolchain
-#   powershell -ExecutionPolicy Bypass -File tools\build-installer.ps1 -SkipPublish
 
 [CmdletBinding()]
 param(
+    # Which package(s) to produce.
+    [ValidateSet('Both', 'SelfContained', 'FrameworkDependent')]
+    [string]$Flavor = 'Both',
+
     # Download the Inno Setup compiler into .local\innosetup if it is missing.
     [switch]$FetchToolchain,
 
@@ -38,8 +44,16 @@ $root = Split-Path -Parent $PSScriptRoot
 $csproj = Join-Path $root 'src\BangGang\BangGang.csproj'
 $mainForm = Join-Path $root 'src\BangGang\App\MainForm.cs'
 $iss = Join-Path $root 'installer\BangGang.iss'
-$publishDir = Join-Path $root 'build\bin\Release\net8.0-windows\win-x64\publish'
 $outDir = Join-Path $root 'dist\installer'
+
+# Publish directory names are duplicated in installer\BangGang.iss (it derives
+# them from whether SelfContained is defined rather than taking a path over /D,
+# because a Windows path in a /D value needs quoting to survive ISPP's
+# expression parser). Rename one, rename the other.
+$flavors = [ordered]@{
+    'SelfContained'      = @{ Dir = 'selfcontained';      Suffix = 'with-runtime' }
+    'FrameworkDependent' = @{ Dir = 'frameworkdependent'; Suffix = 'without-runtime' }
+}
 
 function Find-Iscc {
     param([string]$Explicit, [string]$Root)
@@ -129,34 +143,77 @@ if ($head.Length -lt 3 -or $head[0] -ne 0xEF -or $head[1] -ne 0xBB -or $head[2] 
     throw "$iss is missing its UTF-8 BOM; re-save it as UTF-8 with BOM."
 }
 
-# ---- 3. publish -----------------------------------------------------------
-if (-not $SkipPublish) {
-    Write-Host 'dotnet publish (self-contained win-x64) ...'
-    & dotnet publish $csproj -c Release -r win-x64 --self-contained true `
-        -p:RestoreSources=https://api.nuget.org/v3/index.json
-    if ($LASTEXITCODE -ne 0) { throw "dotnet publish failed with exit code $LASTEXITCODE" }
-}
-else {
-    Write-Host 'skipping publish (-SkipPublish)'
-}
-
-if (-not (Test-Path -LiteralPath (Join-Path $publishDir 'BangGang.exe'))) {
-    throw "publish output not found at $publishDir -- run without -SkipPublish"
-}
-
-# ---- 4. compile the installer --------------------------------------------
+# ---- 3. build each flavour ------------------------------------------------
 $iscc = Get-Iscc -Explicit $IsccPath -Root $root -Version $InnoVersion
 Write-Host "using ISCC: $iscc"
 
-& $iscc "/DMyAppVersion=$version" $iss
-if ($LASTEXITCODE -ne 0) { throw "ISCC failed with exit code $LASTEXITCODE" }
+$wanted = if ($Flavor -eq 'Both') { @($flavors.Keys) } else { @($Flavor) }
+$built = New-Object System.Collections.ArrayList
 
-$setup = Join-Path $outDir "BangGang-Setup-$version.exe"
-if (-not (Test-Path -LiteralPath $setup)) { throw "expected installer not found: $setup" }
+foreach ($name in $wanted) {
+    $f = $flavors[$name]
+    $selfContained = ($name -eq 'SelfContained')
+    $publishDir = Join-Path $root ("build\publish\" + $f.Dir)
 
-$fi = Get-Item -LiteralPath $setup
-$hash = (Get-FileHash -LiteralPath $setup -Algorithm SHA256).Hash
+    Write-Host ''
+    Write-Host "=== $name -> $publishDir ==="
+
+    if (-not $SkipPublish) {
+        # Wipe first: dotnet publish leaves files from an earlier publish in
+        # place, and stale ones would be packaged into the installer.
+        if (Test-Path -LiteralPath $publishDir) {
+            Remove-Item -LiteralPath $publishDir -Recurse -Force
+        }
+        New-Item -ItemType Directory -Force -Path $publishDir | Out-Null
+
+        $publishArgs = @(
+            'publish', $csproj,
+            '-c', 'Release',
+            '-r', 'win-x64',
+            '--self-contained', $(if ($selfContained) { 'true' } else { 'false' }),
+            '-o', $publishDir
+        )
+        if ($selfContained) {
+            # Self-contained is the only flavour that needs anything from NuGet
+            # (the win-x64 runtime packs). This machine has no package sources
+            # configured, so name one explicitly; framework-dependent needs no
+            # packages at all and is left to resolve offline.
+            $publishArgs += '-p:RestoreSources=https://api.nuget.org/v3/index.json'
+        }
+
+        Write-Host ("dotnet publish (self-contained={0}) ..." -f $selfContained)
+        & dotnet @publishArgs
+        if ($LASTEXITCODE -ne 0) { throw "dotnet publish failed with exit code $LASTEXITCODE" }
+    }
+    else {
+        Write-Host 'skipping publish (-SkipPublish)'
+    }
+
+    $exe = Join-Path $publishDir 'BangGang.exe'
+    if (-not (Test-Path -LiteralPath $exe)) {
+        throw "publish produced no BangGang.exe in $publishDir -- run without -SkipPublish"
+    }
+
+    # The .iss branches on whether SelfContained is *defined*, not on its value:
+    # ISPP's #if does not treat an integer 0 as false, so /DSelfContained=0 makes
+    # both flavours compile to the same package. Pass the define for the
+    # self-contained build only, and leave it undefined otherwise.
+    $isccArgs = @("/DMyAppVersion=$version")
+    if ($selfContained) { $isccArgs += '/DSelfContained=1' }
+    $isccArgs += $iss
+    & $iscc @isccArgs
+    if ($LASTEXITCODE -ne 0) { throw "ISCC failed with exit code $LASTEXITCODE" }
+
+    $setup = Join-Path $outDir "BangGang-Setup-$version-$($f.Suffix).exe"
+    if (-not (Test-Path -LiteralPath $setup)) { throw "expected installer not found: $setup" }
+    [void]$built.Add($setup)
+}
+
+# ---- 4. report ------------------------------------------------------------
 Write-Host ''
-Write-Host ("installer : {0}" -f $fi.FullName)
-Write-Host ("size      : {0:N1} MB" -f ($fi.Length / 1MB))
-Write-Host ("sha256    : {0}" -f $hash)
+foreach ($setup in $built) {
+    $fi = Get-Item -LiteralPath $setup
+    $hash = (Get-FileHash -LiteralPath $setup -Algorithm SHA256).Hash
+    Write-Host ("installer : {0}" -f $fi.FullName)
+    Write-Host ("            {0:N1} MB   sha256 {1}" -f ($fi.Length / 1MB), $hash)
+}
