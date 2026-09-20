@@ -66,7 +66,7 @@ Windows 桌面直播助手：一个**在直播、录屏、屏幕共享里完全�
 
 ## 下载与安装
 
-从 Releases 下载安装包，两个版本功能完全相同，只是运行时的打包方式不同：
+官网 **https://bang-gang.tin.edu.kg** 提供直连下载；也可以在 [Releases](https://github.com/Tinger-X/bang-gang/releases) 下载。两个版本功能完全相同，只是运行时的打包方式不同：
 
 | 安装包 | 体积 | 适合 |
 |---|---|---|

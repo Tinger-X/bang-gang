@@ -1,0 +1,24 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" role="img" aria-label="BangGang">
+  <!-- The mark is the product in one glyph: a chat window split down the middle
+       by a vertical line. Left of the line the bubble is solid (what you see),
+       right of it only an outline (what the capture sees). Same idea as the
+       comparison slider on the page. Accent is the app's own #2F70E0. -->
+  <defs>
+    <clipPath id="bg-left"><rect x="0" y="0" width="16" height="32"/></clipPath>
+    <clipPath id="bg-right"><rect x="16" y="0" width="16" height="32"/></clipPath>
+  </defs>
+
+  <rect x="2.6" y="4.4" width="26.8" height="23.2" rx="6.5"
+        fill="none" stroke="#2F70E0" stroke-width="2.2"/>
+
+  <g clip-path="url(#bg-left)">
+    <rect x="8" y="12" width="16" height="9" rx="2.8" fill="#2F70E0"/>
+  </g>
+  <g clip-path="url(#bg-right)" opacity="0.42">
+    <rect x="8" y="12" width="16" height="9" rx="2.8"
+          fill="none" stroke="#2F70E0" stroke-width="2.2"/>
+  </g>
+
+  <line x1="16" y1="4.4" x2="16" y2="27.6"
+        stroke="#2F70E0" stroke-width="1.6" opacity="0.55"/>
+</svg>

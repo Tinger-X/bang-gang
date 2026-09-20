@@ -66,7 +66,7 @@ Capture exclusion depends on `WDA_EXCLUDEFROMCAPTURE`, introduced in Windows 10 
 
 ## Download & install
 
-Grab an installer from Releases. Both builds are functionally identical — they differ only in how the runtime is packaged:
+Grab an installer from the official site at **https://bang-gang.tin.edu.kg**, or from [Releases](https://github.com/Tinger-X/bang-gang/releases). Both builds are functionally identical — they differ only in how the runtime is packaged:
 
 | Installer | Size | For |
 |---|---|---|

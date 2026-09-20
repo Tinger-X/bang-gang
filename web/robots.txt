@@ -1,0 +1,5 @@
+User-agent: *
+Allow: /
+Disallow: /download
+
+Sitemap: https://bang-gang.tin.edu.kg/sitemap.xml

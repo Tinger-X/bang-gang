@@ -1,7 +1,3 @@
-# .NET 构建输出
-bin/
-obj/
-
 # 用户级/VS 文件
 .vs/
 *.user
@@ -23,3 +19,9 @@ build/
 
 # 内部工程约定：给 AI 助手看的取舍记录，随源码发布没有意义（0.9.17 起不再跟踪）
 CLAUDE.md
+
+# 官网（web/）：wrangler 的本地状态与本地配置
+# 模板留在 web/wrangler.example.jsonc
+.wrangler/
+node_modules/
+web/wrangler.jsonc

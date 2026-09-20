@@ -1,0 +1,14 @@
+对比截图放这里（本文件只是为了让空目录存在于仓库里，可以不删）。
+
+每个场景一对，文件名必须成对：
+    <场景id>-visible.jpg   本机看到的（有帮帮窗口）
+    <场景id>-capture.jpg   录屏 / 截图拿到的（同一个桌面，帮帮不在）
+
+场景 id 由 web/assets/script.js 顶部的 DEMO_GROUPS 决定，当前是：
+    chat / settings / snip / shot
+
+原始截图放进 shoots/demo/<场景id>-visible.png，然后跑：
+    powershell -ExecutionPolicy Bypass -File web\tools\prepare-demo-shots.ps1
+它会按同一宽度缩放出上面这两个 .jpg（两帧必须尺寸完全一致，否则分割线对不齐）。
+
+只有成对存在的场景会出现在页面上；一对都没有时整段演示区连同导航入口一起隐藏。

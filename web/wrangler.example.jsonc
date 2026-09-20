@@ -1,0 +1,27 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  // 每个软件一个 Pages 项目，所以 name 各不相同；下面两项共享资源保持不变。
+  "name": "banggang",
+  "pages_build_output_dir": ".",
+  // 别顺手往前调：本机 wrangler 自带的 workerd 会拒绝比它新的日期
+  // （报 "newest date supported by this server binary is ..."），本地起不来。
+  // 跟隔壁 liangbuliang 用同一档，那边是线上跑通的。
+  "compatibility_date": "2026-08-20",
+  "compatibility_flags": ["nodejs_compat"],
+  // 账号级共享资源，所有软件官网共用，无需新建：
+  //   D1  `softwares`  表 counters(app, key, value)
+  //   R2  `softwares`  key 前缀 <app>/
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "softwares",
+      "database_id": "a42851e4-48e2-4af1-8604-1d3472aebbd3"
+    }
+  ],
+  "r2_buckets": [
+    {
+      "binding": "BUCKET",
+      "bucket_name": "softwares"
+    }
+  ]
+}
