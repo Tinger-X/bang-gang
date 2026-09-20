@@ -367,28 +367,28 @@
   var DEMO_DIR = '/assets/demo/';
   var DEMO_GROUPS = [
     {
-      id: 'chat',
-      zh: '主窗口对话', en: 'Chat window',
-      zh_cap: '最常见的场景：一边播一边查资料、问模型。右边是观众看到的同一个桌面。',
-      en_cap: 'The everyday case: looking something up mid-stream. On the right, the same desktop as the audience receives it.'
+      id: '01',
+      zh: '第一次打开', en: 'First launch',
+      zh_cap: '新建对话时的欢迎页。左边是你在本机看到的，右边是同一时刻观众看到的同一个桌面。',
+      en_cap: 'The welcome screen of a fresh conversation. On the left is what you see at the machine; on the right, the very same desktop as the audience receives it.'
     },
     {
-      id: 'settings',
+      id: '02',
       zh: '设置浮窗', en: 'Settings panel',
-      zh_cap: '设置浮窗同样防录屏——填 API Key、改提示词都不会被播出去。',
-      en_cap: 'The settings panel is excluded too — keys and prompts typed there never reach the broadcast.'
+      zh_cap: '设置浮窗同样防录屏——在这里填 API Key、改快捷键、调提示词，都不会被播出去。',
+      en_cap: 'The settings panel is excluded too — keys typed here, hotkeys changed, prompts tuned: none of it reaches the broadcast.'
     },
     {
-      id: 'snip',
-      zh: 'Alt+C 截图选框', en: 'Alt+C screenshot mask',
-      zh_cap: '截图选框铺满整块屏幕，但它同样不在捕获里；观众看到的仍是原样的桌面。',
-      en_cap: 'The selection mask covers the whole screen and is still absent from the capture — the audience sees an untouched desktop.'
+      id: '03',
+      zh: '一边播一边问', en: 'Asking mid-stream',
+      zh_cap: '在直播中直接问模型。推理过程单独成块折叠在正文上方，不会混进回答里。',
+      en_cap: 'Asking the model mid-stream. Its reasoning sits in its own collapsed block above the answer rather than being mixed into it.'
     },
     {
-      id: 'shot',
-      zh: '图片查看浮层', en: 'Image viewer',
-      zh_cap: '点开气泡里的图放大查看，浮层也不会漏进捕获画面。',
-      en_cap: 'Opening an image from a bubble full-size: the overlay doesn\'t leak into the capture either.'
+      id: '04',
+      zh: '公式与排版', en: 'Math and layout',
+      zh_cap: '回答里的公式和 Markdown 都是自绘排版的，不套 WebView、不引第三方库。',
+      en_cap: 'Formulas and Markdown are laid out by the app itself — no WebView, no third-party library.'
     }
   ];
 

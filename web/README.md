@@ -30,8 +30,7 @@ web/
 ├── schema.sql            # 共享 D1 建表语句（账号级，已应用，留档）
 ├── _headers              # 安全响应头 + /assets/* 长缓存
 ├── robots.txt / sitemap.xml
-├── wrangler.example.jsonc  # 部署配置示例（提交用）
-└── wrangler.jsonc          # 本机配置（.gitignore 忽略）
+├── wrangler.jsonc        # 部署配置（入库）
 ```
 
 ## 依赖资源（账号级共享，所有软件官网共用）
@@ -71,8 +70,12 @@ web/
 
 ## 首次配置
 
-1. 复制 `wrangler.example.jsonc` 为 `wrangler.jsonc`。
-2. 共享资源的 `database_id` / `bucket_name` 已经填好，通常无需改动。
+`wrangler.jsonc` 已在仓库里，共享资源的 `database_id` / `bucket_name` 都填好了，
+通常不需要改任何东西，clone 下来 `wrangler login` 就能跑。
+
+> 它之所以入库，是因为里面没有值得藏的东西：`database_id` 只是资源标识，
+> 单独拿到它访问不了任何数据（要账号凭据才行），而 bucket 名本来就写在部署产物里。
+> 与其维护一份「示例」再让每个人自己复制一份（两份会漂），不如就这一份。
 
 ## 本地开发
 
@@ -114,7 +117,7 @@ wrangler pages deploy --project-name=banggang
 > 加了它文件照样传，只是自己也被当成一个静态文件传上去）。所以
 > `https://<域名>/README.md`、`/schema.sql`、`/wrangler.jsonc`、`/tools/*.ps1` **都真的存在**。
 > 这不是机密泄漏 —— 同样的内容都在公开仓库里，`wrangler.jsonc` 里的 `database_id`
-> 与提交的 `wrangler.example.jsonc` 一字不差 —— 但不显然，写在这里免得以后有人以为
+> 也只是个资源标识 —— 但不显然，写在这里免得以后有人以为
 > 部署目录是干净的。真要收干净，就得先把站点拷到一个临时目录再 deploy，
 > 为这点收益不值得；也可以加一个 `functions/_middleware.js` 把这些路径 404 掉。
 
@@ -169,7 +172,8 @@ powershell -ExecutionPolicy Bypass -File tools\make-logo.ps1
 ```
 
 场景 id 由 `assets/script.js` 顶部的 `DEMO_GROUPS` 决定，当前 4 组：
-`chat`（主窗口对话）/ `settings`（设置浮窗）/ `snip`（Alt+C 截图选框）/ `shot`（图片查看浮层）。
+`01`（第一次打开）/ `02`（设置浮窗）/ `03`（一边播一边问）/ `04`（公式与排版）。
+id 就是个键，显示用的标题和说明都写在 `DEMO_GROUPS` 里。
 
 **怎么截**：
 
@@ -212,7 +216,7 @@ powershell -ExecutionPolicy Bypass -File tools\make-logo.ps1
 
 ### 1. 复制目录
 
-新建仓库，把 `functions/`、`_headers`、`wrangler.example.jsonc`、`tools/` 复制过去
+新建仓库，把 `functions/`、`_headers`、`wrangler.jsonc`、`tools/` 复制过去
 （`index.html` / `assets/` 换成新软件的落地页）。
 
 ### 2. 改 `functions/_lib/site.js`
@@ -236,7 +240,7 @@ export const SITE = {
 ### 3. 建 Pages 项目并部署
 
 ```bash
-# wrangler.example.jsonc -> wrangler.jsonc，把 name 改成新项目名
+# 把 wrangler.jsonc 的 name 改成新项目名
 wrangler pages deploy --project-name=newsoftware
 ```
 

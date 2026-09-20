@@ -30,8 +30,7 @@ web/
 ├── schema.sql            # shared D1 schema (account-level, already applied, kept for reference)
 ├── _headers              # security headers + long cache for /assets/*
 ├── robots.txt / sitemap.xml
-├── wrangler.example.jsonc  # deploy config template (committed)
-└── wrangler.jsonc          # local config (gitignored)
+├── wrangler.jsonc        # deploy config (committed)
 ```
 
 ## Shared resources (account-level, reused by every software site)
@@ -73,8 +72,13 @@ entry** — the page and the API both read from there.
 
 ## First-time setup
 
-1. Copy `wrangler.example.jsonc` to `wrangler.jsonc`.
-2. The shared `database_id` / `bucket_name` are already filled in and normally need no change.
+`wrangler.jsonc` is in the repository with the shared `database_id` / `bucket_name` already
+filled in. Normally there is nothing to change: clone it, `wrangler login`, and go.
+
+> It is committed because there is nothing in it worth hiding. The `database_id` is only a
+> resource identifier — on its own it grants access to nothing (that needs account
+> credentials), and the bucket name already ships inside the deployed artifact anyway. Keeping
+> a separate "example" for everyone to copy just means the two copies drift.
 
 ## Local development
 
@@ -117,7 +121,7 @@ automatically**: `verification_data` stays at `CNAME record not set` until you a
 > (measured: the files were uploaded anyway, and the ignore file itself went up as a static
 > file). So `https://<domain>/README.md`, `/schema.sql`, `/wrangler.jsonc` and `/tools/*.ps1`
 > really do exist. This is not a leak — the same content is in the public repository, and the
-> `database_id` in `wrangler.jsonc` is identical to the committed `wrangler.example.jsonc` —
+> `database_id` in `wrangler.jsonc` is only a resource identifier —
 > but it is not obvious, so it is written down here for whoever assumes the deploy directory is
 > clean. Cleaning it up properly would mean copying the site into a staging directory before
 > deploying; that is not worth it for the benefit, and a `functions/_middleware.js` that 404s
@@ -177,8 +181,9 @@ Each scenario needs a pair, placed in `web/assets/demo/`:
 ```
 
 Scenario ids come from `DEMO_GROUPS` at the top of `assets/script.js`. There are four:
-`chat` (main window) / `settings` (settings panel) / `snip` (Alt+C screenshot mask) /
-`shot` (image viewer).
+`01` (first launch) / `02` (settings panel) / `03` (asking mid-stream) /
+`04` (math and layout). The id is just a key — the display title and caption live in
+`DEMO_GROUPS`.
 
 **How to shoot them:**
 
@@ -228,7 +233,7 @@ new software **requires no new Cloudflare database or bucket**.
 
 ### 1. Copy the directory
 
-In a new repository, copy `functions/`, `_headers`, `wrangler.example.jsonc` and `tools/`
+In a new repository, copy `functions/`, `_headers`, `wrangler.jsonc` and `tools/`
 (replace `index.html` / `assets/` with the new software's landing page).
 
 ### 2. Edit `functions/_lib/site.js`
@@ -252,7 +257,7 @@ export const SITE = {
 ### 3. Create the Pages project and deploy
 
 ```bash
-# wrangler.example.jsonc -> wrangler.jsonc, change name to the new project
+# change name in wrangler.jsonc to the new project
 wrangler pages deploy --project-name=newsoftware
 ```
 

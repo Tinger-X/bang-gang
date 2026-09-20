@@ -17,6 +17,11 @@
 # Any id works; script.js just looks for the same pair under web/assets/demo/.
 # Filenames can be .png / .jpg / .jpeg / .bmp.
 #
+# "visible" gets misspelled in practice -- the first real batch arrived as
+# -visiable and -visable -- so all three spellings are accepted rather than
+# making the operator rename files by hand. The output is always the canonical
+# -visible / -capture.
+#
 # ASCII-only on purpose: PowerShell 5.1 reads a BOM-less script as ANSI, so any
 # non-ASCII byte here would be a syntax error.
 #
@@ -108,17 +113,24 @@ $encParams.Param[0] = New-Object System.Drawing.Imaging.EncoderParameter(
     [System.Drawing.Imaging.Encoder]::Quality, [int64]$Quality)
 
 # ---- find pairs ------------------------------------------------------------
+# Accepted spellings of the "visible" tag; the first is canonical.
+$visibleTags = @('visible', 'visable', 'visiable')
+
 $visibles = @()
-foreach ($e in $exts) { $visibles += @(Get-ChildItem -LiteralPath $Source -Filter "*-visible$e" -File -ErrorAction SilentlyContinue) }
+foreach ($e in $exts) {
+    foreach ($tag in $visibleTags) {
+        $visibles += @(Get-ChildItem -LiteralPath $Source -Filter "*-$tag$e" -File -ErrorAction SilentlyContinue)
+    }
+}
 $visibles = $visibles | Sort-Object Name -Unique
 
 if (-not $visibles.Count) {
-    throw "no '*-visible' images in $Source`n  Expected pairs like chat-visible.png / chat-capture.png."
+    throw "no '*-visible' images in $Source`n  Expected pairs like 01-visible.png / 01-capture.png."
 }
 
 $done = 0
 foreach ($v in $visibles) {
-    $id = $v.Name -replace '-visible\.[^.]+$', ''
+    $id = $v.Name -replace ('-(?:' + ($visibleTags -join '|') + ')\.[^.]+$'), ''
 
     $capture = $null
     foreach ($e in $exts) {
