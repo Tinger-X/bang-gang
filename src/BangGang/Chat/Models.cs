@@ -3,8 +3,23 @@ namespace BangGang;
 /// <summary>一段会话。</summary>
 public class Conversation
 {
+    /// <summary>
+    /// 标题最多留多少个字符。超出由<b>标题栏</b>的省略号收尾（<c>AutoEllipsis</c>），
+    /// 这里卡的是存进文件的长度 —— 不卡的话模型偶尔会回一整段摘要，会话列表里那一行
+    /// 就只剩省略号了。
+    /// </summary>
+    public const int TitleMax = 30;
+
     public string Id { get; set; } = Guid.NewGuid().ToString("N");
     public string Title { get; set; } = "新对话";
+
+    /// <summary>
+    /// 这条标题已经**定稿**：用户自己改的，或者模型按首条消息总结出来的。
+    /// 定稿之后 <see cref="RefreshTitle"/> 不再按首句重算 —— 否则用户起的名字会在
+    /// 下一次发消息时被首句盖掉，模型起的那条也一样（首条消息还在，条件一直成立）。
+    /// </summary>
+    public bool TitleLocked { get; set; }
+
     public DateTime CreatedAt { get; set; } = DateTime.Now;
     public DateTime UpdatedAt { get; set; } = DateTime.Now;
     public List<ChatMessage> Messages { get; set; } = new();
@@ -25,18 +40,37 @@ public class Conversation
     /// <summary>见 <see cref="DraftText"/>：那半句带着的附件。</summary>
     public List<Attachment> DraftFiles { get; set; } = new();
 
-    /// <summary>依据首条用户消息等生成显示标题。</summary>
+    /// <summary>
+    /// 依据首条用户消息等生成显示标题。标题定稿过（见 <see cref="TitleLocked"/>）就直接返回，
+    /// 但「这条会话刚刚动过」这件事照记 —— <c>UpdatedAt</c> 是会话列表的排序键，
+    /// 跟标题从哪儿来没有关系。
+    /// </summary>
     public void RefreshTitle()
     {
+        UpdatedAt = DateTime.Now;
+        if (TitleLocked) return;
         var firstUser = Messages.FirstOrDefault(m => m.Role == "user");
         if (firstUser != null)
         {
             string t = string.IsNullOrWhiteSpace(firstUser.Text) ? "(附件)" : firstUser.Text;
-            Title = t.Trim();
+            Title = TidyTitle(t);
             if (Title.Length > 18) Title = Title[..18] + "…";
         }
         else Title = "新对话";
-        UpdatedAt = DateTime.Now;
+    }
+
+    /// <summary>
+    /// 把外来的一串标题（用户敲进编辑框的 / 模型总结出来的）收拾成能存、能显示的样子：
+    /// 换行压成空格、连续空白并成一个、去首尾空白、按 <see cref="TitleMax"/> 截断。
+    ///
+    /// 空串原样返回空串 —— 「要不要接受一个空标题」是调用方的决定，不该在这里替它拿主意。
+    /// </summary>
+    public static string TidyTitle(string? raw)
+    {
+        string s = (raw ?? "").Replace('\r', ' ').Replace('\n', ' ').Replace('\t', ' ');
+        var parts = s.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+        s = string.Join(" ", parts);
+        return s.Length > TitleMax ? s[..TitleMax] : s;
     }
 }
 

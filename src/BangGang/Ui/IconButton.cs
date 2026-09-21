@@ -5,7 +5,7 @@ namespace BangGang;
 /// <summary>小型图标按钮（放大镜 / 齿轮 / 加号 / 发送 / 关闭 / 回形针等），不改变鼠标指针。</summary>
 internal sealed class IconButton : Control, IThemed
 {
-    public enum Kind { Search, Gear, Plus, Send, Stop, Record, Close, Paperclip, Maximize, Restore, Collapse, Expand, Link }
+    public enum Kind { Search, Gear, Plus, Send, Stop, Record, Close, Paperclip, Maximize, Restore, Collapse, Expand, Link, Edit }
 
     /// <summary>
     /// 底衬的四种画法。
@@ -251,6 +251,9 @@ internal sealed class IconButton : Control, IThemed
             case Kind.Paperclip:
                 DrawPaperclip(g, c, c, 20f, ink);
                 break;
+            case Kind.Edit:
+                DrawPencil(g, c, c, pen);
+                break;
             case Kind.Link:
                 // 「打开外部链接」：形状一律走 Gfx.DrawGlyph(Glyph.Link)，别在这里另画一遍 ——
                 // 全应用只有这一枚按钮用它，多一处就多一份要同步的形状。
@@ -317,6 +320,37 @@ internal sealed class IconButton : Control, IThemed
             g.DrawArc(pen, xC, yTopI - rIn, 2 * rIn, 2 * rIn, 180, 180);
             g.DrawLine(pen, xD, yTopI, xD, 5f);
         }
+        g.Restore(old);
+    }
+
+    /// <summary>
+    /// 「修改标题」的铅笔：一支斜放 45° 的笔，笔尖朝左下。
+    ///
+    /// 和 <see cref="DrawPaperclip"/> 同一个办法 —— 把坐标系转过来画**竖直**的铅笔，
+    /// 于是六条边全是横平竖直的线段，斜着摆这件事交给 <c>RotateTransform</c>。
+    /// 在屏幕坐标系里手算这六条线，等于把同一个 45° 抄六遍，改一处就得对齐六处。
+    ///
+    /// 尺寸是照着 28px 的圆钮定的：笔全长 12.4 个单位，转 45° 之后外接盒 ≈ 8.8px，
+    /// 四周还剩约 9px，和 <c>Maximize</c> 那个 10px 方框的分量相当。
+    /// 笔杆的宽窄（<c>w</c>）不要小于 2.5 —— 再窄笔尖那两道斜线就会并成一根竖线，
+    /// 整支笔读出来是个「！」而不是铅笔。
+    /// </summary>
+    private static void DrawPencil(Graphics g, float cx, float cy, Pen pen)
+    {
+        const float w = 3f;          // 笔杆半宽
+        const float yTop = -6.2f;    // 笔尾（封口）
+        const float yBase = 2f;      // 笔杆与笔尖锥的分界
+        const float yTip = 6.2f;     // 笔尖
+
+        var old = g.Save();
+        g.TranslateTransform(cx, cy);
+        g.RotateTransform(45);
+        g.DrawLine(pen, -w, yTop, -w, yBase);     // 左杆
+        g.DrawLine(pen, w, yTop, w, yBase);       // 右杆
+        g.DrawLine(pen, -w, yTop, w, yTop);       // 笔尾封口
+        g.DrawLine(pen, -w, yBase, w, yBase);     // 锥底
+        g.DrawLine(pen, -w, yBase, 0, yTip);      // 锥的两条斜边
+        g.DrawLine(pen, w, yBase, 0, yTip);
         g.Restore(old);
     }
 

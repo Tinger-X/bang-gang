@@ -35,8 +35,11 @@ partial class MainForm
             _input.LoadDraftFrom(c);
             RebaseDictationDraft(_input.Text);   // 录着音时输入框会被下一个中间结果整框重写，见那里
         }
+        // 上一条的标题改到一半就切走了 —— 那一笔**不提交**（用户没按回车），
+        // 输入条收起来，标题照旧。放在 _active 改之前：CancelRename 要按着旧的那条收尾。
+        CancelRename();
         _active = c;
-        _convTitle.Text = string.IsNullOrWhiteSpace(c.Title) ? "新对话" : c.Title;
+        ShowConvTitle(c);
         _chatView.Load(c);
         _chatUI.Visible = true;
         _welcome.Visible = false;
@@ -47,6 +50,7 @@ partial class MainForm
 
     private void DeleteConversation(Conversation c)
     {
+        CancelRename();              // 标题改到一半的输入条跟着这条一起收掉
         _conversations.Remove(c);
         ChatStore.Delete(c.Id);          // 会话文件跟着删；它的附件不删，见 ChatStore.ImageDir
         if (_active == c)
@@ -68,8 +72,85 @@ partial class MainForm
         RememberActive();
     }
 
-    /// <summary>把一条会话写进它自己的文件。调用点是「内容定稿」的几处，见 <see cref="ChatStore.Save"/>。</summary>
-    private void PersistChat(Conversation c) => ChatStore.Save(c);
+    // ---------------- 对话标题 ----------------
+
+    /// <summary>正在就地改标题的那条会话（null = 没在改）。输入条的可见性与它是同一件事。</summary>
+    private Conversation? _renaming;
+
+    /// <summary>
+    /// 把一条会话的标题打到顶栏上。空标题显示成「新对话」—— 那是 <see cref="Conversation"/>
+    /// 的默认值，只有手改过 chats\*.json 的文件才可能是空的。
+    ///
+    /// 长度不在这里管：标题条那个 Label 带 <c>AutoEllipsis</c>，超长由它收尾
+    /// （中间那一段的宽度由 <c>ConvTitlePadX</c> 让开两侧按钮，见 ApplyLayout）。
+    /// </summary>
+    private void ShowConvTitle(Conversation? c)
+    {
+        _convTitle.Text = string.IsNullOrWhiteSpace(c?.Title) ? "新对话" : c!.Title;
+    }
+
+    /// <summary>
+    /// 点标题条右端那枚铅笔：标题那一行就地变成输入框。
+    ///
+    /// 编辑期间标题条上的那行字**清空**：输入条只有 420 宽，一条长标题会从它两侧伸出来，
+    /// 看着像两个标题叠在一起。清掉之后，屏幕上就只剩正在编辑的这一行字。
+    /// </summary>
+    private void BeginRenameTitle()
+    {
+        if (_active == null) return;
+        _renaming = _active;
+        _convTitle.Text = "";
+        _titleEdit.BeginEdit(_renaming.Title);
+    }
+
+    /// <summary>
+    /// 改完了：把用户敲的那串字收成标题。
+    ///
+    /// <b>空串不算一次修改</b> —— 把框里清光再回车，读作「算了，不改了」。
+    /// 反过来的话，用户清空输入框这个动作会把一条好好的标题抹成「新对话」，
+    /// 而那是不可逆的（模型不会再为这条会话起第二次名）。
+    /// </summary>
+    private void CommitRename(string text)
+    {
+        var c = _renaming;
+        _renaming = null;
+        _titleEdit.Close();
+
+        string t = Conversation.TidyTitle(text);
+        if (c != null && t.Length > 0)
+        {
+            c.Title = t;
+            // 用户起的名是定稿：模型和「首句截断」都不许再覆盖它（见 Conversation.TitleLocked）。
+            c.TitleLocked = true;
+            RebindConversations();
+            PersistChat(c);
+        }
+        if (ReferenceEquals(_active, c)) ShowConvTitle(c);
+    }
+
+    /// <summary>不改了（Esc、或者改到一半切走了）：标题保持原样。</summary>
+    private void CancelRename()
+    {
+        var c = _renaming;
+        if (c == null) return;
+        _renaming = null;
+        _titleEdit.Close();
+        if (ReferenceEquals(_active, c)) ShowConvTitle(c);
+    }
+
+    /// <summary>
+    /// 把一条会话写进它自己的文件。调用点是「内容定稿」的几处，见 <see cref="ChatStore.Save"/>。
+    ///
+    /// <b>已经被删掉的会话一律不写。</b>这几处都在一轮回复的收尾里，而那一轮可能跑了好几秒
+    /// （起名一两秒、回复更久），中途用户完全来得及把这条会话删掉 —— 删的时候文件已经跟着
+    /// 删了，收尾这一笔再写一次，下一次启动它就会从「已删除」里回来。判据不用另存一个标记：
+    /// 会话列表就是这个事实的账本。
+    /// </summary>
+    private void PersistChat(Conversation c)
+    {
+        if (!_conversations.Contains(c)) return;
+        ChatStore.Save(c);
+    }
 
     /// <summary>
     /// 记住「用户现在开的是哪条」。
@@ -149,9 +230,15 @@ partial class MainForm
         if (m == null) return;
         _active.Messages.Add(m);
         _chatView.AddMessage(m);
-        _active.RefreshTitle();
-        RebindConversations();
-        _convTitle.Text = _active.Title;
+        // 首条消息的标题由模型来起（见 StartReply 里那一趟），这里先不动它 ——
+        // 模型没回上名字时，那一趟自己会退回到「首句截断」。其余每一轮照旧按首句算一次，
+        // 那只是让 UpdatedAt 跟着刷新（标题这时已经定稿，RefreshTitle 不会再改它）。
+        if (!WantsGeneratedTitle(_active))
+        {
+            _active.RefreshTitle();
+            RebindConversations();
+            ShowConvTitle(_active);
+        }
         // 用户这句先落盘，再等回复：回复要跑好几秒（还可能中途暂停、被杀），
         // 不能让刚打出来的问题跟着那一轮一起悬着。
         PersistChat(_active);
@@ -219,29 +306,41 @@ partial class MainForm
         st.Timer.Start();
 
         Trace.Log($"llm request provider={_settings.ChatProvider} model={cfg.Model} msgs={history.Count}");
-        FlashStatus("正在等待模型回复…");
         try
         {
-            var res = await LlmClient.StreamAsync(
-                cfg, history,
-                s => { lock (st.Gate) st.Pending.Append(s); },
-                s =>
-                {
-                    lock (st.Gate)
-                    {
-                        if (st.ReasonStart == 0) st.ReasonStart = Environment.TickCount64;
-                        st.PendingReason.Append(s);
-                    }
-                },
-                st.Cts.Token);
+            // 首条消息：先让模型给这次对话起个名字，再开始真正的对话。
+            //
+            // 起名这一步**不进界面**：上面那个空气泡照转它那三个点，落在用户眼里就是
+            // 「模型在回话」—— 这正是「确认标题的过程不用显示」那条要求的落点，
+            // 所以这里既不加第二个气泡，也不为它单开一条状态提示。
+            if (WantsGeneratedTitle(conv)) await NameConversation(conv, cfg, st);
 
-            Flush(st);
-            // 上限用完时流是「正常」结束的（finish_reason=length），不主动看一眼就只剩
-            // 「回复说着说着没了」这一个现象。见 LlmStreamResult 的注释。
-            if (res.Finish == "length") st.Msg.Warning = TruncationNote(cfg, res, st.Msg);
-            if (st.Msg.Text.Length == 0 && st.Msg.Warning.Length == 0)
-                st.Msg.Text = "（模型没有返回内容）";
-            Trace.Log($"llm done chars={st.Msg.Text.Length} reason={st.Msg.Reasoning.Length} finish={res.Finish}");
+            // 用户在这中间按了暂停（名字还没回来）：这一轮到此为止。
+            // 名字本身不受影响 —— NameConversation 会在取消时退回「首句截断」，见那里。
+            if (!st.Cts.IsCancellationRequested)
+            {
+                FlashStatus("正在等待模型回复…");
+                var res = await LlmClient.StreamAsync(
+                    cfg, history,
+                    s => { lock (st.Gate) st.Pending.Append(s); },
+                    s =>
+                    {
+                        lock (st.Gate)
+                        {
+                            if (st.ReasonStart == 0) st.ReasonStart = Environment.TickCount64;
+                            st.PendingReason.Append(s);
+                        }
+                    },
+                    st.Cts.Token);
+
+                Flush(st);
+                // 上限用完时流是「正常」结束的（finish_reason=length），不主动看一眼就只剩
+                // 「回复说着说着没了」这一个现象。见 LlmStreamResult 的注释。
+                if (res.Finish == "length") st.Msg.Warning = TruncationNote(cfg, res, st.Msg);
+                if (st.Msg.Text.Length == 0 && st.Msg.Warning.Length == 0)
+                    st.Msg.Text = "（模型没有返回内容）";
+                Trace.Log($"llm done chars={st.Msg.Text.Length} reason={st.Msg.Reasoning.Length} finish={res.Finish}");
+            }
         }
         catch (OperationCanceledException)
         {
@@ -279,6 +378,168 @@ partial class MainForm
             PersistChat(conv);      // 这一轮的正文（含暂停/出错留下的那半截）到此定稿
         }
     }
+
+    // ---------------- 让模型给会话起名 ----------------
+
+    /// <summary>
+    /// 「起名」用的系统提示词。三条要求都是照着模型实际会犯的毛病写的：
+    /// 不说「只输出标题」，它会先来一句「好的，我来帮你总结一下」；不说字数，
+    /// 它会写成一整句摘要；不说「用消息本身的语言」，它会把中文消息总结成英文标题。
+    /// </summary>
+    private const string TitleSystemPrompt =
+        "你是一个会话标题生成器。读用户的第一条消息，为这次对话起一个标题。\n" +
+        "要求：\n" +
+        "1. 用这条消息本身所用的语言，不要翻译；\n" +
+        "2. 不超过 16 个字（英文不超过 6 个单词）；\n" +
+        "3. 只输出标题本身：不要引号、不要句号、不要「标题：」之类的前缀，不要任何解释。";
+
+    /// <summary>
+    /// 这一轮要不要请模型起名：会话里的**第一条**用户消息，且标题还没有定稿。
+    ///
+    /// 两个条件缺一不可。后一个是为了让用户先手改过名的会话不被模型覆盖
+    /// （<see cref="Conversation.TitleLocked"/>）；前一个则保证一条会话只起一次名 ——
+    /// 后面每一轮都去总结一次，标题会随着对话越聊越飘。
+    /// </summary>
+    private static bool WantsGeneratedTitle(Conversation c) =>
+        !c.TitleLocked && c.Messages.Count(m => m.Role == "user") == 1;
+
+    /// <summary>
+    /// 请模型按首条用户消息总结一个标题，写进标题栏与会话列表。
+    ///
+    /// 拿不到标题（网络错 / 模型回空 / 用户中途按了暂停）一律退回
+    /// <see cref="Conversation.RefreshTitle"/> 那套「首句截断」—— 差别只是标题像不像人写的，
+    /// 而不是一条没名字的会话。
+    ///
+    /// 标题在这一刻就落盘，不等整轮回复跑完：它就是这一步的产物，而回复还要跑好几秒，
+    /// 期间被杀掉的话，用户下次打开看见的会是一条名字对不上的会话。
+    /// </summary>
+    private async Task NameConversation(Conversation conv, LlmConfig cfg, StreamState st)
+    {
+        string? title = null;
+        try
+        {
+            title = await AskTitle(conv, cfg, st.Cts.Token);
+        }
+        catch (OperationCanceledException)
+        {
+            // 用户按了暂停。名字还是得有，走下面的兜底 —— 这里什么都不做。
+        }
+
+        if (title != null)
+        {
+            conv.Title = title;
+            // 模型起的名也是定稿，理由同用户手改（否则下一轮 RefreshTitle 会用首句盖掉它）。
+            conv.TitleLocked = true;
+            Trace.Log("title: model named it '" + title + "'");
+        }
+        else
+        {
+            conv.RefreshTitle();
+            Trace.Log("title: fallback to the first message");
+        }
+
+        if (ReferenceEquals(_active, conv)) ShowConvTitle(conv);
+        RebindConversations();
+        PersistChat(conv);
+    }
+
+    /// <summary>
+    /// 一次起名请求。走的是和对话**完全相同**的客户端与接入配置，只有三处不同：
+    /// 系统提示词换成起名的那条、不带「强化信息」、关掉图片（标题用不着把截图发出去，
+    /// 附图仍会以「[图片] 名字」的形式留在消息里）。
+    ///
+    /// 拿不到内容返回 null；取消原样抛出去，由调用方分辨「暂停」和「出错」。
+    /// </summary>
+    private static async Task<string?> AskTitle(Conversation conv, LlmConfig chat, CancellationToken ct)
+    {
+        var first = conv.Messages.FirstOrDefault(m => m.Role == "user");
+        if (first == null) return null;
+
+        var sb = new StringBuilder();
+        try
+        {
+            await LlmClient.StreamAsync(TitleConfig(chat), new[] { first },
+                                        s => sb.Append(s), _ => { }, ct);
+        }
+        catch (OperationCanceledException) { throw; }
+        catch (Exception ex)
+        {
+            Trace.Log("title request failed: " + ex.Message);
+            return null;
+        }
+
+        string t = Conversation.TidyTitle(CleanModelTitle(sb.ToString()));
+        return t.Length == 0 ? null : t;
+    }
+
+    /// <summary>
+    /// 起名请求的配置。
+    ///
+    /// <c>Temperature</c> 压到 0.3：标题要的是稳，不是花样 —— 用户设的对话温度（可能到 1.5）
+    /// 是给正文的，套在标题上会得到一堆每次都不同的怪名字。
+    ///
+    /// <c>MaxTokens</c> 给到 1024 而不是几十：推理模型的**思考也算在这个上限里**，
+    /// 卡到 128 的话思考还没写完预算就没了，正文一个字都吐不出来（同
+    /// <see cref="TruncationNote"/> 那条坑）。上限宽一点没有代价 —— 提示词已经把它压在
+    /// 十几个字上，模型自己就会停。
+    /// </summary>
+    private static LlmConfig TitleConfig(LlmConfig chat) => new()
+    {
+        Url = chat.Url,
+        ApiKey = chat.ApiKey,
+        Model = chat.Model,
+        Vision = false,
+        Temperature = 0.3,
+        MaxTokens = 1024,
+        SystemPrompt = TitleSystemPrompt,
+        Reinforce = "",       // 「强化信息」是给对话那一边的，别混进起名请求
+    };
+
+    /// <summary>
+    /// 把模型回的那串字收拾成一条标题。
+    ///
+    /// 提示词里已经写了「只输出标题」，但模型时常还是会加个「标题：」前缀、给标题套上引号、
+    /// 或者先客气一句再换行写标题 —— 都得在这里剥掉，否则标题栏上挂着的就是
+    /// 「标题：“东京三日游”」。剥离是**宽容**的：多剥掉一层引号不痛不痒，漏一层则一眼可见。
+    /// </summary>
+    private static string CleanModelTitle(string raw)
+    {
+        string s = (raw ?? "").Trim();
+        // 只认第一行：多出来的那几行多半是解释。
+        int nl = s.IndexOfAny(new[] { '\r', '\n' });
+        if (nl >= 0) s = s[..nl];
+        s = s.Trim();
+
+        foreach (string p in new[] { "标题", "题目", "title" })
+        {
+            if (!s.StartsWith(p, StringComparison.OrdinalIgnoreCase)) continue;
+            s = s[p.Length..].TrimStart(':', '：', ' ', '\t');
+            break;
+        }
+
+        // 剥壳要**来回剥到不动为止**，一遍不够：`标题：“东京三日游”。` 里那个收尾的
+        // 句号把右引号顶到了倒数第二格，一遍 `Trim(引号)` 时它已经不在末尾、剥不掉，
+        // 于是标题栏上挂出来的就是 `东京三日游”` —— 探针第一次跑就是这个结果。
+        // 顺序也重要：先剥句读再剥引号，`“x”。` 才收得干净。三轮足够（模型不会套四层壳）。
+        for (int i = 0; i < 3; i++)
+        {
+            string before = s;
+            s = s.Trim(TitleWrap).TrimEnd(TitleTail).TrimEnd(TitleWrap);
+            if (s == before) break;
+        }
+        return s;
+    }
+
+    /// <summary>
+    /// 标题两端可能被套上的壳：引号、书名号、括号、空白。
+    /// 写成字段而不是就地一个字面量数组：它每轮起名都要过一遍，而数组字面量每次都新建一个。
+    /// </summary>
+    private static readonly char[] TitleWrap =
+        { '"', '\'', '“', '”', '‘', '’', '「', '」', '『', '』', '《', '》', '（', '）', '(', ')', ' ', '\t' };
+
+    /// <summary>收尾的句读。模型很爱给标题补一个句号，而标题栏上那个句号只是噪声。</summary>
+    private static readonly char[] TitleTail =
+        { '.', '。', '!', '！', '?', '？', ',', '，', ';', '；', ':', '：', '~', '～', '…' };
 
     /// <summary>把缓冲里的增量落到气泡上。后台线程只管往两个 Pending 里塞，一个字都不碰控件。</summary>
     private void Flush(StreamState st)

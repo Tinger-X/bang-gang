@@ -124,6 +124,7 @@ internal static class ChatStore
                 {
                     Id = c.Id,
                     Title = c.Title,
+                    TitleLocked = c.TitleLocked,
                     CreatedAt = c.CreatedAt,
                     UpdatedAt = c.UpdatedAt,
                     Messages = msgs,

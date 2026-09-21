@@ -13,7 +13,7 @@ namespace BangGang;
 public partial class MainForm : Form, IMessageFilter
 {
     public const string WindowTitle = "帮帮";
-    public const string AppVersion = "v0.9.17";
+    public const string AppVersion = "v0.9.18";
 
     private const uint Affinity = Native.WDA_EXCLUDEFROMCAPTURE;
 
@@ -59,6 +59,8 @@ public partial class MainForm : Form, IMessageFilter
     private readonly Panel _chatUI;
     private readonly Label _convTitle;
     private readonly IconButton _btnSideToggle;
+    private readonly IconButton _btnRename;
+    private readonly TitleEditor _titleEdit;
     private readonly ChatView _chatView;
     private readonly InputPanel _input;
     private readonly SettingsOverlay _settingsOverlay;
@@ -164,6 +166,26 @@ public partial class MainForm : Form, IMessageFilter
         _btnSideToggle.Click += (_, _) => ToggleSidebar();
         _chatUI.Controls.Add(_btnSideToggle);
         _btnSideToggle.BringToFront();      // 标题横跨整条，别把它压住
+
+        // 顶栏右端的「修改标题」：标题条的三分结构里右边那一分，和左边那枚收起按钮对称
+        // （几何见 ApplyLayout，两边的内边距是同一个 ConvTitlePadX）。
+        //
+        // BackdropOwner 同样要显式指到标题条上，理由与左边那枚一模一样（见上面那段注释）。
+        _btnRename = new IconButton(IconButton.Kind.Edit, Theme.PanelBg)
+        {
+            Location = new Point(10, 10),
+            BackdropOwner = _convTitle,
+        };
+        _btnRename.Click += (_, _) => BeginRenameTitle();
+        _chatUI.Controls.Add(_btnRename);
+        _btnRename.BringToFront();
+
+        // 就地改标题的输入条。常驻在控件树上、平时不可见（见 TitleEditor 的类注释），
+        // 收起 / 展开靠 Visible，不在这里增删控件。
+        _titleEdit = new TitleEditor();
+        _titleEdit.Committed += CommitRename;
+        _titleEdit.Cancelled += CancelRename;
+        _chatUI.Controls.Add(_titleEdit);
 
         _welcome = new WelcomeView { BackColor = Theme.ChatBg };
         _welcome.StartRequested += () => NewConversation();

@@ -10,8 +10,18 @@ partial class MainForm
     /// 顶栏标题两侧对称的内边距：等于「按钮左间距 + 按钮宽 + 一点余量」，
     /// 左右一样宽，于是 <c>MiddleCenter</c> 出来的标题正好落在整条的几何中线上，
     /// 又不会被左边的按钮压住。
+    ///
+    /// 左右两枚按钮（收起侧栏 / 修改标题）各占一头，所以这个数**两边都得留**：
+    /// 标题长了，省略号得在离任一枚按钮 <c>44 - 28 - 10 = 6px</c> 的地方收住。
     /// </summary>
     private const int ConvTitlePadX = 44;
+
+    /// <summary>对话标题栏的高度。标题条、两枚按钮、就地编辑框的竖直居中都以它为准。</summary>
+    private const int ConvTitleH = 48;
+
+    /// <summary>标题条上那两枚圆钮的边长（<c>IconButton</c> 的默认尺寸）与上下留白。</summary>
+    private const int ConvTitleBtn = 28;
+    private const int ConvTitleBtnTop = 10;
 
     /// <param name="liveResize">
     /// 这一次布局是**侧栏收展动画的中间帧**。为真时消息区只挪位置、不重排文字 ——
@@ -65,9 +75,13 @@ partial class MainForm
         // 这几条才是真正露在外面的：左缘跟着侧栏当前宽度走，宽度是 W - sw。
         int mw = W - sw;
         _welcome.Bounds = new Rectangle(sw, 0, mw, bodyH);
-        _convTitle.Bounds = new Rectangle(sw, 0, mw, 48);
+        _convTitle.Bounds = new Rectangle(sw, 0, mw, ConvTitleH);
         _convTitle.Padding = new Padding(ConvTitlePadX, 0, ConvTitlePadX, 0);
-        _btnSideToggle.Location = new Point(sw + 10, 10);
+        _btnSideToggle.Location = new Point(sw + 10, ConvTitleBtnTop);
+        // 改名按钮贴**窗口**右缘（= 标题条右缘），不是贴侧栏那一侧：它是三分结构里
+        // 右边那一分，侧栏收展时整条标题跟着变宽，这一枚跟着窗口走才一直待在原处。
+        _btnRename.Location = new Point(sw + mw - 10 - ConvTitleBtn, ConvTitleBtnTop);
+        _titleEdit.Bounds = TitleEditBounds(sw, mw);
         // 输入面板也铺满整窗、不随动画移动，内容靠 ContentInset 让开侧栏：
         // 它一移动，右下角那两个按钮就得跟着重摆一次，那正是上面要消掉的东西。
         //
@@ -80,7 +94,20 @@ partial class MainForm
         // 开关必须在 Bounds **之前**设：消息区是在 SetBounds 里同步回调 OnResize 的，
         // 反过来的话那一帧已经按着旧开关的规矩走完了，这一帧的意图就丢了。
         _chatView.LiveResize = liveResize;
-        _chatView.Bounds = new Rectangle(sw, 48, mw, bodyH - 48 - inputH);
+        _chatView.Bounds = new Rectangle(sw, ConvTitleH, mw, bodyH - ConvTitleH - inputH);
+    }
+
+    /// <summary>
+    /// 就地改标题的输入条摆在哪儿：横向上**居中在两侧按钮之间**、纵向上居中在标题条里。
+    ///
+    /// 宽度封顶 420：一条横跨整个窗口的输入框看着像搜索框，而不像「在改这一行字」。
+    /// 窗口窄到连留白都保不住时按 <see cref="ConvTitlePadX"/> 收 —— 宁可输入条变短，
+    /// 也不能让它压到那两枚按钮底下（那时用户点得到的位置和看到的位置就对不上了）。
+    /// </summary>
+    private Rectangle TitleEditBounds(int sw, int mw)
+    {
+        int w = Math.Min(420, Math.Max(120, mw - ConvTitlePadX * 2));
+        return new Rectangle(sw + (mw - w) / 2, (ConvTitleH - TitleEditor.BarH) / 2, w, TitleEditor.BarH);
     }
 
     protected override void OnResize(EventArgs e)
