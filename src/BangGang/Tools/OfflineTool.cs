@@ -28,6 +28,10 @@ namespace BangGang;
 ///         （目标 → 第一层外链 → 第二层外链 → 第三层外链该被拒），把每次判定打出来。
 ///         纯逻辑、确定性、不联网 —— 层次限制这种「错了也照样能跑」的东西，
 ///         靠联网碰是碰不出来的（真实的链路很少有 4 层深）。</item>
+///   <item><c>BANGGANG_UPDATE=1</c>：拿一个假的老版本号去问官网（真的发请求，但只是 GET
+///         <c>/api/stats</c>，不计入下载次数），把检查结果打出来；再加
+///         <c>BANGGANG_UPDATE_DOWNLOAD=1</c> 就连下载与校验一起走完。
+///         校验那段是「下完要运行」的前一道闸门，值得真跑一遍而不是只看代码。</item>
 /// </list>
 ///
 /// 它在 <c>Program.Main</c> 的最开头、**单实例互斥体之前**返回，所以已经开着一个帮帮
@@ -41,9 +45,11 @@ internal static class OfflineTool
         string? html = Environment.GetEnvironmentVariable("BANGGANG_HTML");
         bool list = Environment.GetEnvironmentVariable("BANGGANG_TOOL_LIST") == "1";
         bool depth = Environment.GetEnvironmentVariable("BANGGANG_DEPTH") == "1";
+        bool update = Environment.GetEnvironmentVariable("BANGGANG_UPDATE") == "1";
         // 加新模式时**必须**也加进这一句：漏了的话那个模式永远进不去，
         // 而现象是「跑了，什么都没输出」—— 看着和「模式内部判错了」一模一样。
-        if (string.IsNullOrWhiteSpace(spec) && string.IsNullOrWhiteSpace(html) && !list && !depth)
+        // （这一条已经漏过两次了，两次的症状都一样。）
+        if (string.IsNullOrWhiteSpace(spec) && string.IsNullOrWhiteSpace(html) && !list && !depth && !update)
             return false;
 
         // 显式把 stdout 包成 UTF-8 的 StreamWriter，而**不是**设 Console.OutputEncoding：
@@ -67,6 +73,12 @@ internal static class OfflineTool
             return true;
         }
 
+        if (Environment.GetEnvironmentVariable("BANGGANG_UPDATE") == "1")
+        {
+            RunUpdate();
+            return true;
+        }
+
         if (Environment.GetEnvironmentVariable("BANGGANG_DEPTH") == "1")
         {
             RunDepth();
@@ -82,6 +94,103 @@ internal static class OfflineTool
         try { RunOnce(spec!); }
         catch (Exception ex) { Console.WriteLine("tool probe failed: " + ex); }
         return true;   // 已经是工具模式了，别再把窗口开起来
+    }
+
+    /// <summary>
+    /// 确定性验一遍 <see cref="Updater.Verify"/> —— 它是「要不要运行这个刚下下来的 exe」
+    /// 的唯一判据，四条分支都得走一遍：对得上、哈希不符、大小不符、服务端没给哈希。
+    /// 不联网，用的是自己造的临时文件。
+    /// </summary>
+    private static void VerifyChecks()
+    {
+        var dir = Path.Combine(Path.GetTempPath(), "BangGang-Update");
+        Directory.CreateDirectory(dir);
+        string path = Path.Combine(dir, "verify-probe.bin");
+        byte[] payload = System.Text.Encoding.UTF8.GetBytes("this stands in for an installer");
+        string realHash = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(payload));
+
+        int bad = 0;
+        void Check(string what, string? hash, long size, bool expectOk)
+        {
+            File.WriteAllBytes(path, payload);
+            var info = new UpdateInfo("v9.9.9", "without-runtime", "verify-probe.bin", size, hash);
+            bool ok;
+            string detail;
+            try
+            {
+                Updater.Verify(path, info, realHash, payload.Length);
+                ok = true;
+                detail = "通过";
+            }
+            catch (Exception ex)
+            {
+                ok = false;
+                detail = ex.Message.Split('\n')[0];
+            }
+            bool pass = ok == expectOk;
+            bool deleted = !File.Exists(path);
+            if (!pass) bad++;
+            // 校验不过必须把文件删掉：留着的话用户还能自己去双击它。
+            if (!expectOk && !deleted) bad++;
+
+            Console.WriteLine($"  {(pass ? "OK  " : "FAIL")} {what,-22} 通过={ok,-5} 已删除={deleted}");
+            Console.WriteLine($"       └ {detail}");
+        }
+
+        Console.WriteLine("校验闸门的四条分支（临时文件，不联网）");
+        Check("哈希对得上", realHash, payload.Length, true);
+        Check("哈希不符", new string('A', 64), payload.Length, false);
+        Check("大小不符", realHash, payload.Length + 1, false);
+        Check("服务端没给哈希", null, payload.Length, true);
+        try { File.Delete(path); } catch { }
+        Console.WriteLine(bad == 0 ? "  全部通过" : $"  {bad} 条不符");
+    }
+
+    /// <summary>
+    /// 走一遍真实的检查更新。<c>BANGGANG_UPDATE=1</c> 只发一个 GET（不计下载次数）；
+    /// 再加 <c>BANGGANG_UPDATE_DOWNLOAD=1</c> 才真的把包装下来验一遍。
+    /// </summary>
+    private static void RunUpdate()
+    {
+        VerifyChecks();
+
+        Console.WriteLine("\n用假的老版本 v0.0.1 去问官网（本机真实版本是 " + MainForm.AppVersion + "）");
+        var (info, message) = Updater.CheckAsync("v0.0.1", CancellationToken.None).GetAwaiter().GetResult();
+        Console.WriteLine("  说明：" + message);
+        if (info == null) return;
+
+        Console.WriteLine($"  版本={info.Version} 档位={info.Variant}");
+        Console.WriteLine($"  文件={info.FileName}");
+        Console.WriteLine($"  大小={info.Size} ({AttachTypes.SizeText(info.Size)})");
+        Console.WriteLine($"  sha256={info.Sha256 ?? "<服务端未提供>"}");
+
+        // 再问一次「已经是最新」那条路：拿官网报的版本号当本机版本，应当判定无需更新。
+        var (same, msg2) = Updater.CheckAsync(info.Version, CancellationToken.None).GetAwaiter().GetResult();
+        Console.WriteLine($"\n本机已是 {info.Version} 时：{(same == null ? "正确判为无需更新" : "有误，仍报新版本")} —— {msg2}");
+
+        // 再试一个比它旧一号的版本，确认是比较版本号而不是比字符串。
+        var (older, msg3) = Updater.CheckAsync("v0.9.2", CancellationToken.None).GetAwaiter().GetResult();
+        Console.WriteLine($"本机是 v0.9.2 时：{(older == null ? "有误，没报更新" : "正确报出 " + older.Version)} —— {msg3}");
+
+        if (Environment.GetEnvironmentVariable("BANGGANG_UPDATE_DOWNLOAD") != "1")
+        {
+            Console.WriteLine("\n（加 BANGGANG_UPDATE_DOWNLOAD=1 才会真的下载并校验）");
+            return;
+        }
+
+        Console.WriteLine("\n开始下载（会计入官网的下载次数，这是真实下载）…");
+        long last = 0;
+        string path = Updater.DownloadAsync(info, p =>
+        {
+            long now = Environment.TickCount64;
+            if (now - last < 500 && p < 1.0) return;
+            last = now;
+            Console.WriteLine($"  {(int)Math.Round(p * 100)}%");
+        }, CancellationToken.None).GetAwaiter().GetResult();
+
+        var fi = new FileInfo(path);
+        Console.WriteLine($"下载并校验完成：{path}");
+        Console.WriteLine($"  实际 {fi.Length} 字节，官网说 {info.Size} 字节，一致={fi.Length == info.Size}");
     }
 
     /// <summary>

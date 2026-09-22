@@ -72,6 +72,26 @@ async function readVariantMeta(env, variant) {
   return meta;
 }
 
+// 各档安装包的 sha256。由 publish-artifacts.ps1 上传成 <app>/sha256.json，
+// 客户端下完安装包拿它核对，**核对不过就拒绝运行**。
+//
+// 单独一个对象、而不是塞进 R2 的对象元数据：那个脚本唯一能设的元数据字段是
+// Content-Disposition（也就是下载时用户看到的文件名），拿它捎带哈希会露在保存对话框里；
+// 而随包的 wrangler 没有 --custom-metadata 这个参数。
+//
+// 取不到就返回空表 —— 老发布物上传时还没有这个文件，客户端会退化成「只核对大小并说明未校验」，
+// 而不是把「没有哈希」当成「校验失败」。
+async function readHashes(env) {
+  try {
+    const obj = await env.BUCKET.get(SITE.app + '/sha256.json');
+    if (!obj) return {};
+    const data = await obj.json();
+    return data && typeof data === 'object' ? data : {};
+  } catch (e) {
+    return {};
+  }
+}
+
 export async function onRequest(context) {
   const { env } = context;
   const jsonHeaders = { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' };
@@ -99,10 +119,12 @@ export async function onRequest(context) {
     const variants = {};
     let direct = 0;
     let version = null;
+    const hashes = await readHashes(env);
     for (const variant of SITE.variants) {
       const meta = await readVariantMeta(env, variant);
       meta.direct = map[variant.counterKey] || 0;
       if (meta.size == null) meta.size = variant.bytesHint || null;
+      meta.sha256 = hashes[variant.id] || null;
       variants[variant.id] = meta;
       direct += meta.direct;
       if (!version && meta.version) version = meta.version;
