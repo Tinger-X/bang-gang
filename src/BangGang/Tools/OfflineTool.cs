@@ -20,9 +20,14 @@ namespace BangGang;
 ///   <item><c>BANGGANG_TOOL_ARGS</c>：完整参数 JSON，覆盖上面那个简写（多参数工具用）。</item>
 ///   <item><c>BANGGANG_TOOL_ATTACH</c>：给假会话挂一个附件路径，用来验「只给文件名也能找到文件」。</item>
 ///   <item><c>BANGGANG_TOOL_LIST=1</c>：只把工具清单与 schema 打出来，不跑任何工具。</item>
-///   <item><c>BANGGANG_HTML</c>：拿一个本地 .html 文件跑一遍 <see cref="WebFetchTool.HtmlToText"/>，
-///         把剥出来的正文打出来。<b>不联网</b> —— 剥得对不对是个纯函数问题，
-///         而线上页面随时会变、还可能抓不到，拿它当测试输入等于把两件事混在一起。</item>
+///   <item><c>BANGGANG_HTML</c>：拿一个本地 .html 文件跑一遍 <see cref="WebPage.Parse"/>，
+///         把剥出来的正文**和它引用到的地址**都打出来。<b>不联网</b> —— 剥得对不对、
+///         引用收得全不全都是纯函数问题，而线上页面随时会变、还可能抓不到，
+///         拿它当测试输入等于把两件事混在一起。</item>
+///   <item><c>BANGGANG_DEPTH=1</c>：把 <see cref="WebDepth"/> 按用户给的例子跑一遍
+///         （目标 → 第一层外链 → 第二层外链 → 第三层外链该被拒），把每次判定打出来。
+///         纯逻辑、确定性、不联网 —— 层次限制这种「错了也照样能跑」的东西，
+///         靠联网碰是碰不出来的（真实的链路很少有 4 层深）。</item>
 /// </list>
 ///
 /// 它在 <c>Program.Main</c> 的最开头、**单实例互斥体之前**返回，所以已经开着一个帮帮
@@ -35,7 +40,11 @@ internal static class OfflineTool
         string? spec = Environment.GetEnvironmentVariable("BANGGANG_TOOL");
         string? html = Environment.GetEnvironmentVariable("BANGGANG_HTML");
         bool list = Environment.GetEnvironmentVariable("BANGGANG_TOOL_LIST") == "1";
-        if (string.IsNullOrWhiteSpace(spec) && string.IsNullOrWhiteSpace(html) && !list) return false;
+        bool depth = Environment.GetEnvironmentVariable("BANGGANG_DEPTH") == "1";
+        // 加新模式时**必须**也加进这一句：漏了的话那个模式永远进不去，
+        // 而现象是「跑了，什么都没输出」—— 看着和「模式内部判错了」一模一样。
+        if (string.IsNullOrWhiteSpace(spec) && string.IsNullOrWhiteSpace(html) && !list && !depth)
+            return false;
 
         // 显式把 stdout 包成 UTF-8 的 StreamWriter，而**不是**设 Console.OutputEncoding：
         // 后者在输出被重定向到文件时会抛（那时没有控制台句柄），而重定向到文件恰恰是最常用的
@@ -58,6 +67,12 @@ internal static class OfflineTool
             return true;
         }
 
+        if (Environment.GetEnvironmentVariable("BANGGANG_DEPTH") == "1")
+        {
+            RunDepth();
+            return true;
+        }
+
         if (!string.IsNullOrWhiteSpace(html))
         {
             RunHtml(html!);
@@ -69,17 +84,71 @@ internal static class OfflineTool
         return true;   // 已经是工具模式了，别再把窗口开起来
     }
 
+    /// <summary>
+    /// 按用户给的那条链路跑一遍层次判定，顺带把「数量」那一维也试一下。
+    /// 全程只碰 <see cref="WebDepth"/>，不发任何请求。
+    /// </summary>
+    private static void RunDepth()
+    {
+        var d = new WebDepth();
+        int bad = 0;
+
+        void Check(string what, string url, bool expect)
+        {
+            bool got = d.Allow(url, out int depth, out string? why);
+            bool ok = got == expect;
+            if (!ok) bad++;
+            Console.WriteLine($"  {(ok ? "OK  " : "FAIL")} {what,-34} 允许={got,-5} 层={depth}");
+            if (why != null) Console.WriteLine($"       └ {why.Split('\n')[0]}");
+        }
+
+        Console.WriteLine("用户目标（第 1 层）");
+        Check("抓用户给的页面", "https://a.test/", true);
+
+        // 它引用 30 个外链，全登记成第 2 层
+        var many = Enumerable.Range(1, 30)
+            .Select(i => new WebRef(RefKind.Page, $"https://a.test/p{i}")).ToList();
+        d.Discover(many, 1);
+        Console.WriteLine($"第 1 层发现 {many.Count} 条引用");
+
+        Console.WriteLine("\n第 2 层：数量不限制，抓哪条都行");
+        Check("第 1 条外链", "https://a.test/p1", true);
+        Check("第 30 条外链（数量不限）", "https://a.test/p30", true);
+
+        d.Discover(new[] { new WebRef(RefKind.Style, "https://a.test/deep.css") }, 2);
+        Console.WriteLine("\n第 3 层");
+        Check("第 2 层引用的样式表", "https://a.test/deep.css", true);
+
+        d.Discover(new[] { new WebRef(RefKind.Image, "https://a.test/deepest.png") }, 3);
+        Console.WriteLine("\n第 4 层：该被拒");
+        Check("第 3 层引用的图片", "https://a.test/deepest.png", false);
+
+        Console.WriteLine("\n重复抓取与回跳");
+        Check("重抓用户目标（仍是第 1 层）", "https://a.test/", true);
+        Check("重抓第 2 层那条", "https://a.test/p1", true);
+        Check("自己编的网址（当新起点）", "https://b.test/whatever", true);
+
+        // 一个被浅层引用的地址，不该因为深层也引用了就被记深
+        d.Discover(new[] { new WebRef(RefKind.Page, "https://a.test/p1") }, 3);
+        Console.WriteLine("\n浅层地址不被深层引用拉深");
+        Check("p1 仍应是第 2 层", "https://a.test/p1", true);
+
+        Console.WriteLine(bad == 0 ? "\n全部通过" : $"\n{bad} 条不符");
+    }
+
     /// <summary>本地 HTML 过一遍剥离逻辑。见类注释里为什么这件事不该联网测。</summary>
     private static void RunHtml(string path)
     {
         byte[] bytes = File.ReadAllBytes(path);
         string src = TextDecode.Html(bytes, bytes.Length, null);
-        string text = WebFetchTool.HtmlToText(src);
+        var page = WebPage.Parse(src, "https://example.com/dir/page.html");
 
         Console.WriteLine($"input  {bytes.Length} bytes / {src.Length} chars");
-        Console.WriteLine($"output {text.Length} chars");
-        Console.WriteLine("---");
-        Console.WriteLine(text.Length > 4000 ? text[..4000] + "\n…（截断显示）" : text);
+        Console.WriteLine($"output {page.Text.Length} chars / {page.Refs.Count} 个引用");
+        Console.WriteLine("--- 正文");
+        Console.WriteLine(page.Text.Length > 2000 ? page.Text[..2000] + "\n…（截断显示）" : page.Text);
+        Console.WriteLine("--- 引用");
+        foreach (var r in page.Refs) Console.WriteLine($"  [{r.Kind}] {r.Url}");
     }
 
     private static void RunOnce(string spec)

@@ -102,11 +102,19 @@ internal static class OfflineAsk
         Console.WriteLine($"\n达到请求上限 {maxRounds} 次，停下。");
     }
 
-    /// <summary>结果打出来时整体缩进两格，好和探针自己的输出分开。</summary>
+    /// <summary>
+    /// 结果打出来时整体缩进两格，好和探针自己的输出分开。
+    ///
+    /// 超长时**掐中间、两头都留**：网页抓取的结果把「本页引用的地址」放在**末尾**，
+    /// 而那恰恰是最该看见的部分（模型下一轮会照着它往下抓）。只留开头的话，
+    /// 转录里看不到清单，会让人误以为清单没生成 —— 而它其实好好地发出去了。
+    /// </summary>
     private static string Indent(string s)
     {
         string flat = (s ?? "").Replace("\r\n", "\n").Replace('\r', '\n').Trim();
-        if (flat.Length > 600) flat = flat[..600] + "…";
+        const int head = 500, tail = 500;
+        if (flat.Length > head + tail)
+            flat = flat[..head] + "\n    …（中间省略 " + (flat.Length - head - tail) + " 字）…\n" + flat[^tail..];
         return flat.Replace("\n", "\n    ");
     }
 }

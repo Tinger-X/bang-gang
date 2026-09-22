@@ -153,4 +153,14 @@ internal sealed class ToolContext
     /// 当前线程上跑 —— 见 <see cref="ToolRunner"/> 里对此的说明。
     /// </summary>
     public Control? UiHost { get; init; }
+
+    /// <summary>
+    /// 这一轮里网页抓取已经到过哪些网址、各在第几层（见 <c>WebFetchTool</c>）。
+    ///
+    /// **必须是每轮一份**，所以挂在这里（<c>RunToolLoop</c> 每轮新建一个 context），
+    /// 而不是做成 WebFetchTool 的静态字段：静态的话上一轮的深度会带到下一轮，
+    /// 用户换个话题随手指个链接，就会被上一轮遗留的「超出层次限制」挡下来 ——
+    /// 而那个现象看起来完全像是抓取坏了。
+    /// </summary>
+    public WebDepth Web { get; } = new();
 }
