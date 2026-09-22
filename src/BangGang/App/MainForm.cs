@@ -13,7 +13,7 @@ namespace BangGang;
 public partial class MainForm : Form, IMessageFilter
 {
     public const string WindowTitle = "帮帮";
-    public const string AppVersion = "v0.9.20";
+    public const string AppVersion = "v0.9.21";
 
     private const uint Affinity = Native.WDA_EXCLUDEFROMCAPTURE;
 
@@ -372,6 +372,14 @@ public partial class MainForm : Form, IMessageFilter
         ApplyAffinity();
         CaptureProtector.Install();   // 保护对话框等所有顶层窗口
         ReapplyHotkeys();
+
+        // Debug + BANGGANG_DUMP=1 时，把对话区离屏画成 PNG。
+        //
+        // 走的是 DrawToBitmap（WM_PRINT），**不经过屏幕抓图** —— 气泡不是控件，
+        // 截图是唯一能看到它内部排版的常规手段，而截图依赖「桌面还能画」这件事。
+        // 桌面挂了（驱动崩了、远程会话断了）的时候，这条路是唯一还能看见排版的入口，
+        // 而断掉的样子与「排版坏了」一模一样。和 SettingsOverlay 里那两个 dump 同一套。
+        Trace.DumpAfter(_chatView, "dbg-chat", 1600);
     }
 
     protected override void OnFormClosed(FormClosedEventArgs e)

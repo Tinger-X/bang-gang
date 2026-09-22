@@ -11,6 +11,18 @@ internal static class Program
         // 离屏渲染一段 markdown 就退出（见 OfflineRender）。放在单实例锁之前：
         // 它不建窗口，没有理由被「已经开着一个帮帮」挡住。
         if (OfflineRender.TryRun()) return;
+
+        // 离屏跑单个工具就退出（见 OfflineTool）。同样放在单实例锁之前，
+        // 同样因为它不建窗口 —— 一边开着帮帮一边测工具是常态。
+        if (OfflineTool.TryRun()) return;
+
+        // 离屏渲染一份会话里的消息（见 OfflineBubble）。气泡不是控件，而截图与
+        // DrawToBitmap 都要求「先打开一条会话」，桌面一挂就整条断掉。
+        if (OfflineBubble.TryRun()) return;
+
+        // 无头跑一整轮带工具的对话（见 OfflineAsk）。**会真的发请求**，用 settings.json
+        // 里那份配置，所以要显式设 BANGGANG_ASK 才跑。
+        if (OfflineAsk.TryRun()) return;
 #endif
 
         // 单实例：重复启动时把已有窗口带到前台后退出

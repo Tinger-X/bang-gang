@@ -82,6 +82,19 @@ public class AppSettings
     /// <summary>强化信息：附在每次提问之后，用来把模型拉回当前话题。留空表示不发送。</summary>
     public string ChatReinforce { get; set; } = "";
 
+    // ---------- 工具调用（见 Tools/，开关在 ToolsPage） ----------
+    /// <summary>工具调用总开关。关掉之后下面那几个单开关一律失效（请求里根本不带 tools）。</summary>
+    public bool ToolsEnabled { get; set; } = true;
+
+    // 单个工具的开关。**默认全开** —— 装完就能用，不然用户会以为功能没做。
+    // 字段名与工具的对应关系写在 <see cref="ToolRegistry.Enabled"/> 里，加工具时两处一起改。
+    public bool ToolNow { get; set; } = true;
+    public bool ToolCalc { get; set; } = true;
+    public bool ToolClipboard { get; set; } = true;
+    public bool ToolFile { get; set; } = true;
+    public bool ToolWebFetch { get; set; } = true;
+    public bool ToolSysInfo { get; set; } = true;
+
     /// <summary>录音方式："hold" 按住录音 / "toggle" 按一下开始、再按一下停止。</summary>
     public string RecordMode { get; set; } = "hold";
 
@@ -294,6 +307,11 @@ public class AppSettings
         SttApiUrl = o.SttApiUrl; SttAppId = o.SttAppId; SttApiKey = o.SttApiKey; SttModel = o.SttModel;
         ChatTemperature = o.ChatTemperature; ChatMaxTokens = o.ChatMaxTokens;
         ChatSystemPrompt = o.ChatSystemPrompt; ChatReinforce = o.ChatReinforce;
+        // 工具开关：这一串漏一个的表现是「关掉之后保存，回来又自己开了」——
+        // CopyFrom 是手写逐字段拷贝，新加的字段不写进来就永远拷不过去。
+        ToolsEnabled = o.ToolsEnabled;
+        ToolNow = o.ToolNow; ToolCalc = o.ToolCalc; ToolClipboard = o.ToolClipboard;
+        ToolFile = o.ToolFile; ToolWebFetch = o.ToolWebFetch; ToolSysInfo = o.ToolSysInfo;
         RecordMode = o.RecordMode;
         ThemeMode = o.ThemeMode; WindowBorder = o.WindowBorder;
         Accent = o.Accent; Opacity = o.Opacity;

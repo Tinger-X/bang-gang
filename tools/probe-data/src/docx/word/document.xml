@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+  <w:body>
+    <w:p><w:r><w:t>季度经营报告</w:t></w:r></w:p>
+    <w:p><w:r><w:t xml:space="preserve">全年营收 1234.5 万元，同比增长 18%。</w:t></w:r></w:p>
+    <w:p/>
+    <w:p><w:r><w:t>分地区如下：</w:t></w:r></w:p>
+    <w:tbl>
+      <w:tr>
+        <w:tc><w:p><w:r><w:t>地区</w:t></w:r></w:p></w:tc>
+        <w:tc><w:p><w:r><w:t>金额</w:t></w:r></w:p></w:tc>
+      </w:tr>
+      <w:tr>
+        <w:tc><w:p><w:r><w:t>华东</w:t></w:r></w:p></w:tc>
+        <w:tc><w:p><w:r><w:t>800</w:t></w:r></w:p></w:tc>
+      </w:tr>
+      <w:tr>
+        <w:tc><w:p><w:r><w:t>华南</w:t></w:r></w:p></w:tc>
+        <w:tc><w:p><w:r><w:t>434.5</w:t></w:r></w:p></w:tc>
+      </w:tr>
+    </w:tbl>
+    <w:p><w:r><w:t>报告结束。</w:t></w:r></w:p>
+  </w:body>
+</w:document>

@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<sst xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" count="6" uniqueCount="6">
+  <si><t>姓名</t></si>
+  <si><t>入职日期</t></si>
+  <si><t>张三</t></si>
+  <si><t>李四</t></si>
+  <si><t>部门</t></si>
+  <si><r><t>技术</t></r><r><t>部</t></r></si>
+</sst>

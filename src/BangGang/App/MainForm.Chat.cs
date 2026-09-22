@@ -313,6 +313,11 @@ partial class MainForm
             return;
         }
 
+        // 这一轮带上哪些工具。一个都没开就干脆不设 —— LlmClient 见空就**不带 tools 字段**
+        // （带一个空数组，有些接口会当成参数错误直接 400）。
+        // 会话起名那条路用的是另一个 LlmConfig（TitleConfig 逐字段拷贝），不会带上这里设的工具。
+        if (ToolRegistry.AnyEnabled(_settings)) cfg.Tools = ToolRegistry.SchemaFor(_settings);
+
         // 先把这一轮要发的历史拍下来：下面紧接着就往 Messages 里塞了一条空的助手消息，
         // 它是给界面放回复用的，带着一起发出去等于让模型接着自己的空回复往下写。
         var history = conv.Messages.ToList();
@@ -346,18 +351,9 @@ partial class MainForm
             if (!st.Cts.IsCancellationRequested)
             {
                 FlashStatus("正在等待模型回复…");
-                var res = await LlmClient.StreamAsync(
-                    cfg, history,
-                    s => { lock (st.Gate) st.Pending.Append(s); },
-                    s =>
-                    {
-                        lock (st.Gate)
-                        {
-                            if (st.ReasonStart == 0) st.ReasonStart = Environment.TickCount64;
-                            st.PendingReason.Append(s);
-                        }
-                    },
-                    st.Cts.Token);
+                // 工具循环：一轮里模型可能要来回好几次（见 MainForm.Tools.cs）。
+                // 工具全关、或模型没要求调用时，它就是「发一次、读一次」，和以前一样。
+                var res = await RunToolLoop(cfg, conv, st, history);
 
                 Flush(st);
                 // 上限用完时流是「正常」结束的（finish_reason=length），不主动看一眼就只剩

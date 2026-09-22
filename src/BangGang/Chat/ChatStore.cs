@@ -225,6 +225,9 @@ internal static class ChatStore
             m.Reasoning = m.Reasoning ?? "";
             m.Warning = m.Warning ?? "";
             if (m.Attachments == null) m.Attachments = new();
+            // 工具记录同理。这里漏了的话，手改过的文件（或别的版本写出的 "ToolCalls": null）
+            // 会让气泡那边的 Count / 遍历直接打穿。
+            if (m.ToolCalls == null) m.ToolCalls = new();
             foreach (var a in m.Attachments)
             {
                 a.Name = a.Name ?? "";

@@ -89,6 +89,20 @@ internal sealed class MessageBubble
     private const int ReasonRuleW = 3;    // 正文左边那道竖线（连间距）
     private const int ReasonPadX = 10;
 
+    // ---- 工具调用那块（助手消息调过工具时才有，见 ToolCalls） ----
+    //
+    // 和思考块是**同一个形状**（一行可折叠的表头 + 带竖线的旁白框），所以行高、内边距、
+    // 竖线宽度全都复用上面的常量、连画法都走同一个 DrawFoldHeader / DrawFoldBody。
+    // 各写一套的话，两个块的箭头大小和文字基线会慢慢分家，而那种差别没人说得清是不是 bug。
+    private const int ToolRowGap = 9;      // 展开时，两条调用之间的间距
+
+    /// <summary>展开时圆点占的宽度：文字要给它让位，否则会读成「•计算」连在一起。</summary>
+    private const int ToolBulletW = 13;
+
+    /// <summary>展开时每条调用最多显示多少个字符的结果。全文在 <c>ToolCall.Result</c> 里存着，
+    /// 但这里是气泡，不是日志阅读器 —— 一条读了半个文件的记录展开后能顶满整个屏幕。</summary>
+    private const int ToolPreviewMax = 240;
+
     // ---- 截断说明（回复被长度上限截断时贴在正文下面那句） ----
     private const int WarnPad = 9;
     private const int WarnGap = 10;       // 与上方正文之间的间距
@@ -131,6 +145,30 @@ internal sealed class MessageBubble
     private bool _reasonTouched;
 
     private bool _reasonHover;
+
+    /// <summary>工具块占的总高（含它与下方内容的间距）；0 = 这条消息没调过工具。</summary>
+    private float _toolH;
+    private float _toolBodyH;
+    private Rectangle _toolHeader;
+    private bool _toolOpen;
+    private bool _toolTouched;
+    private bool _toolHover;
+
+    /// <summary>
+    /// 展开时每条调用的几何。**量的时候一次算好，画的时候只读** ——
+    /// 和 <see cref="Chip"/> 一个道理：量和画各算一遍的话，一旦算岔，
+    /// 表现是文字叠在一起或超出那个框，而两处看着都「没错」。
+    /// </summary>
+    private sealed class ToolRow
+    {
+        public string Brief = "";
+        public string Preview = "";
+        public float BriefH;
+        public float PreviewH;
+        public float Y;          // 相对正文框顶
+    }
+
+    private readonly List<ToolRow> _toolRows = new();
 
     /// <summary>截断说明那块的高度（含与上方正文的间距）；0 = 这条消息没有说明。</summary>
     private float _warnH;
@@ -288,6 +326,10 @@ internal sealed class MessageBubble
         // 用户自己点开过就不再动它 —— 那一刻起这块归他管。
         if (!IsUser && reason.Length > 0 && !_reasonTouched) _reasonOpen = text.Length == 0;
 
+        // 工具块同一条规矩：正文一出来就把「调了哪几个工具」收成一行。
+        // 它比思考块更该收 —— 工具往返常常是好几条，展开着一屏就没了。
+        if (!IsUser && !_toolTouched) _toolOpen = text.Length == 0 && reason.Length == 0;
+
         // 只有附件、没有正文的用户消息：**不画那个空气泡**，只把附件列出来（用户要求）。
         //
         // 判据是「气泡体里一个字都不会有」，所以助手消息恒为真 —— 它顶部那行「帮帮」就画在
@@ -307,13 +349,15 @@ internal sealed class MessageBubble
 
         _md = Markdown.Measure(text, _inner, _codeFolded.Count > 0 ? _codeFolded : null);
         MeasureReason(reason);
+        // **必须在 MeasureReason 之后**：工具块的表头位置要叠上 _reasonH（见 MeasureTool）。
+        MeasureTool();
         _warnH = warn.Length > 0 ? WarnBoxH(warn) + WarnGap : 0;
 
         // 等第一个字的这段：正文一个字都还没有，气泡按真实内容量只有顶上那行「帮帮」
         // （40px 高、88px 宽），看上去像半截断掉的气泡。所以正文那一行按一行算，
         // 动画就画在那一行上（见 DrawWait）—— 第一个字符一到，_showWait 变假，
         // 高度正好交给真正的正文。
-        _showWait = _waiting && _md.Height <= 0 && _reasonH <= 0;
+        _showWait = _waiting && _md.Height <= 0 && _reasonH <= 0 && _toolH <= 0;
         float bodyH = _showWait ? Markdown.BodyLinePitch() : _md.Height;
 
         float headH = IsUser ? 0 : 18;  // 助手消息顶部显示"帮帮"
@@ -329,7 +373,7 @@ internal sealed class MessageBubble
         //
         // 代价是第一个字到达时宽度会收一次（满宽 → 正文宽）。这是这条规矩本来的样子，
         // 思考块早就在这么做，不是这里新开的口子。
-        if (_reasonH > 0 || _warnH > 0 || _showWait) natural = float.MaxValue;
+        if (_reasonH > 0 || _toolH > 0 || _warnH > 0 || _showWait) natural = float.MaxValue;
         _naturalW = natural;
 
         // 这一轮的内容有没有把上限顶满 —— 见 SetMaxInner。
@@ -339,11 +383,11 @@ internal sealed class MessageBubble
         // 宽度 —— 15 句话的段落量出来 803、上限 849，差 46px，读成「内容就想要 803」
         // 正好会把「侧栏收起后还停在旧宽度」这件事放过去（0.8.5 就是这么栽的第二次）。
         // 所以 Markdown 折行的那一刻自己记下 Wrapped，这里只读那个标记。
-        _capped = _md.Wrapped || _chipWrapped || _reasonH > 0 || _warnH > 0;
+        _capped = _md.Wrapped || _chipWrapped || _reasonH > 0 || _toolH > 0 || _warnH > 0;
 
         float contentW = Math.Min(_naturalW, _inner);
         Width = (int)Math.Min(_inner + PadX * 2, contentW + PadX * 2);
-        Height = (int)(_bubbleTop + PadY + headH + _reasonH + bodyH + _warnH + PadY);
+        Height = (int)(_bubbleTop + PadY + headH + _reasonH + _toolH + bodyH + _warnH + PadY);
         if (!_bubbleBody)
         {
             // 宽度就是附件本身，高度就是附件区 —— 见上面那两处注释。
@@ -352,18 +396,18 @@ internal sealed class MessageBubble
         }
         // 什么都还没有的 28px 矮气泡。**等第一个字的时候不算** —— 那会儿正文也一个字都没有，
         // 正好落进这一句，把上面刚预留出来的正文行连同动画一起压掉，气泡又变回用户报的那半截。
-        if (text.Length == 0 && reason.Length == 0 && _chips.Count == 0 && !_showWait) Height = 28;
+        if (text.Length == 0 && reason.Length == 0 && _chips.Count == 0 && _toolH <= 0 && !_showWait) Height = 28;
 
         // 重排后悬浮下标可能指到了另一格上（甚至指到了不存在的下标）
         if (_hover >= _chips.Count) _hover = -1;
     }
 
     /// <summary>
-    /// 气泡**内部**内容区的起点：跳过附件区、气泡内边距、助手名字和思考块。
+    /// 气泡**内部**内容区的起点：跳过附件区、气泡内边距、助手名字、思考块和工具块。
     /// 绘制、量尺寸、命中测试都走它，别各自把「思考块有多高」再算一遍 ——
     /// 三处各算一遍的那种错法，表现是正文和附件重叠一点点，谁也不会一眼看出来。
     /// </summary>
-    private float BodyTop() => _bubbleTop + PadY + (IsUser ? 0 : 18) + _reasonH;
+    private float BodyTop() => _bubbleTop + PadY + (IsUser ? 0 : 18) + _reasonH + _toolH;
 
     /// <summary>思考正文的可用宽度。</summary>
     private int ReasonTextW() => _inner - ReasonPadX * 2 - ReasonRuleW;
@@ -388,9 +432,96 @@ internal sealed class MessageBubble
         _reasonH = ReasonHeadH + 6 + _reasonBodyH + 10;
     }
 
-    /// <summary>截断说明那块盒子有多高（文字按内宽折行量出来）。</summary>
-    private float WarnBoxH(string warn)
+    /// <summary>
+    /// 量一次工具块（收起时只量表头那一行，每条调用的文字一个都不排）。
+    ///
+    /// 表头的 y **必须叠上 <c>_reasonH</c>**：思考块永远在工具块上面，而
+    /// <see cref="MeasureReason"/> 的表头写的是 <c>_bubbleTop + PadY + 18</c>、
+    /// 它不知道自己下面还有东西。这也是 <c>Rebuild</c> 里两个 Measure 的调用顺序不能反的原因
+    /// （反了就拿到上一次的 _reasonH，展开/收起一次思考就会错位）。
+    /// </summary>
+    private void MeasureTool()
     {
+        _toolH = 0;
+        _toolBodyH = 0;
+        _toolHeader = Rectangle.Empty;
+        _toolRows.Clear();
+
+        var calls = Msg.ToolCalls;
+        if (IsUser || calls == null || calls.Count == 0) return;
+
+        float top = _bubbleTop + PadY + 18 + _reasonH;
+        _toolHeader = new Rectangle(PadX, (int)Math.Round(top), _inner, ReasonHeadH);
+        _toolH = ReasonHeadH + 10;             // 收起：只有表头 + 与下方内容的间距
+        if (!_toolOpen) return;
+
+        const TextFormatFlags flags = TextFormatFlags.WordBreak | TextFormatFlags.NoPadding;
+        int w = ReasonTextW() - ToolBulletW;   // 圆点占掉的那一条，文字不能压上去
+        using var fb = Theme.UI(10.5f);
+        using var fp = Theme.UI(10f);
+
+        float y = 0;
+        foreach (var c in calls)
+        {
+            var row = new ToolRow
+            {
+                Brief = RowBrief(c),
+                Preview = RowPreview(c),
+            };
+            row.BriefH = TextRenderer.MeasureText(row.Brief, fb, new Size(w, int.MaxValue), flags).Height;
+            row.PreviewH = row.Preview.Length > 0
+                ? TextRenderer.MeasureText(row.Preview, fp, new Size(w, int.MaxValue), flags).Height
+                : 0;
+            row.Y = y;
+            y += row.BriefH + (row.PreviewH > 0 ? 3 + row.PreviewH : 0) + ToolRowGap;
+            _toolRows.Add(row);
+        }
+        if (_toolRows.Count > 0) y -= ToolRowGap;      // 最后一条后面不留间距
+
+        _toolBodyH = y + ReasonPadY * 2;
+        _toolH = ReasonHeadH + 6 + _toolBodyH + 10;
+    }
+
+    /// <summary>展开时每条调用的一行小标题：「· 计算 (1234*5678)/2 · 0.0s」，失败的标出来。</summary>
+    private static string RowBrief(ToolCall c)
+    {
+        string brief = string.IsNullOrWhiteSpace(c.Brief) ? c.Name : c.Brief;
+        string s = "• " + brief;
+        if (!c.Ok) s = "• " + brief + "（失败）";
+        if (c.Ms > 0) s += " · " + Secs(c.Ms);
+        return s;
+    }
+
+    /// <summary>展开时每条调用的结果预览。全文太长（读文件动辄上千字），这里只给个开头。</summary>
+    private static string RowPreview(ToolCall c)
+    {
+        string r = (c.Result ?? "").Replace("\r\n", "\n").Replace('\r', '\n').Trim();
+        if (r.Length == 0) return "";
+        // 缩进两格并原样保留换行：结果里常常是多行（表格、文件片段），
+        // 压成一行的话用户完全认不出那是什么。
+        string body = "  " + r.Replace("\n", "\n  ");
+        return body.Length > ToolPreviewMax ? body[..ToolPreviewMax] + "…" : body;
+    }
+
+    /// <summary>表头那一行显示什么。还没开始回答时是「正在使用工具…」，答完才是次数与总耗时。</summary>
+    private string ToolLabel()
+    {
+        // 直接判 calls 而不是先取个 n：编译器认不出「n == 0 已经挡掉了 null」，
+        // 拆成两步反倒要给它加一个 ! 才编得过。
+        var calls = Msg.ToolCalls;
+        if (calls == null || calls.Count == 0) return "工具调用";
+        int n = calls.Count;
+
+        bool done = (Msg.Text ?? "").Length > 0;
+        int ms = 0;
+        foreach (var c in calls) ms += c.Ms;
+
+        if (!done) return n == 1 ? "正在使用工具…" : "正在使用工具（" + n + " 个）…";
+        return "工具调用 · " + n + " 次" + (ms > 0 ? " · " + Secs(ms) : "");
+    }
+
+    /// <summary>截断说明那块盒子有多高（文字按内宽折行量出来）。</summary>
+    private float WarnBoxH(string warn)    {
         using var f = Theme.UI(10.5f);
         var sz = TextRenderer.MeasureText(warn, f, new Size(_inner - WarnPad * 2, int.MaxValue),
                                           TextFormatFlags.WordBreak | TextFormatFlags.NoPadding);
@@ -479,6 +610,8 @@ internal sealed class MessageBubble
 
     private bool ReasonHeadAt(Point p) => _reasonH > 0 && _reasonHeader.Contains(p);
 
+    private bool ToolHeadAt(Point p) => _toolH > 0 && _toolHeader.Contains(p);
+
     /// <summary>点表头 = 展开 / 收起那一块。整行都是热区，箭头本身太小不好点。</summary>
     private void ToggleReason()
     {
@@ -488,14 +621,26 @@ internal sealed class MessageBubble
         Changed?.Invoke();
     }
 
+    /// <summary>同上，工具块那张表头。</summary>
+    private void ToggleTool()
+    {
+        _toolOpen = !_toolOpen;
+        _toolTouched = true;
+        Rebuild();
+        Changed?.Invoke();        // 高度变了，必须让 ChatView 重排
+    }
+
     /// <summary>指针移到本气泡上（坐标已由 <see cref="ChatView"/> 换算成局部坐标）。</summary>
     public void MouseMove(Point p)
     {
-        bool overHead = ReasonHeadAt(p);
-        if (overHead != _reasonHover)
+        // 两个可折叠的表头：指针形状不改（用户要求），所以「这一行能点」只能靠
+        // 悬浮时文字变个颜色来暗示。两块各记各的悬浮态，否则一块变色的同时另一块也亮。
+        bool overReason = ReasonHeadAt(p);
+        bool overTool = ToolHeadAt(p);
+        if (overReason != _reasonHover || overTool != _toolHover)
         {
-            // 指针形状不改（用户要求），所以「这一行能点」只能靠悬浮时文字变个颜色来暗示
-            _reasonHover = overHead;
+            _reasonHover = overReason;
+            _toolHover = overTool;
             Repaint?.Invoke();
         }
 
@@ -518,9 +663,10 @@ internal sealed class MessageBubble
     /// <summary>指针离开本气泡。</summary>
     public void MouseLeave()
     {
-        bool dirty = _hover >= 0 || _reasonHover || _codeHotOrd >= 0;
+        bool dirty = _hover >= 0 || _reasonHover || _toolHover || _codeHotOrd >= 0;
         _hover = -1;
         _reasonHover = false;
+        _toolHover = false;
         _codeHotOrd = -1;
         _codeHotBtn = -1;
         if (dirty) Repaint?.Invoke();
@@ -530,6 +676,7 @@ internal sealed class MessageBubble
     public void MouseUp(Point p)
     {
         if (ReasonHeadAt(p)) { ToggleReason(); return; }
+        if (ToolHeadAt(p)) { ToggleTool(); return; }
 
         var cb = CodeBtnAt(p);
         if (cb.Ord >= 0)
@@ -692,6 +839,7 @@ internal sealed class MessageBubble
                 using (var hb = new SolidBrush(Theme.Accent))
                     g.DrawString("帮帮", hf, hb, PadX + 2, _bubbleTop + PadY);
                 DrawReasonBack(g, bg, vt, vb);
+                DrawToolBack(g, bg, vt, vb);
             }
 
             float y = BodyTop();
@@ -759,6 +907,7 @@ internal sealed class MessageBubble
 
         if (!_bubbleBody) return;
         if (!IsUser) DrawReasonText(dc, at, vt, vb);
+        if (!IsUser) DrawToolText(dc, at, vt, vb);
         if (!_showWait && _md != null)
             Markdown.DrawText(dc, _md, at.X + PadX, at.Y + BodyTop(), bg, visTop, visBottom);
         if (_warnH > 0) DrawWarningText(dc, at, vt, vb);
@@ -886,38 +1035,87 @@ internal sealed class MessageBubble
         string reason = Msg.Reasoning ?? "";
         if (reason.Length == 0) return;
 
-        var head = _reasonHeader;
-        Color ink = _reasonHover ? Theme.Accent : Theme.TextMuted;
-
-        // 箭头：展开时朝下、收起时朝右。用多边形而不是字符 —— 字符在不同字体下
-        // 垂直居中的位置不一样，表头会看着忽高忽低。
-        float ax = head.X + 3, ay = head.Y + ReasonHeadH / 2f;
-        var tri = _reasonOpen
-            ? new[] { new PointF(ax, ay - 2.5f), new PointF(ax + 7, ay - 2.5f), new PointF(ax + 3.5f, ay + 2.5f) }
-            : new[] { new PointF(ax, ay - 3.5f), new PointF(ax + 5, ay), new PointF(ax, ay + 3.5f) };
-        using (var tb = new SolidBrush(ink)) g.FillPolygon(tb, tri);
-
         bool answering = (Msg.Text ?? "").Length > 0;
         string label = answering
             ? "思考过程" + (Msg.ReasoningMs > 0 ? " · " + Secs(Msg.ReasoningMs) : "")
             : "正在思考…";
+
+        DrawFoldHeader(g, _reasonHeader, label, _reasonOpen, _reasonHover);
+        if (_reasonOpen) DrawFoldBody(g, _reasonHeader.Y + ReasonHeadH + 6, _reasonBodyH, bubble, vt, vb);
+    }
+
+    /// <summary>
+    /// 工具调用那块（第一遍：表头 + 展开时的底板）。
+    ///
+    /// 和思考块共用 <see cref="DrawFoldHeader"/> / <see cref="DrawFoldBody"/>：
+    /// 这两块本来就是同一个形状（一行粗体小字 + 一个带竖线的旁白框），
+    /// 各画一套的话箭头大小、文字基线、悬浮色的深浅会慢慢分家，
+    /// 而那种差别摆在界面上没人说得清哪个才是对的。
+    /// </summary>
+    private void DrawToolBack(Graphics g, Color bubble, float vt, float vb)
+    {
+        if (_toolH <= 0 || IsUser) return;
+        var calls = Msg.ToolCalls;
+        if (calls == null || calls.Count == 0) return;
+
+        DrawFoldHeader(g, _toolHeader, ToolLabel(), _toolOpen, _toolHover);
+        if (!_toolOpen) return;
+
+        float boxY = _toolHeader.Y + ReasonHeadH + 6;
+        if (!DrawFoldBody(g, boxY, _toolBodyH, bubble, vt, vb)) return;
+
+        // 每条调用左边一个小圆点，代替缩进 —— 纯靠缩进的话，换行后的结果文字
+        // 和上一条的小标题会连成一片，分不清哪几行属于同一次调用。
+        using var dot = new SolidBrush(Theme.Mix(bubble, Theme.Accent, 0.55f));
+        foreach (var row in _toolRows)
+        {
+            float dy = boxY + ReasonPadY + row.Y + row.BriefH / 2f - 2;
+            if (dy < vt - 4 || dy > vb + 4) continue;
+            g.FillEllipse(dot, PadX + ReasonPadX + ReasonRuleW + 4, dy, 4f, 4f);
+        }
+    }
+
+    /// <summary>
+    /// 折叠块的**表头**：一个三角箭头 + 一行粗体小字，悬浮时整行变成主题色。
+    ///
+    /// 箭头用多边形而不是字符 —— 字符在不同字体下垂直居中的位置不一样，
+    /// 表头会看着忽高忽低。
+    /// </summary>
+    private void DrawFoldHeader(Graphics g, Rectangle head, string label, bool open, bool hover)
+    {
+        Color ink = hover ? Theme.Accent : Theme.TextMuted;
+
+        float ax = head.X + 3, ay = head.Y + ReasonHeadH / 2f;
+        var tri = open
+            ? new[] { new PointF(ax, ay - 2.5f), new PointF(ax + 7, ay - 2.5f), new PointF(ax + 3.5f, ay + 2.5f) }
+            : new[] { new PointF(ax, ay - 3.5f), new PointF(ax + 5, ay), new PointF(ax, ay + 3.5f) };
+        using (var tb = new SolidBrush(ink)) g.FillPolygon(tb, tri);
+
         using (var hf = Theme.UI(10f, FontStyle.Bold))
         using (var hb = new SolidBrush(ink))
             g.DrawString(label, hf, hb, head.X + 15, head.Y + 2);
+    }
 
-        if (!_reasonOpen) return;
+    /// <summary>
+    /// 折叠块的**旁白框**（展开时才画）：一块浅色圆角底 + 左边一道竖线。
+    /// 竖线是「这段是旁白、不是回答本身」的唯一标识，两行以上时全靠它区分。
+    ///
+    /// 返回 false 表示整个框都在可见带之外，调用方别再画里面的东西了。
+    /// </summary>
+    private bool DrawFoldBody(Graphics g, float boxY, float bodyH, Color bubble, float vt, float vb)
+    {
+        if (boxY + bodyH < vt || boxY > vb) return false;   // 整块在可见带外
 
-        float boxY = head.Y + ReasonHeadH + 6;
-        if (boxY + _reasonBodyH < vt || boxY > vb) return;   // 正文框整体在可见带外
         // 底色由调用方传进来（气泡自己的填充色）：这块画在气泡里面，
         // 混错基准就会在气泡上留一块异色的补丁。
-        using (var box = RoundedRect(PadX, boxY, _inner - 1, _reasonBodyH - 1, 8))
+        using (var box = RoundedRect(PadX, boxY, _inner - 1, bodyH - 1, 8))
         using (var b = new SolidBrush(Theme.Mix(bubble, Theme.TextMuted, 0.09f)))
             g.FillPath(b, box);
 
-        // 左边一道竖线：这段是「旁白」，不是回答本身。两行以上时全靠它区分。
         using (var rule = new SolidBrush(Theme.Mix(bubble, Theme.Accent, 0.45f)))
-            g.FillRectangle(rule, PadX + ReasonPadX, boxY + ReasonPadY - 2, ReasonRuleW - 1, _reasonBodyH - ReasonPadY * 2 + 4);
+            g.FillRectangle(rule, PadX + ReasonPadX, boxY + ReasonPadY - 2,
+                            ReasonRuleW - 1, bodyH - ReasonPadY * 2 + 4);
+        return true;
     }
 
     /// <summary>
@@ -938,6 +1136,50 @@ internal sealed class MessageBubble
             new Rectangle((int)(at.X + PadX + ReasonPadX + ReasonRuleW), (int)(at.Y + boxY + ReasonPadY),
                           ReasonTextW(), (int)(_reasonBodyH - ReasonPadY * 2)),
             Theme.TextMuted, TextFormatFlags.WordBreak | TextFormatFlags.NoPadding);
+    }
+
+    /// <summary>
+    /// 工具块展开时的**文字**（第二遍）。每条调用两行：一行小标题（调了什么、花了多久），
+    /// 一行结果预览。
+    ///
+    /// 位置全部读 <see cref="_toolRows"/> 里量好的几何，不在这里重算 ——
+    /// 重算的话，量的那套和画的这套一旦分家，表现是最后一条的文字压出框外，
+    /// 而两处看着都「没错」。
+    /// </summary>
+    private void DrawToolText(IDeviceContext dc, Point at, float vt, float vb)
+    {
+        if (_toolH <= 0 || IsUser || !_toolOpen || _toolRows.Count == 0) return;
+
+        float boxY = _toolHeader.Y + ReasonHeadH + 6;
+        if (boxY + _toolBodyH < vt || boxY > vb) return;
+
+        int x = (int)(at.X + PadX + ReasonPadX + ReasonRuleW + ToolBulletW);
+        int w = ReasonTextW() - ToolBulletW;
+        const TextFormatFlags flags = TextFormatFlags.WordBreak | TextFormatFlags.NoPadding;
+
+        using var fb = Theme.UI(10.5f);
+        using var fp = Theme.UI(10f);
+        foreach (var row in _toolRows)
+        {
+            // 局部 y 用来判可见带、绝对 y 用来画 —— 两个坐标系的数**不能混着比**：
+            // vt/vb 是从 visTop/visBottom 减去 at.Y 得来的（局部），而画的时候
+            // TextRenderer 要的是绝对坐标。拿绝对 y 去比局部 vt/vb，只要气泡不在
+            // 视口最顶上，比较就恒为假，表现是「这一块只有圆点、一个字都没有」。
+            float ly = boxY + ReasonPadY + row.Y;
+            float ay = at.Y + ly;
+
+            // 每条各自判一次可见带：一次读文件的结果预览可能比整个窗口还高，
+            // 不判的话每次重画都要把它整段排一遍。
+            if (ly + row.BriefH >= vt && ly <= vb)
+                TextRenderer.DrawText(dc, row.Brief, fb, new Rectangle(x, (int)ay, w, (int)row.BriefH),
+                                      Theme.TextMain, flags);
+
+            if (row.PreviewH <= 0) continue;
+            float py = ly + row.BriefH + 3;
+            if (py + row.PreviewH < vt || py > vb) continue;
+            TextRenderer.DrawText(dc, row.Preview, fp, new Rectangle(x, (int)(at.Y + py), w, (int)row.PreviewH),
+                                  Theme.TextMuted, flags);
+        }
     }
 
     /// <summary>

@@ -1,0 +1,81 @@
+{
+  "Version": 1,
+  "Conversation": {
+    "Id": "probetwoblocks0000000000000000001",
+    "Title": "两块堆叠测试",
+    "TitleLocked": true,
+    "CreatedAt": "2026-09-22T12:00:00",
+    "UpdatedAt": "2026-09-22T12:00:00",
+    "Messages": [
+      {
+        "Role": "assistant",
+        "When": "2026-09-22T12:00:00",
+        "Text": "报告里的全年营收是 1234.5 万元，同比增长 18%。",
+        "Reasoning": "用户问的是那个 docx。我先算一下要不要用到计算器，再看文件。",
+        "ReasoningMs": 2400,
+        "Warning": "",
+        "Attachments": [],
+        "ToolCalls": [
+          {
+            "Id": "c1",
+            "Name": "read_file",
+            "Args": "{\"path\":\"report.docx\"}",
+            "Result": "季度经营报告\n全年营收 1234.5 万元，同比增长 18%。",
+            "Brief": "读取 report.docx",
+            "Ok": true,
+            "Ms": 12
+          }
+        ]
+      },
+      {
+        "Role": "assistant",
+        "When": "2026-09-22T12:00:10",
+        "Text": "",
+        "Reasoning": "这一条用来验：思考块展开着，而工具块自动收起（正文还没开始写）。",
+        "ReasoningMs": 900,
+        "Warning": "",
+        "Attachments": [],
+        "ToolCalls": [
+          {
+            "Id": "c2",
+            "Name": "now",
+            "Args": "{}",
+            "Result": "当前本地时间：2026-09-22 12:00:10（星期二）",
+            "Brief": "时间日期",
+            "Ok": true,
+            "Ms": 0
+          }
+        ]
+      },
+      {
+        "Role": "assistant",
+        "When": "2026-09-22T12:00:20",
+        "Text": "",
+        "Reasoning": "",
+        "ReasoningMs": 0,
+        "Warning": "",
+        "Attachments": [],
+        "ToolCalls": [
+          {
+            "Id": "c3",
+            "Name": "calc",
+            "Args": "{\"expr\":\"(1234*5678)/2\"}",
+            "Result": "(1234*5678)/2 = 3503326",
+            "Brief": "计算 (1234*5678)/2",
+            "Ok": true,
+            "Ms": 0
+          },
+          {
+            "Id": "c4",
+            "Name": "read_file",
+            "Args": "{\"path\":\"sheet.xlsx\"}",
+            "Result": "【员工表】\n姓名 | 入职日期 |  | 部门\n张三 | 2024-03-15 | 12345.67 | 技术部\n李四 | 2024-04-18",
+            "Brief": "读取 sheet.xlsx",
+            "Ok": true,
+            "Ms": 31
+          }
+        ]
+      }
+    ]
+  }
+}

@@ -103,16 +103,64 @@ public class ChatMessage
     public List<Attachment> Attachments { get; set; } = new();
 
     /// <summary>
+    /// 这一轮里模型调用过的工具（时间 / 计算 / 读文件 …），按发生顺序。
+    ///
+    /// **和 <see cref="Text"/> 一样会被发回模型，但只有一行摘要**：完整结果（可能是几千字的
+    /// 文件内容）只在这里存着给界面展开看，回灌时用的是 <see cref="ToolCall.Brief"/>。
+    /// 不这么做的话，读一次文件就把上下文吃掉一大半，聊两轮就顶到上限。
+    /// </summary>
+    public List<ToolCall> ToolCalls { get; set; } = new();
+
+    /// <summary>
     /// 这条消息有没有值得留下来 / 值得画出来的东西。
     ///
     /// 落盘那边用它决定「空会话不写文件」，所以思考过程也算数：用户按了暂停、
     /// 或者模型把长度上限全用在思考上时，正文是空的而思考是满的 —— 那一轮
     /// 用户明明看见了东西，重启回来看见它没了会以为聊天记录丢了。
     ///
-    /// 三个属性都可能是 JSON 里的 null（反序列化不看非空声明），所以逐个兜一层。
+    /// 工具调用同理，而且后果更重：只有工具调用、正文一个字都没有的那一轮要是被判成空，
+    /// 整个会话就一条可落盘的消息都不剩，<see cref="ChatStore.Save"/> 会直接**删掉会话文件**。
+    ///
+    /// 四个属性都可能是 JSON 里的 null（反序列化不看非空声明），所以逐个兜一层。
     /// </summary>
     public bool IsEmpty =>
-        (Text ?? "").Length == 0 && (Reasoning ?? "").Length == 0 && (Attachments?.Count ?? 0) == 0;
+        (Text ?? "").Length == 0 && (Reasoning ?? "").Length == 0
+        && (Attachments?.Count ?? 0) == 0 && (ToolCalls?.Count ?? 0) == 0;
+}
+
+/// <summary>
+/// 模型要求的一次工具调用，以及它的执行结果。
+///
+/// 字段全是公开可写的：这东西跟着 <see cref="ChatMessage"/> 一起被 System.Text.Json
+/// 序列化进聊天文件（见 <see cref="ChatStore"/>），反序列化要有无参构造与可写属性。
+/// </summary>
+public class ToolCall
+{
+    /// <summary>
+    /// 服务端给的调用 id（<c>call_xxx</c>）。把结果回灌时必须**原样带回** ——
+    /// 用错 id 会被接口拒掉，而且各家报的错还不一样。
+    /// </summary>
+    public string Id { get; set; } = "";
+
+    public string Name { get; set; } = "";
+
+    /// <summary>模型给的参数 JSON 原文，如 <c>{"expr":"1+1"}</c>。展开工具那一条时显示它。</summary>
+    public string Args { get; set; } = "";
+
+    /// <summary>执行结果全文（已按上限截断过）。落盘、展开时看，**不回灌给模型**。</summary>
+    public string Result { get; set; } = "";
+
+    /// <summary>
+    /// 一行摘要，如「计算 1+1」「读取 报告.docx」。
+    /// 折叠行的括号里、以及**发给模型的历史**用的都是它。
+    /// </summary>
+    public string Brief { get; set; } = "";
+
+    /// <summary>执行成功与否。失败时 <see cref="Result"/> 里是一句给模型看的说明。</summary>
+    public bool Ok { get; set; } = true;
+
+    /// <summary>耗时毫秒。上面那一行「工具调用 · 3 次」的括号里用它。</summary>
+    public int Ms { get; set; }
 }
 
 /// <summary>输入框/消息中的附件。</summary>
