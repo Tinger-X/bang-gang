@@ -4,7 +4,7 @@
 
 A Windows desktop companion for live streamers: an AI chat window that is **completely invisible to screen capture** — screen recording, streaming, and screen sharing. Only the person sitting at the machine can see it; every capture path (Snipping Tool, OBS, meeting-software screen share, …) gets nothing.
 
-`v0.9.17` · .NET 8 + WinForms · zero third-party dependencies · [MIT License](LICENSE)
+.NET 8 + WinForms · zero third-party dependencies · [MIT License](LICENSE)
 
 ---
 
@@ -157,7 +157,7 @@ powershell -ExecutionPolicy Bypass -File tools\build-installer.ps1
 
 One command produces both installers in `dist/installer/`. The script:
 
-1. Reads the version from `BangGang.csproj` and **verifies it matches `MainForm.AppVersion`** (a mismatch aborts the build — those two numbers are hand-edited in two places, and when they drift the installer is labelled 0.9.17 while the app reports v0.9.16)
+1. Reads the version from `BangGang.csproj` and **verifies it matches `MainForm.AppVersion`** (a mismatch aborts the build — those two numbers are hand-edited in two places, and when they drift the installer is labelled with a different version than the app reports)
 2. Runs `dotnet publish` twice (self-contained and framework-dependent) into `build/publish/`
 3. Invokes `ISCC.exe` on `installer/BangGang.iss`, producing the two Setup executables and printing their SHA256 hashes
 

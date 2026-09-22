@@ -4,7 +4,7 @@
 
 Windows 桌面直播助手：一个**在直播、录屏、屏幕共享里完全看不见**的 AI 聊天窗口。窗口只对本机用户可见，任何捕获路径（截图工具、OBS、会议软件的屏幕共享……）拿到的画面里都没有它。
 
-`v0.9.17` · .NET 8 + WinForms · 零第三方依赖 · [MIT 许可证](LICENSE)
+.NET 8 + WinForms · 零第三方依赖 · [MIT 许可证](LICENSE)
 
 ---
 
@@ -157,7 +157,7 @@ powershell -ExecutionPolicy Bypass -File tools\build-installer.ps1
 
 一条命令产出两个安装包到 `dist/installer/`。脚本会：
 
-1. 从 `BangGang.csproj` 读版本号，**并核对 `MainForm.AppVersion` 一致**（不一致直接报错——那两个数靠手改两处，漂了的表现是"安装包写着 0.9.17、程序里显示 v0.9.16"）
+1. 从 `BangGang.csproj` 读版本号，**并核对 `MainForm.AppVersion` 一致**（不一致直接报错——那两个数靠手改两处，漂了的表现是"安装包上的版本号和程序里显示的版本号对不上"）
 2. 分别 `dotnet publish` 自包含 / 框架依赖两个版本到 `build/publish/`
 3. 调 `ISCC.exe` 编译 `installer/BangGang.iss`，出两个 Setup.exe 并打印 SHA256
 
