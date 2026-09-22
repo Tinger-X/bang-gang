@@ -280,7 +280,12 @@
 
   var STORAGE_LANG = 'bg.lang';
   var lang = localStorage.getItem(STORAGE_LANG) || 'zh';
-  var appVersion = 'v0.9.17'; // 默认版本；/api/stats 返回后动态更新
+  /* 占位版本号，不是真版本：/api/stats 返回之前页面上显示的就是它，
+     拿到 data.version 之后才换成真的（见文件末尾的 fetch）。
+     不要把某个真实版本号写在这里 —— 它每发一版就旧一次，而它同时出现在
+     首页徽标、下载区副标题和两个下载卡片上；写个过期版本号，用户看到的是
+     一个**看起来完全合理**的错误数字，比明摆着的占位符糟得多。 */
+  var appVersion = '--.--.--';
 
   function t(key) { return (I18N[lang] && I18N[lang][key]) || ''; }
 

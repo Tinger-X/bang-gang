@@ -28,7 +28,7 @@
   <meta name="theme-color" content="#2F70E0" />
   <meta name="color-scheme" content="light dark" />
 
-  <link rel="stylesheet" href="/assets/styles.css?v=260920002" />
+  <link rel="stylesheet" href="/assets/styles.css?v=260922001" />
 </head>
 <body>
   <a class="skip-link" href="#main" data-i18n="a11y.skip">跳到主要内容</a>
@@ -269,7 +269,9 @@
                 <h3 data-i18n="download.with_title">自带运行时</h3>
                 <p class="download-card-size" data-variant-size="with-runtime" data-i18n="download.with_size">约 49 MB</p>
               </div>
-              <span class="version-tag js-version">v0.9.17</span>
+              <!-- 占位，不是真版本：script.js 从 /api/stats 拿到之后会替换掉。
+                   别在这里写某个真实版本号 —— 它每发一版就旧一次。 -->
+              <span class="version-tag js-version">--.--.--</span>
             </div>
             <p class="download-card-desc" data-i18n="download.with_desc">目标机什么都不用装，下载完双击就能用。不确定自己装没装 .NET 运行时的话，选这个。</p>
             <a class="btn btn-primary btn-lg download-btn" href="/download?variant=with-runtime" data-variant-link="with-runtime">
@@ -286,7 +288,7 @@
                 <h3 data-i18n="download.without_title">依赖已装运行时</h3>
                 <p class="download-card-size" data-variant-size="without-runtime" data-i18n="download.without_size">约 2.8 MB</p>
               </div>
-              <span class="version-tag js-version">v0.9.17</span>
+              <span class="version-tag js-version">--.--.--</span>
             </div>
             <p class="download-card-desc" data-i18n="download.without_desc">体积小得多，前提是本机已经装了 .NET 8 桌面运行时。没装的话安装器会检测出来，并给你下载引导。</p>
             <a class="btn btn-ghost btn-lg download-btn" href="/download?variant=without-runtime" data-variant-link="without-runtime">
@@ -531,6 +533,6 @@
     </div>
   </footer>
 
-  <script src="/assets/script.js?v=260920002"></script>
+  <script src="/assets/script.js?v=260922001"></script>
 </body>
 </html>
