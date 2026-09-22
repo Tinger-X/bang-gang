@@ -293,12 +293,52 @@ internal sealed class DraftStrip : Control
             Theme.TextMain, TextFormatFlags.Left | TextFormatFlags.NoPrefix
             | TextFormatFlags.SingleLine | TextFormatFlags.EndEllipsis | TextFormatFlags.NoPadding);
 
-        string meta = Ellipsize(AttachTypes.MetaOf(a), SF.Get(8f), tw);
-        if (meta.Length > 0)
-            TextRenderer.DrawText(g, meta, SF.Get(8f), new Rectangle(tx, c.Top + 23, tw, 16),
-                Theme.TextMuted, TextFormatFlags.Left | TextFormatFlags.NoPrefix
-                | TextFormatFlags.SingleLine | TextFormatFlags.EndEllipsis | TextFormatFlags.NoPadding);
+        DrawMeta(g, a, new Rectangle(tx, c.Top + 23, tw, 16));
     }
+
+    /// <summary>
+    /// 附件卡片下面那行「类型 · 大小」。**类型按类别上色**（文档红、文本蓝、音频紫）、
+    /// 大小保持灰色。
+    ///
+    /// 这套颜色原本体现在一块 28×28 的扩展名角标上（0.9.22 去掉）。迁到文字上比另起一块
+    /// 色块好：分类信息本来就该跟着文字走，而那块角标把同一件事在一张 118px 宽的卡片上
+    /// 说了三遍。
+    ///
+    /// 两段分开量、分开省略：合成一串画的话整行只能有一个颜色，而且省略号会先吃掉
+    /// 后面的字节数 —— 那是这行里更该留下的部分。
+    /// </summary>
+    internal static void DrawMeta(IDeviceContext dc, Attachment a, Rectangle box)
+    {
+        if (box.Width < 12) return;
+
+        const TextFormatFlags flags = TextFormatFlags.Left | TextFormatFlags.NoPrefix
+                                    | TextFormatFlags.SingleLine | TextFormatFlags.NoPadding;
+        var f = SF.Get(8f);
+
+        string head = Ellipsize(AttachTypes.MetaHead(a), f, box.Width);
+        if (head.Length == 0) return;
+        TextRenderer.DrawText(dc, head, f, box, TintOf(a), flags);
+
+        int hw = TextW(head, f);
+        int rest = box.Width - hw;
+        if (rest < 16) return;                       // 放不下「 · 1 KB」这种最短的一截了
+        string tail = Ellipsize(AttachTypes.MetaTail(a), f, rest);
+        if (tail.Length > 0)
+            TextRenderer.DrawText(dc, tail, f, new Rectangle(box.X + hw, box.Y, rest, box.Height),
+                                  Theme.TextMuted, flags);
+    }
+
+    /// <summary>
+    /// 附件类别对应的颜色。就是 0.9.22 之前那块扩展名角标用的同一套：文档红、文本蓝、
+    /// 音频紫、其余灰。角标去掉后改由 <see cref="DrawMeta"/> 画在那行类型文字上。
+    /// </summary>
+    internal static Color TintOf(Attachment a) => AttachTypes.CatOf(a.Path) switch
+    {
+        AttachCat.Doc => Theme.Danger,
+        AttachCat.Text => Theme.Accent,
+        AttachCat.Audio => Theme.Mix(Theme.Accent, Theme.Danger, 0.5f),
+        _ => Theme.TextMuted,
+    };
 
     /// <summary>卡片上显示的文件名，空的时候给个占位。</summary>
     internal static string DisplayName(Attachment a)

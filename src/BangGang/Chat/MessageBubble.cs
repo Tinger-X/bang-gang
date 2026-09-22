@@ -985,7 +985,14 @@ internal sealed class MessageBubble
             return;
         }
 
-        RP.Box(g, c.Rect, 8, ChipFill(bubble), bubble);
+        // backdrop 必须是**这块卡片底下真正显示的颜色**，也就是对话区底色。
+        //
+        // 附件格画在气泡**外面**：它排在 y = 0 那一带，气泡体从 _bubbleTop 才开始
+        // （见 Rebuild 的排布）。所以传气泡色是错的 —— RP.Box 会先用 backdrop 铺满整个
+        // 矩形，于是每个圆角外面都垫着一块气泡色的**方角**，而它下面是另一个颜色。
+        // 实测：用户气泡色 (222,232,250) 压在白色对话区上，一圈淡淡的方角，看着就像
+        // 「圆角没裁干净」。0.9.22 之前就是这样，只是那块扩展名角标把它挡得不显眼。
+        RP.Box(g, c.Rect, 8, ChipFill(bubble), Theme.ChatBg);
     }
 
     /// <summary>附件格子的**文字**部分（第二遍）。坐标是绝对坐标（GDI 不认平移变换）。
@@ -1003,12 +1010,7 @@ internal sealed class MessageBubble
             Theme.TextMain, TextFormatFlags.Left | TextFormatFlags.NoPrefix
             | TextFormatFlags.SingleLine | TextFormatFlags.EndEllipsis | TextFormatFlags.NoPadding);
 
-        string meta = DraftStrip.Ellipsize(AttachTypes.MetaOf(c.Src), SF.Get(8f), tw);
-        if (meta.Length > 0)
-            TextRenderer.DrawText(dc, meta, SF.Get(8f),
-                new Rectangle(at.X + tx, at.Y + c.Rect.Top + 23, tw, 16),
-                Theme.TextMuted, TextFormatFlags.Left | TextFormatFlags.NoPrefix
-                | TextFormatFlags.SingleLine | TextFormatFlags.EndEllipsis | TextFormatFlags.NoPadding);
+        DraftStrip.DrawMeta(dc, c.Src, new Rectangle(at.X + tx, at.Y + c.Rect.Top + 23, tw, 16));
     }
 
     /// <summary>

@@ -11,7 +11,7 @@
     <Product>帮帮</Product>
     <AssemblyCompany>Tinger</AssemblyCompany>
     <Copyright>© 2026 Tinger</Copyright>
-    <Version>0.9.22</Version>
+    <Version>0.9.23</Version>
     <ApplicationHighDpiMode>PerMonitorV2</ApplicationHighDpiMode>
     <!-- exe 的图标。主窗口是 ShowInTaskbar=false 的无边框窗体，运行时没有任务栏按钮，
          所以这个图标只出现在 exe 文件本身和快捷方式上 —— 恰恰是安装包要用的那两处。

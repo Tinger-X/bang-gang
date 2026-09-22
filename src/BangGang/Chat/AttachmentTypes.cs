@@ -94,17 +94,28 @@ internal static class AttachTypes
         _ => "文件",
     };
 
-    /// <summary>卡片第二行的文案：「PDF · 625KB」/「图片 · 1.2MB」。两者都没有时给类别名。</summary>
-    public static string MetaOf(Attachment a)
+    /// <summary>
+    /// 第二行的前半段：**类型**。一般就是扩展名（「PDF」），图片与认不出的给类别名。
+    ///
+    /// 和 <see cref="MetaTail"/> 拆开是因为它们**颜色不同**：类型按类别上色、
+    /// 大小保持灰的（见 <c>DraftStrip.DrawMeta</c>）。合成一串画的话整行只能有一个颜色。
+    /// 要整串（比如日志里）就自己拼这两段。
+    /// </summary>
+    public static string MetaHead(Attachment a)
     {
         var cat = CatOf(a.Path);
         // 图片给的是缩略图，「PNG」那三个字母不如直接说它是张图；其余类型报扩展名。
-        string head = cat == AttachCat.Image || cat == AttachCat.None
-            ? CatName(cat)
-            : ExtLabel(a.Path);
+        return cat == AttachCat.Image || cat == AttachCat.None ? CatName(cat) : ExtLabel(a.Path);
+    }
+
+    /// <summary>
+    /// 第二行的后半段：大小。**自带前面那个分隔符**（「 · 625KB」），没有大小时是空串 ——
+    /// 让分隔符跟着它走，调用方就不必去判断「前一截在不在」。
+    /// </summary>
+    public static string MetaTail(Attachment a)
+    {
         string size = SizeText(a.Size);
-        if (size.Length == 0) return head;
-        return head.Length == 0 ? size : head + " · " + size;
+        return size.Length == 0 ? "" : " · " + size;
     }
 
     /// <summary>字节数转「625KB」这种短文案；拿不到大小时返回空串。</summary>

@@ -174,7 +174,7 @@ public class Attachment
     /// <summary>
     /// 文件大小（字节）。加进来的时候抓一次就**不再跟随磁盘变化** —— 卡片上那半句
     /// 「PDF · 625KB」只是给用户认文件用的，源文件事后被改 / 被删都不该让界面上的数字跳。
-    /// 拿不到时是 0，此时那半句直接不画（见 <see cref="AttachTypes.MetaOf"/>）。
+    /// 拿不到时是 0，此时那半句直接不画（见 <see cref="AttachTypes.MetaTail"/>）。
     /// </summary>
     public long Size { get; set; }
 
