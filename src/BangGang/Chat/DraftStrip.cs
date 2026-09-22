@@ -40,15 +40,13 @@ internal sealed class DraftStrip : Control
 
     internal const int ChipGap = 8;
 
-    /// <summary>文件卡片的自然宽度。文字区 = 118 − 7 − 28 − 7 − 8 = 68px，够放「notes.txt」。</summary>
+    /// <summary>文件卡片的自然宽度。文字区 = 118 − 7 − 8 = 103px，够放「notes.txt」。</summary>
     internal const int ChipNatW = 118;
 
-    /// <summary>挤到这个宽度就不再缩，再多就交给「+N」（此时文字已经放不下，只剩图标）。</summary>
+    /// <summary>挤到这个宽度就不再缩，再多就交给「+N」（此时文字已经放不下）。</summary>
     private const int ChipMinW = 66;
 
-    internal const int IconSize = 28;
-    internal const int IconPad = 7;      // 图标离卡片左缘
-    internal const int TextGap = 7;      // 图标与文字之间
+    internal const int TextPad = 7;      // 文字离卡片左缘
     internal const int TextRight = 8;    // 文字离卡片右缘
 
     /// <summary>
@@ -284,11 +282,9 @@ internal sealed class DraftStrip : Control
         }
 
         RP.Box(g, c, 8, ChipFill(), BackColor);
-        var icon = new Rectangle(c.Left + IconPad, c.Top + (ChipH - IconSize) / 2, IconSize, IconSize);
-        PaintFileIcon(g, a, icon, BackColor);
 
         // 文字区：右边留出删除按钮探进来的那一小块，名字才不会顶到圆钮上。
-        int tx = icon.Right + TextGap;
+        int tx = c.Left + TextPad;
         int tw = c.Right - TextRight - tx;
         if (tw < 20) return;
 
@@ -396,27 +392,6 @@ internal sealed class DraftStrip : Control
     /// 底色取错就会在卡片上留一块异色的补丁 —— 输入卡片和对话气泡是两种底色，
     /// 所以这个值必须由调用方给，不能在这里写死成 <see cref="Theme.InputBg"/>。
     /// </summary>
-    internal static void PaintFileIcon(Graphics g, Attachment a, Rectangle box, Color backdrop)
-    {
-        var cat = AttachTypes.CatOf(a.Path);
-        Color tint = cat switch
-        {
-            AttachCat.Doc => Theme.Danger,
-            AttachCat.Text => Theme.Accent,
-            AttachCat.Audio => Theme.Mix(Theme.Accent, Theme.Danger, 0.5f),
-            _ => Theme.TextMuted,
-        };
-        RP.Fill(g, box, 7, Theme.Mix(backdrop, tint, Theme.Dark ? 0.30f : 0.14f));
-
-        string label = AttachTypes.ExtLabel(a.Path);
-        if (label.Length == 0) label = AttachTypes.CatName(cat);
-        if (label.Length > 4) label = label[..4];
-        float size = label.Length >= 4 ? 7f : label.Length == 3 ? 8f : 8.5f;
-        TextRenderer.DrawText(g, label, SF.Get(size, FontStyle.Bold), box, tint,
-            TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter
-            | TextFormatFlags.NoPrefix | TextFormatFlags.NoPadding);
-    }
-
     /// <summary>
     /// 悬浮时那张卡片右上角的删除按钮。压在最上层画 —— 它会盖住卡片的一个角。
     ///

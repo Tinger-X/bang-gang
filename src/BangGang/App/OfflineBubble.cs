@@ -39,6 +39,9 @@ internal static class OfflineBubble
     /// <summary>正文内宽。取一个接近对话区实际宽度的值，排版结果才有参考意义。</summary>
     private const int Inner = 620;
 
+    /// <summary>草稿条的宽度。取一个接近输入卡片实际宽度的值。</summary>
+    private const int DraftW = 720;
+
     private static readonly JsonSerializerOptions ReadOpt = new() { PropertyNameCaseInsensitive = true };
 
     public static bool TryRun()
@@ -126,6 +129,38 @@ internal static class OfflineBubble
         string outPath = Path.Combine(dir, dark ? "out-bubble-dark.png" : "out-bubble-light.png");
         bmp.Save(outPath, System.Drawing.Imaging.ImageFormat.Png);
         Console.WriteLine($"rendered {w}x{h} -> {outPath}");
+
+        RenderDraft(conv, dir, dark);
+    }
+
+    /// <summary>
+    /// 输入框上方那条附件草稿条。
+    ///
+    /// 它和气泡里的附件格**共用** <c>DraftStrip.PaintChip</c> 那张卡片，但画在**没有变换**的
+    /// Graphics 上（气泡那边是在 TranslateTransform 里画的）。同一个卡片体、两套坐标前提，
+    /// 所以「气泡里对了」证明不了「草稿条里也对」—— 而草稿条恰恰是用户附完文件第一眼看到的东西。
+    /// 它又是个普通的 <see cref="Control"/>，能直接离屏画，不必去截那个半透明的窗口。
+    /// </summary>
+    private static void RenderDraft(Conversation conv, string dir, bool dark)
+    {
+        var withFiles = conv.Messages?.FirstOrDefault(m => m?.Attachments is { Count: > 0 });
+        if (withFiles?.Attachments == null)
+        {
+            Console.WriteLine("  （没有带附件的消息，跳过草稿条）");
+            return;
+        }
+
+        using var strip = new DraftStrip();
+        strip.SetItems(withFiles.Attachments);
+        strip.Size = new Size(DraftW, DraftStrip.RowH);
+
+        using var bmp = new Bitmap(strip.Width, strip.Height);
+        strip.DrawToBitmap(bmp, new Rectangle(0, 0, strip.Width, strip.Height));
+
+        string outPath = Path.Combine(dir, dark ? "out-draft-dark.png" : "out-draft-light.png");
+        bmp.Save(outPath, System.Drawing.Imaging.ImageFormat.Png);
+        Console.WriteLine($"  [{(dark ? "dark" : "light")}] draft {strip.Width}x{strip.Height}"
+                          + $" items={withFiles.Attachments.Count} -> {outPath}");
     }
 }
 #endif

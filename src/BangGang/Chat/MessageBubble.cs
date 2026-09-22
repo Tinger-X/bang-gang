@@ -986,10 +986,6 @@ internal sealed class MessageBubble
         }
 
         RP.Box(g, c.Rect, 8, ChipFill(bubble), bubble);
-        var icon = new Rectangle(c.Rect.Left + DraftStrip.IconPad,
-                                 c.Rect.Top + (DraftStrip.ChipH - DraftStrip.IconSize) / 2,
-                                 DraftStrip.IconSize, DraftStrip.IconSize);
-        DraftStrip.PaintFileIcon(g, c.Src, icon, bubble);
     }
 
     /// <summary>附件格子的**文字**部分（第二遍）。坐标是绝对坐标（GDI 不认平移变换）。
@@ -997,7 +993,7 @@ internal sealed class MessageBubble
     private static void DrawChipText(IDeviceContext dc, Chip c, Point at)
     {
         if (c.Thumb != null) return;   // 图片格没有文字
-        int tx = c.Rect.Left + DraftStrip.IconPad + DraftStrip.IconSize + DraftStrip.TextGap;
+        int tx = c.Rect.Left + DraftStrip.TextPad;
         int tw = c.Rect.Right - DraftStrip.TextRight - tx;
         if (tw < 20) return;
 
