@@ -23,6 +23,10 @@ internal static class Program
         // 无头跑一整轮带工具的对话（见 OfflineAsk）。**会真的发请求**，用 settings.json
         // 里那份配置，所以要显式设 BANGGANG_ASK 才跑。
         if (OfflineAsk.TryRun()) return;
+
+        // 把全部线框图标与开关的各种状态画成 PNG（见 OfflineIcons）。图标是手画的、
+        // 开关的禁用态是新加的，两样都「不看就等于没验」。
+        if (OfflineIcons.TryRun()) return;
 #endif
 
         // 单实例：重复启动时把已有窗口带到前台后退出

@@ -109,7 +109,7 @@ internal sealed partial class SettingsOverlay : Panel, IPopupHost, IMessageFilte
         AddPage(new ShortcutsPage(), "快捷按键", Glyph.Sliders);
         AddPage(new LlmPage(), "模型接入", Glyph.Spark);
         AddPage(new ChatPage(), "对话参数", Glyph.Bubble);
-        AddPage(new ToolsPage(), "工具调用", Glyph.Link);
+        AddPage(new ToolsPage(), "工具调用", Glyph.Wrench);
         AddPage(new UiPage(), "界面外观", Glyph.Palette);
 
         // ---- 右上角关闭 ----

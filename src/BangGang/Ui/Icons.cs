@@ -6,7 +6,7 @@ namespace BangGang;
 /// 图标形状。除 <see cref="Glyph.Link"/> 外都是 1.6px 圆头线条；
 /// <see cref="Glyph.Link"/> 照搬的是一张**实心**参考图，笔画粗细由形状自己定，见那里的注释。
 /// </summary>
-internal enum Glyph { Sliders, Spark, Palette, Bubble, Link, Eye, EyeOff, Close, Reset, Check, Copy, ChevDown, ChevRight }
+internal enum Glyph { Sliders, Spark, Palette, Bubble, Link, Eye, EyeOff, Close, Reset, Check, Copy, ChevDown, ChevRight, Wrench }
 
 internal static class Gfx
 {
@@ -150,6 +150,44 @@ internal static class Gfx
             case Glyph.Check:
                 g.DrawLine(pen, cx - s * 0.7f, cy + s * 0.04f, cx - s * 0.16f, cy + s * 0.58f);
                 g.DrawLine(pen, cx - s * 0.16f, cy + s * 0.58f, cx + s * 0.74f, cy - s * 0.54f);
+                break;
+
+            case Glyph.Wrench:
+                // 倾斜 45° 的双头开口扳手：一根斜轴，两端各一个开口头。
+                //
+                // 开口头 = 一个**朝内的半圆背** + 两条**朝外的平行钳口**。真扳手的钳口是两片
+                // 平行的卡爪，用「一段圆弧留个缺口」表示不出这一点 —— 那样看着就是斜轴上串了
+                // 两个缺口的圆环，整体读成一根骨头。这一条是它像不像扳手的关键。
+                //
+                // 沿 45° 走 d 距离，x/y 上各只走 d·cos45°。少乘这个 k 的话数值全被放大 √2 倍，
+                // 图形外缘会顶出 18px 的图标框（别的图标都收在 0.95s 以内）。
+                {
+                    const float k = 0.70710678f;
+                    const float d = 0.53f;     // 开口头中心离图形中心（沿 45° 方向）
+                    const float jr = 0.33f;    // 头的半圆背半径
+                    const float jaw = 0.34f;   // 钳口伸出去多长（沿 45°）
+                                               // 最远处（钳口尖）离中心 √((d+jaw)² + jr²) ≈ 0.93s，收在框内
+
+                    float ux = s * d * k, uy = s * d * k;   // 头中心相对图形中心
+                    float rad = s * jr, jl = s * jaw;
+                    float rk = rad * k;                      // 半圆背端点相对头中心（在 45° 的横竖分量上）
+
+                    // 轴止于两个头的**背面**（d − jr），不通到圆心：通到圆心的话轴会从钳口中间
+                    // 透出来，每个头又变成一个穿棍的圆环。
+                    float bx = s * (d - jr) * k, by = s * (d - jr) * k;
+                    g.DrawLine(pen, cx - bx, cy + by, cx + bx, cy - by);
+
+                    // 右上那个头：朝外（315°），所以背朝里（135°），半圆从 45° 扫到 225°。
+                    // 两条钳口从半圆的两个端点出发、沿朝外方向各伸 jaw 长。
+                    g.DrawArc(pen, cx + ux - rad, cy - uy - rad, rad * 2, rad * 2, 45f, 180f);
+                    g.DrawLine(pen, cx + ux + rk, cy - uy + rk, cx + ux + rk + jl * k, cy - uy + rk - jl * k);
+                    g.DrawLine(pen, cx + ux - rk, cy - uy - rk, cx + ux - rk + jl * k, cy - uy - rk - jl * k);
+
+                    // 左下那个头：整体关于中心取反，朝外变 135°、半圆从 225° 扫到 45°。
+                    g.DrawArc(pen, cx - ux - rad, cy + uy - rad, rad * 2, rad * 2, 225f, 180f);
+                    g.DrawLine(pen, cx - ux - rk, cy + uy - rk, cx - ux - rk - jl * k, cy + uy - rk + jl * k);
+                    g.DrawLine(pen, cx - ux + rk, cy + uy + rk, cx - ux + rk - jl * k, cy + uy + rk + jl * k);
+                }
                 break;
 
             case Glyph.Reset:

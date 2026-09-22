@@ -20,7 +20,7 @@ internal sealed class ToolsPage : SettingsPage
     private readonly ToggleSwitch _webFetch = new();
     private readonly ToggleSwitch _sysInfo = new();
 
-    /// <summary>六个单工具开关，只为「全部开启」与批量接线方便，顺序无关。</summary>
+    /// <summary>六个单工具开关，只为「恢复默认」与批量接线方便，顺序无关。</summary>
     private readonly ToggleSwitch[] _tools;
 
     private bool _bAll, _bNow, _bCalc, _bClip, _bFile, _bWeb, _bSys;
@@ -30,7 +30,8 @@ internal sealed class ToolsPage : SettingsPage
 
         _tools = new[] { _now, _calc, _clipboard, _file, _webFetch, _sysInfo };
         foreach (var t in _tools) t.Changed += MarkChanged;
-        _all.Changed += MarkChanged;
+        // 总开关一变，下面那排的可用性跟着变（见 SyncToolSwitches）。
+        _all.Changed += () => { SyncToolSwitches(); MarkChanged(); };
 
         // ---- 总开关 ----
         var master = new GroupCard("工具调用", "关掉之后下面所有工具一律失效，请求里也不再携带工具");
@@ -61,20 +62,45 @@ internal sealed class ToolsPage : SettingsPage
         about.Height = about.MeasureHeight();
         Stack.Controls.Add(about);
 
-        AddFooterAction("全部开启", () =>
+        AddFooterAction("恢复默认", () =>
         {
-            _all.On = true;
-            foreach (var t in _tools) t.On = true;
+            // 拿一份出厂设置来填，而不是写一串 true：出厂就是全开这件事将来若变了，
+            // 这里跟着变，不用回来改第二处。
+            var d = new AppSettings();
+            _all.On = d.ToolsEnabled;
+            _now.On = d.ToolNow;
+            _calc.On = d.ToolCalc;
+            _clipboard.On = d.ToolClipboard;
+            _file.On = d.ToolFile;
+            _webFetch.On = d.ToolWebFetch;
+            _sysInfo.On = d.ToolSysInfo;
+            SyncToolSwitches();
             MarkChanged();
         }, NonDefault);
 
         FinishContent();
     }
 
-    /// <summary>当前值是否已偏离出厂默认（决定底栏「全部开启」是否显示）。出厂就是全开。</summary>
-    private bool NonDefault() =>
-        !_all.On || !_now.On || !_calc.On || !_clipboard.On
-        || !_file.On || !_webFetch.On || !_sysInfo.On;
+    /// <summary>
+    /// 总开关关掉时，下面六个一律不可改。
+    ///
+    /// **灰掉而不是隐藏**：位置留着，用户看得出「这里本来有东西、只是现在不生效」；
+    /// 藏起来的话，他刚关掉总开关就会以为那些开关丢了。而且这六个的开关状态本身仍然有意义
+    /// —— 重新打开总开关时它们要原样还在（<see cref="ToolRegistry.Enabled"/> 也是先看总开关）。
+    /// </summary>
+    private void SyncToolSwitches()
+    {
+        foreach (var t in _tools) t.Enabled = _all.On;
+    }
+
+    /// <summary>当前值是否已偏离出厂默认（决定底栏「恢复默认」是否显示）。出厂就是全开。</summary>
+    private bool NonDefault()
+    {
+        var d = new AppSettings();
+        return _all.On != d.ToolsEnabled || _now.On != d.ToolNow || _calc.On != d.ToolCalc
+            || _clipboard.On != d.ToolClipboard || _file.On != d.ToolFile
+            || _webFetch.On != d.ToolWebFetch || _sysInfo.On != d.ToolSysInfo;
+    }
 
     public override void Rebind(AppSettings s)
     {
@@ -90,6 +116,7 @@ internal sealed class ToolsPage : SettingsPage
         _file.On = _bFile;
         _webFetch.On = _bWeb;
         _sysInfo.On = _bSys;
+        SyncToolSwitches();     // 打开浮窗时总开关可能就是关着的，那六个得一开始就是灰的
         MarkClean();
     }
 
