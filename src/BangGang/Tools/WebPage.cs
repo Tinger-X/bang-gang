@@ -58,17 +58,21 @@ internal static class WebPage
             string name = TagName(tag);
             if (name.Length == 0) continue;
 
-            // head 只挡**正文**，不挡引用。
-            //
-            // 早先这里是把 head 整块跳到 </head> 的（为了不让 <title>/<meta> 的字混进正文），
-            // 而 <link rel=stylesheet> 与 <script src> 恰恰全长在 head 里 —— 整块跳过去，
-            // 一个页面最重要的那些引用就一个都收不到，而现象是「引用清单莫名其妙很干净」。
+            // **不要把 <head> 整块跳过去** —— <link rel=stylesheet> 与 <script src> 恰恰全长在
+            // 里面。实测 doc.rust-lang.org/book/ 的 14 个 <link> 全在 head 里、你自己的
+            // nav.tinger.host 那个 style.css 也是，跳过 head 等于一条样式表都收不到，
+            // 而现象只是「引用清单莫名其妙很干净」。
             if (name == "head")
             {
                 headDepth = closing ? Math.Max(0, headDepth - 1) : headDepth + 1;
                 continue;
             }
-            if (name == "body") headDepth = 0;       // <head> 没写闭合标签时的兜底
+
+            // head 里出现**放不进 head 的元素**，就当 head 到此为止 —— 浏览器就是这么做的
+            // （HTML 规范的 "in head" 插入模式）。少了这一条，一个忘了写 </head> 的页面会让
+            // headDepth 一直停在 1，把整页正文全吃掉；而那种页面在浏览器里是好好的。
+            // 换句话说：正文能不能出来，不该取决于对方有没有写那个闭合标签。
+            if (headDepth > 0 && !InHead(name)) headDepth = 0;
 
             CollectRef(name, tag, origin, refs, seen);
 
@@ -91,7 +95,7 @@ internal static class WebPage
                 continue;
             }
 
-            if (headDepth > 0) continue;             // head 里的字不进正文
+            if (headDepth > 0) continue;             // head 里的字（title / 漏在外面的文本）不进正文
 
             // 块级标签换成换行：段落、列表项、表格行都是「一行」的边界，
             // 全连成一片的话模型读到的是一整坨没有结构的文字
@@ -241,6 +245,14 @@ internal static class WebPage
         }
         return list;
     }
+
+    /// <summary>
+    /// 这个元素能不能出现在 <c>&lt;head&gt;</c> 里（HTML 规范 "in head" 插入模式允许的那几种）。
+    /// 用来判断「head 到头了没有」，见 <see cref="Parse"/> 主循环里那条注释。
+    /// </summary>
+    private static bool InHead(string name) => name is
+        "base" or "basefont" or "bgsound" or "link" or "meta" or "noframes"
+        or "script" or "style" or "template" or "title";
 
     /// <summary>标签名（小写）；注释、!DOCTYPE、闭合标签都归到空串。</summary>
     private static string TagName(string tag)
