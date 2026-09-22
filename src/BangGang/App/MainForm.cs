@@ -13,7 +13,7 @@ namespace BangGang;
 public partial class MainForm : Form, IMessageFilter
 {
     public const string WindowTitle = "帮帮";
-    public const string AppVersion = "v0.9.18";
+    public const string AppVersion = "v0.9.19";
 
     private const uint Affinity = Native.WDA_EXCLUDEFROMCAPTURE;
 
@@ -179,6 +179,8 @@ public partial class MainForm : Form, IMessageFilter
         _btnRename.Click += (_, _) => BeginRenameTitle();
         _chatUI.Controls.Add(_btnRename);
         _btnRename.BringToFront();
+        // 一条会话都还没开，自然没得改（见 CanRenameTitle）。
+        RefreshRenameButton();
 
         // 就地改标题的输入条。常驻在控件树上、平时不可见（见 TitleEditor 的类注释），
         // 收起 / 展开靠 Visible，不在这里增删控件。

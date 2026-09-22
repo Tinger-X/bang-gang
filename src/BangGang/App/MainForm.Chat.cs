@@ -40,6 +40,7 @@ partial class MainForm
         CancelRename();
         _active = c;
         ShowConvTitle(c);
+        RefreshRenameButton();      // 换了一条会话，「能不能改标题」跟着换
         _chatView.Load(c);
         _chatUI.Visible = true;
         _welcome.Visible = false;
@@ -77,6 +78,27 @@ partial class MainForm
     /// <summary>正在就地改标题的那条会话（null = 没在改）。输入条的可见性与它是同一件事。</summary>
     private Conversation? _renaming;
 
+    /// <summary>正在等模型起名的那条会话（null = 没有）。见 <see cref="CanRenameTitle"/>。</summary>
+    private Conversation? _naming;
+
+    /// <summary>
+    /// 铅笔能不能点。
+    ///
+    /// 两条都成立才放行：**这条会话已经有过一条用户消息**（标题才有来源 —— 一条还没开口的
+    /// 新对话就只配叫「新对话」，让用户先给它起个名，等消息一发出去，那个名字就会被
+    /// 模型总结出来的标题顶掉，或者反过来把模型挡在门外，两头都不对），以及**这一刻没有
+    /// 正在等模型起名**（那期间标题也还是「新对话」，改的是个马上要作废的值）。
+    ///
+    /// 起名失败退回「首句截断」时照样放行：那时候标题已经定在首句上了，就是它能有的最终形态。
+    /// </summary>
+    private bool CanRenameTitle() =>
+        _active != null
+        && !ReferenceEquals(_naming, _active)
+        && _active.Messages.Any(m => m.Role == "user");
+
+    /// <summary>把「能不能改标题」推到那枚按钮上（它自己会画出灰掉的样子）。</summary>
+    private void RefreshRenameButton() => _btnRename.Clickable = CanRenameTitle();
+
     /// <summary>
     /// 把一条会话的标题打到顶栏上。空标题显示成「新对话」—— 那是 <see cref="Conversation"/>
     /// 的默认值，只有手改过 chats\*.json 的文件才可能是空的。
@@ -86,6 +108,10 @@ partial class MainForm
     /// </summary>
     private void ShowConvTitle(Conversation? c)
     {
+        // 改标题的输入条开着的时候不碰这行字：它被清空正是为了给输入条让位
+        // （见 BeginRenameTitle），半路把它写回来就成了上下两行标题叠在一起。
+        // 提交 / 取消那两条路都是先把 _renaming 清掉再调这里，所以照常恢复。
+        if (_renaming != null) return;
         _convTitle.Text = string.IsNullOrWhiteSpace(c?.Title) ? "新对话" : c!.Title;
     }
 
@@ -97,10 +123,10 @@ partial class MainForm
     /// </summary>
     private void BeginRenameTitle()
     {
-        if (_active == null) return;
+        if (!CanRenameTitle()) return;
         _renaming = _active;
         _convTitle.Text = "";
-        _titleEdit.BeginEdit(_renaming.Title);
+        _titleEdit.BeginEdit(_renaming!.Title);
     }
 
     /// <summary>
@@ -374,7 +400,11 @@ partial class MainForm
                 _input.Busy = false;          // 只有最新那一轮才有资格把发送键变回「发送」
             }
             conv.RefreshTitle();
-            if (ReferenceEquals(_active, conv)) RebindConversations();
+            if (ReferenceEquals(_active, conv))
+            {
+                RebindConversations();
+                ShowConvTitle(conv);      // RefreshTitle 可能刚动过标题（见 ShowConvTitle 的说明）
+            }
             PersistChat(conv);      // 这一轮的正文（含暂停/出错留下的那半截）到此定稿
         }
     }
@@ -416,31 +446,44 @@ partial class MainForm
     private async Task NameConversation(Conversation conv, LlmConfig cfg, StreamState st)
     {
         string? title = null;
+        // 起名期间标题不算定稿：铅笔先别让点（见 CanRenameTitle）。
+        _naming = conv;
+        RefreshRenameButton();
         try
         {
-            title = await AskTitle(conv, cfg, st.Cts.Token);
-        }
-        catch (OperationCanceledException)
-        {
-            // 用户按了暂停。名字还是得有，走下面的兜底 —— 这里什么都不做。
-        }
+            try
+            {
+                title = await AskTitle(conv, cfg, st.Cts.Token);
+            }
+            catch (OperationCanceledException)
+            {
+                // 用户按了暂停。名字还是得有，走下面的兜底 —— 这里什么都不做。
+            }
 
-        if (title != null)
-        {
-            conv.Title = title;
-            // 模型起的名也是定稿，理由同用户手改（否则下一轮 RefreshTitle 会用首句盖掉它）。
-            conv.TitleLocked = true;
-            Trace.Log("title: model named it '" + title + "'");
-        }
-        else
-        {
-            conv.RefreshTitle();
-            Trace.Log("title: fallback to the first message");
-        }
+            if (title != null)
+            {
+                conv.Title = title;
+                // 模型起的名也是定稿，理由同用户手改（否则下一轮 RefreshTitle 会用首句盖掉它）。
+                conv.TitleLocked = true;
+                Trace.Log("title: model named it '" + title + "'");
+            }
+            else
+            {
+                conv.RefreshTitle();
+                Trace.Log("title: fallback to the first message");
+            }
 
-        if (ReferenceEquals(_active, conv)) ShowConvTitle(conv);
-        RebindConversations();
-        PersistChat(conv);
+            if (ReferenceEquals(_active, conv)) ShowConvTitle(conv);
+            RebindConversations();
+            PersistChat(conv);
+        }
+        finally
+        {
+            // 标题到此定稿（或者退回兜底），铅笔放行。放 finally 而不是紧跟 await：
+            // 中途出任何岔子都不该让这枚按钮永远灰着。
+            _naming = null;
+            RefreshRenameButton();
+        }
     }
 
     /// <summary>
@@ -592,6 +635,11 @@ partial class MainForm
         {
             _chatView.AddMessage(m);
             RebindConversations();
+            // 标题可能刚刚从「新对话」变成了首句截断（还没配模型时走的就是这条路：
+            // 首条消息不请模型起名，标题一直空着，直到这里），标题栏得跟着走 ——
+            // 少了这一句，会话列表里已经是首句了，顶栏还挂着「新对话」。
+            ShowConvTitle(conv);
+            RefreshRenameButton();      // 「有过一条用户消息」这条判据刚刚成立了
         }
         PersistChat(conv);
     }
