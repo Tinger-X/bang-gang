@@ -39,14 +39,20 @@ internal sealed class AboutPage : SettingsPage
         repo.Click += (_, _) => Open(RepoUrl);
 
         about.Add(_version);
-        about.Add(new SettingRow("官方网站", HomeUrl.Replace("https://", ""), home));
-        about.Add(new SettingRow("开源仓库", RepoUrl.Replace("https://", ""), repo));
+        // 地址写全（含 https://）：这两行同时也是让人**照着敲**的，
+        // 省掉协议头会变成「复制下来粘到浏览器里能不能打开要看运气」。
+        about.Add(new SettingRow("官方网站", HomeUrl, home));
+        about.Add(new SettingRow("开源仓库", RepoUrl, repo));
         about.Height = about.MeasureHeight();
         Stack.Controls.Add(about);
 
         // ---- 能做什么 ----
         var can = new GroupCard("能做什么", "详细的用法见仓库首页的 README");
-        can.Add(new SettingRow("防录屏", "窗口对本机可见，但对直播、录屏、屏幕共享完全不可见", Blank()));
+        // 这一行**必须短**：SettingRow 的说明是单行 Label + 省略号，写长了会被截掉尾巴，
+        // 而「没有托盘图标」正是这条要说的重点之一（第一版写了 48 字，实测在「用 Alt+X…」处被切掉）。
+        can.Add(new SettingRow("防录屏",
+            "只有本机用户看得见；录屏、直播、屏幕共享都拍不到，也没有托盘或任务栏图标",
+            Blank()));
         can.Add(new SettingRow("对话", "流式回复、可暂停；推理模型的思考过程单独折叠显示", Blank()));
         can.Add(new SettingRow("工具调用", "模型可以查时间、算数、读剪贴板与文件、搜网页、抓网页、看系统信息", Blank()));
         can.Add(new SettingRow("语音转写", "同时采集系统声音与麦克风，实时转成文字", Blank()));
@@ -55,20 +61,21 @@ internal sealed class AboutPage : SettingsPage
 
         // ---- 限制 ----
         var limits = new GroupCard("使用上的限制", "这些是设计取舍，不是还没做完");
-        limits.Add(new SettingRow("没有托盘图标", "窗口用 Alt+X 显隐，重复启动会把已有实例带到前台", Blank()));
         limits.Add(new SettingRow("搜索走第三方", "网页搜索用 AnySearch 的公开额度（无需注册），搜索词会发送到该服务", Blank()));
-        limits.Add(new SettingRow("密钥存在本机", "API Key 明文保存在 settings.json，不会上传到任何服务器", Blank()));
         limits.Add(new SettingRow("读不了 PDF", "文件读取只认文本、源码与新版 Office 文档（.docx/.xlsx/.pptx）", Blank()));
         limits.Height = limits.MeasureHeight();
         Stack.Controls.Add(limits);
 
         // ---- 更新 ----
-        var update = new GroupCard("更新", "从官网取最新版本；下载完由你决定要不要装");
+        // 不带副标题：这一张只有一行状态，而那句「从官网取最新版本」和下面按钮上的字
+        // 说的是同一件事。
+        var update = new GroupCard("更新");
         update.Add(_status);
         update.Height = update.MeasureHeight();
         Stack.Controls.Add(update);
 
         _action = AddFooterAction("检查更新", OnAction);
+        HideSave();     // 这一页没有设置项，底栏只留「检查更新」
 
         FinishContent();
     }

@@ -196,8 +196,10 @@ internal abstract class SettingsPage : Panel, IThemed
     private void LayoutFooter()
     {
         int y = Height - FooterH + (FooterH - _save.Height) / 2;
-        int right = Width - PadX - _save.Width;
-        _save.SetBounds(right, y, _save.Width, _save.Height);
+        // 保存键收起来时不占位：不收的话「检查更新」会被推到离右缘 108+10 px 的地方，
+        // 而那片空白本来是该由保存键填的，看着像少画了一个按钮。
+        int right = Width - PadX - (_saveHidden ? 0 : _save.Width);
+        if (!_saveHidden) _save.SetBounds(right, y, _save.Width, _save.Height);
         foreach (var (b, pred) in _footerActions)
         {
             // 不能读 b.Visible 判断显隐：Visible 的 getter 会沿父级链向上算，
@@ -207,7 +209,26 @@ internal abstract class SettingsPage : Panel, IThemed
             right -= b.Width + 10;
             b.SetBounds(right, y, b.Width, b.Height);
         }
-        _state.SetBounds(PadX, Height - FooterH + (FooterH - 20) / 2, Math.Max(60, right - PadX - 16), 20);
+        if (!_saveHidden)
+            _state.SetBounds(PadX, Height - FooterH + (FooterH - 20) / 2, Math.Max(60, right - PadX - 16), 20);
+    }
+
+    private bool _saveHidden;
+
+    /// <summary>
+    /// 把底栏那颗「保存」连它左边的状态字一起收起来。
+    ///
+    /// 「软件说明」页用它 —— 那一页**没有任何设置项**（<see cref="ApplyTo"/> 是空的、
+    /// <see cref="ComputeDirty"/> 恒假），摆一颗永远灰着的「保存」，用户会以为自己漏了什么没存；
+    /// 旁边那行「已是最新」也会和页面里真正的更新状态混成两句话在说同一件事。
+    /// 底栏于是只剩那枚「检查更新」。
+    /// </summary>
+    protected void HideSave()
+    {
+        _saveHidden = true;
+        _save.Visible = false;
+        _state.Visible = false;
+        LayoutFooter();
     }
 
     private void LayoutStack()
