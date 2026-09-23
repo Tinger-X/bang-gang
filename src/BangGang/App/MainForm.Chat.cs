@@ -50,6 +50,34 @@ partial class MainForm
         UpdateContextUi();       // 换了一条会话，底部那枚仪表跟着换（没开过口就退回提示文字）
     }
 
+    /// <summary>
+    /// 用户把一条附件从输入框里单独删掉了（截图取了没发就删掉、粘贴图删掉）。
+    ///
+    /// 托管附件的字节是我们落盘的，删掉又没发出去，那个文件就再没人要了 —— 但这句
+    /// 「再没人要」得先排除两边：**别的会话的草稿**里可能躺着同一张图（它同样引用数为 0），
+    /// 以及**当前草稿里还没被删的其它项**。收齐这些路径交给
+    /// <see cref="AttachmentStore.Release"/>，由它按引用数决定动不动文件。
+    /// </summary>
+    private void OnAttachmentRemoved(Attachment a)
+    {
+        var held = new List<string>();
+
+        // 当前这条会话的草稿以 _input.Draft 为准 —— Conversation.DraftFiles 是**切走那一刻**
+        // 存下的快照，正在编辑时就过期了。拿它当依据会漏掉刚删的那一条，
+        // 于是「还拿着」判断错成真，文件永远收不掉。
+        foreach (var f in _input.Draft)
+            if (f.Path != null) held.Add(f.Path);
+
+        foreach (var c in _conversations)
+        {
+            if (ReferenceEquals(c, _active)) continue;   // 上面已经按 _input.Draft 收过了
+            foreach (var f in c.DraftFiles)
+                if (f.Path != null) held.Add(f.Path);
+        }
+
+        AttachmentStore.Release(a, held);
+    }
+
     private void DeleteConversation(Conversation c)
     {
         CancelRename();              // 标题改到一半的输入条跟着这条一起收掉

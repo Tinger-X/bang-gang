@@ -795,10 +795,25 @@ internal sealed class InputPanel : Panel, IMessageFilter
         Sync();
     }
 
+    /// <summary>
+    /// 一条附件被从草稿里**单独拿掉**了（用户点了它右上角那个叉）。
+    ///
+    /// 存在的理由：托管附件（截图 / 粘贴图）的字节是我们落盘的，用户把它删掉又没发出去，
+    /// 那个文件就再没人要了 —— 但**「再没人要」这件事只有主窗口判得了**：
+    /// 同一张图可能正躺在另一条会话的草稿里，也可能已经被某条消息引用着。
+    /// 输入框自己看不到那些，所以它只报「谁被拿掉了」，收不回收由主窗口定。
+    ///
+    /// **只有逐个删除会触发它。** <see cref="Flush"/> 把草稿变成消息时清空、
+    /// <see cref="Apply"/> 装载另一条会话的草稿时清空，都**不走这里** ——
+    /// 前者是「它们有主了」，后者是「它们归上一条会话的草稿管」，两种都不该回收。
+    /// </summary>
+    public event Action<Attachment>? AttachmentRemoved;
+
     public void Remove(Attachment a)
     {
         Draft.Remove(a);
         Sync();
+        AttachmentRemoved?.Invoke(a);   // 放在 Sync 之后：此刻 Draft 里已经没有它了
     }
 
     /// <summary>

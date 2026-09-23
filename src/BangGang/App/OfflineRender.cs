@@ -47,7 +47,7 @@ internal static class OfflineRender
             settings.ApplyTheme();
 
             string outPath = Environment.GetEnvironmentVariable("BANGGANG_RENDER_PNG")
-                             ?? Path.Combine(Path.GetDirectoryName(src) ?? ".", "out.png");
+                             ?? Path.Combine(Shoots.Dir(), "out.png");
 
             var lay = Markdown.Measure(text, cap);
 

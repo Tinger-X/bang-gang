@@ -13,7 +13,7 @@ namespace BangGang;
 public partial class MainForm : Form, IMessageFilter
 {
     public const string WindowTitle = "帮帮";
-    public const string AppVersion = "v0.9.36";
+    public const string AppVersion = "v0.9.37";
 
     private const uint Affinity = Native.WDA_EXCLUDEFROMCAPTURE;
 
@@ -146,6 +146,8 @@ public partial class MainForm : Form, IMessageFilter
         _input.LayoutChanged += () => ApplyLayout();
         // 拒收文件之类的提示走顶栏那条 3 秒状态条 —— 全应用就这一个「临时说一句」的出口。
         _input.Notice += FlashStatus;
+        // 从输入框里单独删掉一条附件：托管附件的字节是我们的，删了又没发出去就没人要了。
+        _input.AttachmentRemoved += OnAttachmentRemoved;
         _chatView.ImagePressed += OpenImage;
         _chatUI.Controls.Add(_convTitle);
         _chatUI.Controls.Add(_chatView);

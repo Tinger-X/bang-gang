@@ -107,6 +107,19 @@ internal static class ChatStore
 
                 for (int i = 0; i < msgs.Count; i++) WriteMessage(db, c.Id, i, msgs[i]);
 
+                // 附件的**会话级使用关系**（物化）+ 引用计数。和消息写在同一个事务里，
+                // 所以永远不会跟 message_attachments 漂开。
+                Exec(db, "DELETE FROM attachment_uses WHERE conv_id = ?", c.Id);
+                using (var st = db.Prepare(
+                    "INSERT OR IGNORE INTO attachment_uses(conv_id, hash) " +
+                    "SELECT DISTINCT ?, ma.hash FROM message_attachments ma " +
+                    "JOIN messages m ON m.id = ma.msg_id WHERE m.conv_id = ?"))
+                {
+                    st.Bind(1, c.Id).Bind(2, c.Id);
+                    st.Step();
+                }
+                RecomputeRefs(db);
+
                 db.Commit();
             }
             catch
@@ -162,13 +175,22 @@ internal static class ChatStore
                 bool managed = AttachmentStore.IsManaged(a.Path);
 
                 // 附件本体。INSERT OR IGNORE：同一张图被多条消息引用时只有第一行会写进去，
-                // 后面几次是空操作。name/size 取第一次见到的那个 —— 同一份字节在不同消息里
-                // 可能被起不同的名字（「粘贴图片」vs「截图_142233.png」），先到先得即可。
+                // 后面几次是空操作。
                 using (var st = db.Prepare(
-                    "INSERT OR IGNORE INTO attachments(hash, managed, name, size, created_at) VALUES(?,?,?,?,?)"))
+                    "INSERT OR IGNORE INTO attachments(hash, managed, name, size, created_at, refcount) " +
+                    "VALUES(?,?,?,?,?,0)"))
                 {
                     st.Bind(1, key).Bind(2, managed).Bind(3, a.Name ?? "")
                       .Bind(4, a.Size).Bind(5, Iso(DateTime.Now));
+                    st.Step();
+                }
+                // 名字只有到这一步才知道（用户在界面上看到的是「截图_142233.png」这种），
+                // 而 Store() 登记那一行时还早。**只在原名字为空时补**：同一份字节在不同消息里
+                // 可能被起不同的名字，先到先得，后面的不覆盖。
+                if (!string.IsNullOrEmpty(a.Name))
+                {
+                    using var st = db.Prepare("UPDATE attachments SET name = ? WHERE hash = ? AND name = ''");
+                    st.Bind(1, a.Name).Bind(2, key);
                     st.Step();
                 }
 
@@ -223,11 +245,14 @@ internal static class ChatStore
             try
             {
                 Exec(db, "DELETE FROM conversations WHERE id = ?", id);
+                // 会话级使用关系跟着走；引用计数随即重算，于是「还有没有别人用」当场就是准的。
+                Exec(db, "DELETE FROM attachment_uses WHERE conv_id = ?", id);
+                RecomputeRefs(db);
 
-                // 顺手收掉已经没人引用的附件行。**不删文件** —— 文件在事务外删，
-                // 理由见上面那段「顺序是有讲究的」。
-                db.Exec("DELETE FROM attachments WHERE managed = 1 " +
-                        "AND hash NOT IN (SELECT hash FROM message_attachments)");
+                // **这里不顺手删附件行。** 那会误伤草稿里刚存进来、还没被任何消息引用的图
+                // （它们本来就是 refcount 0）。行与文件一起交给事务提交之后的 Reclaim，
+                // 由它统一按「引用数为 0 且不在草稿里」来收 —— keepPaths 也才管得住。
+                // 崩在这中间最坏是留下一行 refcount 0 的记录，下次启动的清扫会捡走。
                 db.Commit();
             }
             catch
@@ -241,6 +266,17 @@ internal static class ChatStore
         // 事务提交之后才动磁盘
         AttachmentStore.Reclaim(doomed, keepPaths);
     }
+
+    /// <summary>
+    /// 把 <c>attachments.refcount</c> 按 <c>attachment_uses</c> 整表重算一遍。
+    ///
+    /// **不维护增量。** 增量意味着每次插入、每次删除都要记得加减，漏一处就永久错位，
+    /// 而错位的表现是「明明还有人用的图被删了」—— 那是不可逆的。
+    /// 整表重算是一条 SQL，附件表的量级（几百行）下是毫秒级，换来的是「不可能漂」。
+    /// </summary>
+    private static void RecomputeRefs(SqliteDb db) =>
+        db.Exec("UPDATE attachments SET refcount = " +
+                "(SELECT COUNT(*) FROM attachment_uses u WHERE u.hash = attachments.hash)");
 
     /// <summary>
     /// 读出全部历史会话。
@@ -362,38 +398,13 @@ internal static class ChatStore
     }
 
     /// <summary>
-    /// 启动时收一次孤儿附件。
+    /// 启动时收一次孤儿附件。**只在这里做「全库对照」式的清扫，不在别处做**：
+    /// 此刻一定没有草稿（草稿是进程内状态，而这是启动），所以「引用数为 0」
+    /// 才真的等于「没人要」。平时那两条路（删会话、从输入框移除）走的是精确回收。
     ///
-    /// **只在这里做「全库对照」式的清扫，不在别处做**：此刻一定没有草稿
-    /// （草稿是进程内状态，而这是启动），所以「没人引用」这个判断是可靠的。
-    /// 平时那条 <see cref="Delete"/> 走的是「按名单回收」，名单来自被删会话自己碰过的附件，
-    /// 不会去动别的。
-    ///
-    /// 再强调一次红线：**只删库里有行、且引用数为 0、且确实是我们自己目录里的文件**。
-    /// 绝不按「文件不在表里」去删 —— 库一旦损坏重建，那样会一次删光用户所有截图。
+    /// 实现与红线都在 <see cref="AttachmentStore.Sweep"/> 里。
     /// </summary>
-    public static void SweepOrphans()
-    {
-        if (!Db.Available) return;
-        try
-        {
-            var db = Db.Conn;
-            var doomed = new List<string>();
-            using (var st = db.Prepare(
-                "SELECT hash FROM attachments WHERE managed = 1 " +
-                "AND hash NOT IN (SELECT hash FROM message_attachments)"))
-            {
-                while (st.Step()) doomed.Add(st.Text(0));
-            }
-            if (doomed.Count == 0) return;
-
-            db.Exec("DELETE FROM attachments WHERE managed = 1 " +
-                    "AND hash NOT IN (SELECT hash FROM message_attachments)");
-            AttachmentStore.Reclaim(doomed, null);
-            Trace.Log($"chat store: swept {doomed.Count} orphan attachment(s)");
-        }
-        catch { /* 清扫失败不影响使用 */ }
-    }
+    public static void SweepOrphans() => AttachmentStore.Sweep();
 
     private static void Exec(SqliteDb db, string sql, string arg)
     {

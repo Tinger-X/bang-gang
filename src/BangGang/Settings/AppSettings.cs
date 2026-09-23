@@ -143,14 +143,11 @@ public class AppSettings
         return p;
     }
 
-    // 这里原来有七个「旧版扁平字段」（ChatApiUrl / ChatApiKey / ChatModel / SttApiUrl /
-    // SttAppId / SttApiKey / SttModel）以及把它们搬进档位的 MigrateLegacyProfiles()。
-    // 随持久化换到 SQLite 一起删掉了 —— 那套东西唯一的用途是从 0.8.1 的 settings.json
-    // 迁数据，而这次**不做任何旧数据迁移**（项目尚未推广，从空库起步）。
-    //
-    // 顺带的好处不是「少几行」：那三个 `*ApiKey` 字段是**全仓最后一处明文存密钥的路径**
-    // （LlmConfig.From 会拿它们兜底、LlmPage.ApplyTo 会写它们）。留着它们，
-    // 「敏感信息一律加密」这句话就永远有个例外。
+    // 旧版的七个扁平字段（ChatApiUrl / ChatApiKey / ChatModel / SttApiUrl / SttAppId /
+    // SttApiKey / SttModel）**已经彻底删除，不存在兼容路径**。
+    // 别再加回来：那三个 `*ApiKey` 曾经是全仓唯一一处明文存密钥的地方
+    // （LlmConfig.From 拿它们兜底、LlmPage.ApplyTo 写它们），
+    // 留着它们，「敏感信息一律加密」这句话就永远有个例外。
 
     // ---------- 外观 ----------
     /// <summary>"system" | "light" | "dark"</summary>

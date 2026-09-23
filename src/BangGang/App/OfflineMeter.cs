@@ -12,7 +12,7 @@ namespace BangGang;
 /// 更要紧的是**明暗是两套调色板**：只对着一套调好，换主题才发现环看不见了，
 /// 是这类自绘控件最典型的错法，所以这里一次出两版。
 ///
-/// <c>BANGGANG_CTX_METER=1</c> 触发；<c>BANGGANG_CTX_METER_PNG</c> 指定输出目录。
+/// <c>BANGGANG_CTX_METER=1</c> 触发；<c>BANGGANG_CTX_METER_PNG</c> 指定输出目录（默认 <c>shoots/</c>）。
 /// </summary>
 internal static class OfflineMeter
 {
@@ -47,7 +47,7 @@ internal static class OfflineMeter
     private static void Run()
     {
         string dir = Environment.GetEnvironmentVariable("BANGGANG_CTX_METER_PNG") ?? "";
-        if (dir.Length == 0) dir = Directory.GetCurrentDirectory();
+        if (dir.Length == 0) dir = Shoots.Dir();
 
         const int w = 400;
         const int rowH = 38;      // 与 InputPanel.BottomRowH 一致 —— 出图要能反映真实行高

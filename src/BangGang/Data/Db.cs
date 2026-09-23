@@ -22,7 +22,7 @@ internal static class Db
     /// 建表方式的版本号，写进 <c>PRAGMA user_version</c>。
     /// 以后改了表结构就 +1，并在 <see cref="EnsureSchema"/> 里补一段从旧版本升上来的语句。
     /// </summary>
-    private const int SchemaVersion = 1;
+    private const int SchemaVersion = 2;
 
     private static SqliteDb? _db;
     private static bool _probed;
@@ -153,7 +153,17 @@ internal static class Db
               managed    INTEGER NOT NULL DEFAULT 0,
               name       TEXT NOT NULL DEFAULT '',
               size       INTEGER NOT NULL DEFAULT 0,
-              created_at TEXT NOT NULL DEFAULT '');
+              created_at TEXT NOT NULL DEFAULT '',
+              refcount   INTEGER NOT NULL DEFAULT 0);
+
+            -- 一个附件被哪些**会话**用着。是对 message_attachments 的物化：
+            -- 每次写会话时连带重算，同一个事务里完成，所以不会漂。
+            -- 物化它的理由很实际：「这个附件还有没有人用」是这个功能里唯一要紧的问题，
+            -- 而它每次删会话、每次从输入框移除附件都要问一遍。
+            CREATE TABLE IF NOT EXISTS attachment_uses (
+              conv_id TEXT NOT NULL,
+              hash    TEXT NOT NULL,
+              PRIMARY KEY (conv_id, hash));
 
             CREATE TABLE IF NOT EXISTS message_attachments (
               msg_id INTEGER NOT NULL REFERENCES messages(id) ON DELETE CASCADE,
@@ -169,17 +179,20 @@ internal static class Db
             """);
 
         long ver = db.QueryLong("PRAGMA user_version");
-        if (ver == SchemaVersion) return;
 
-        // 库比程序新：多半是用户装回了旧版本。**这时候绝不能按老结构去改它** ——
-        // 老代码不认识新列，任何一次整体重写都会把新数据抹掉。宁可明说打不开。
-        if (ver > SchemaVersion)
+        // **这里没有任何迁移代码，是有意的。** 项目尚未推广，数据结构改了就直接改，
+        // 旧库由使用者自己删掉重来 —— 写一套「从上一版升上来」的代码，在没有真实用户
+        // 数据要保的前提下只是凭空多一份要维护、要测试、还测不到的东西。
+        //
+        // 代价是结构一变，手上那个旧库就打不开了。所以下面**明说一句**，
+        // 而不是让它在某条冷路径上以「no such column」的形式炸出来 ——
+        // 那种错看上去像程序坏了，实际只是数据是上一版的。
+        if (ver != 0 && ver != SchemaVersion)
             throw new SqliteException(
-                "数据库由更新版本的帮帮创建（版本 " + ver + "，本程序只认到 " + SchemaVersion +
-                "），请升级到最新版本再打开。", -1);
+                "数据库结构是另一个版本的（库 " + ver + "，本程序 " + SchemaVersion +
+                "）。本程序不做旧库迁移，删掉这个文件重新开始即可：" + FilePath, -1);
 
-        // ver < SchemaVersion：将来的迁移从这里往下接。
-        // 目前是空库起步（项目尚未推广），所以只需要把版本号写上去。
-        db.Exec("PRAGMA user_version = " + SchemaVersion);
+        // 新库盖个章，下次打开才知道它是不是本版的。
+        if (ver == 0) db.Exec("PRAGMA user_version = " + SchemaVersion);
     }
 }

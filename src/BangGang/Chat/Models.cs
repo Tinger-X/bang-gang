@@ -192,7 +192,7 @@ public class Attachment
 
     /// <summary>
     /// 文件路径。**两种附件这个字段的含义不同**（分界见 <see cref="AttachmentStore"/>）：
-    /// 托管附件（截图 / 粘贴图）指向我们自己的 <c>images/&lt;sha256&gt;.png</c>；
+    /// 托管附件（截图 / 粘贴图）指向我们自己的 <c>attachments/&lt;sha256&gt;.png</c>；
     /// 非托管附件（用户拖进来的文件）指向**用户自己的文件**，我们从没复制过它，
     /// 所以也永远不删它。
     /// </summary>

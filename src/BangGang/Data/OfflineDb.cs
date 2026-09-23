@@ -67,17 +67,17 @@ internal static class OfflineDb
 
         Db.EnsureSchema(db);
         long v1 = db.QueryLong("PRAGMA user_version");
-        Check("user_version 写到了 " + 1, v1 == 1, "实际 " + v1);
+        Check("user_version 盖了章", v1 == 2, "实际 " + v1);
 
         Db.EnsureSchema(db);   // 再跑一遍必须是幂等的
-        Check("重复建表不报错（幂等）", db.QueryLong("PRAGMA user_version") == 1);
+        Check("重复建表不报错、版本号不变（幂等）", db.QueryLong("PRAGMA user_version") == v1);
 
         var tables = new List<string>();
         using (var st = db.Prepare("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name"))
             while (st.Step()) tables.Add(st.Text(0));
         Console.WriteLine($"表                     : {string.Join(", ", tables)}");
         foreach (string want in new[] { "settings", "conversations", "messages", "tool_calls",
-                                        "attachments", "message_attachments" })
+                                        "attachments", "attachment_uses", "message_attachments" })
             Check("有表 " + want, tables.Contains(want));
 
         Console.WriteLine();
@@ -274,7 +274,7 @@ internal static class OfflineDb
 
         // 造一张真图（走真实的 Store，所以顺带验了内容寻址）
         string img = MakePng(Color.Red);
-        Check("托管附件落在 images/ 下", AttachmentStore.IsManaged(img));
+        Check("托管附件落在 attachments/ 下", AttachmentStore.IsManaged(img));
         Check("同一份内容存两次是同一个文件", MakePng(Color.Red) == img);
 
         // 非托管附件：用户自己的文件，我们只有路径
@@ -329,15 +329,76 @@ internal static class OfflineDb
         Check("**非托管附件的路径原样保留**（那是用户的文件）",
               back?.Messages[0].Attachments[1].Path == userDoc);
 
-        Check("库里引用数是 1", AttachmentStore.RefCount(Path.GetFileNameWithoutExtension(img)) == 1);
+        string hashOfImg = Path.GetFileNameWithoutExtension(img);
+        Check("库里引用数是 1", AttachmentStore.RefCount(hashOfImg) == 1);
+
+        // 引用计数是**存下来的**（用户要的），而 attachment_uses 才是真正的账本。
+        // 两者必须永远一致 —— 一旦漂开，表现就是「还有人用的图被删了」，不可逆。
+        // 所以这里逐量核对，不只信其中一边。
+        long DerivedRefs(string h)
+        {
+            using var st = Db.Conn.Prepare("SELECT COUNT(*) FROM attachment_uses WHERE hash = ?");
+            st.Bind(1, h);
+            return st.Step() ? st.Int64(0) : 0;
+        }
+        Check("**存的引用计数 == 使用表里数出来的**", AttachmentStore.RefCount(hashOfImg) == DerivedRefs(hashOfImg));
+        using (var st = Db.Conn.Prepare(
+            "SELECT COUNT(*) FROM attachments WHERE refcount <> " +
+            "(SELECT COUNT(*) FROM attachment_uses u WHERE u.hash = attachments.hash)"))
+        {
+            st.Step();
+            Check("全表没有一行引用计数是错的", st.Int64(0) == 0);
+        }
+        Check("使用表记下了「哪条会话用了它」", DerivedRefs(hashOfImg) == 1);
 
         // 删会话 → 托管附件该回收，用户那个文件一个字节都不许动
         ChatStore.Delete(cid);
         Check("**删会话后托管附件被回收**", !File.Exists(img));
         Check("**用户自己的文件还在**", File.Exists(userDoc));
         Check("会话行没了", ChatStore.Load().All(c => c.Id != cid));
+        Check("使用关系跟着会话一起没了", DerivedRefs(hashOfImg) == 0);
+        Check("附件行也收掉了",
+              Db.Conn.QueryLong("SELECT COUNT(*) FROM attachments WHERE hash = ?", (1, hashOfImg)) == 0);
 
         try { File.Delete(userDoc); } catch { }
+
+        Console.WriteLine();
+        Console.WriteLine("---- 9b. 截图取了没发就删掉 ----");
+
+        // 这正是「截了图、又把它从输入框里删掉、从没发出去」那个场景。
+        // 文件在落盘那一刻就登记了一行（引用数 0），所以这里收得掉它。
+        string shot = MakePng(Color.Blue);
+        string shotHash = Path.GetFileNameWithoutExtension(shot);
+        Check("落盘即登记（还没发出去，引用数是 0）", AttachmentStore.RefCount(shotHash) == 0);
+        Check("库里有它这一行",
+              Db.Conn.QueryLong("SELECT COUNT(*) FROM attachments WHERE hash = ?", (1, shotHash)) == 1);
+
+        AttachmentStore.Release(new Attachment { Kind = "image", Name = "截图.png", Path = shot }, null);
+        Check("**从输入框删掉后，文件没了**", !File.Exists(shot));
+        Check("库里的行也没了",
+              Db.Conn.QueryLong("SELECT COUNT(*) FROM attachments WHERE hash = ?", (1, shotHash)) == 0);
+
+        // 同一个文件要是已被某条消息引用着，就必须留下 —— 「还有别处在用」优先于「用户删了它」
+        string kept = MakePng(Color.Green);
+        var keepConv = new Conversation { Id = "probe-keep", Title = "k", CreatedAt = DateTime.Now, UpdatedAt = DateTime.Now };
+        keepConv.Messages.Add(new ChatMessage
+        {
+            Role = "user", When = DateTime.Now, Text = "带图",
+            Attachments = new List<Attachment> { Attachment.ForImage("图.png", kept) },
+        });
+        ChatStore.Save(keepConv);
+        AttachmentStore.Release(new Attachment { Kind = "image", Name = "图.png", Path = kept }, null);
+        Check("**已被消息引用的图，删草稿时不会被删**", File.Exists(kept));
+
+        // 红线：没登记过的文件，任何清扫都不许碰
+        string stray = Path.Combine(AttachmentStore.Dir, "deadbeef.png");
+        File.WriteAllText(stray, "not ours");
+        AttachmentStore.Sweep();
+        Check("**未登记的文件绝不被清扫删掉**（库损坏重建时靠这条保命）", File.Exists(stray));
+        try { File.Delete(stray); } catch { }
+
+        ChatStore.Delete("probe-keep");
+        Check("收尾：那张被引用的图随会话一起走了", !File.Exists(kept));
 
         Console.WriteLine();
         Console.WriteLine("---- 10. 设置读写与加密（真实库）----");

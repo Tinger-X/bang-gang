@@ -67,7 +67,7 @@ internal static class OfflineBubble
             else
             {
                 string outDir = Environment.GetEnvironmentVariable("BANGGANG_BUBBLE_OUT") ?? "";
-                dir = outDir.Length > 0 ? outDir : Directory.GetCurrentDirectory();
+                dir = outDir.Length > 0 ? outDir : Shoots.Dir();
 
                 var all = ChatStore.Load();
                 conv = all.FirstOrDefault(c => c.Id == src);

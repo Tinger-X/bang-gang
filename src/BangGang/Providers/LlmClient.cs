@@ -67,9 +67,8 @@ internal sealed class LlmConfig
         };
         // 只读，不调 ProfileOf —— 那个 getter 会顺手往字典里塞一个空档位，
         // 发一次消息就改动设置对象（还会被保存进 settings.json）。
-        // 这里原来还有一段「旧版扁平字段兜底」（ChatApiUrl / ChatApiKey / ChatModel）。
-        // 随持久化换到 SQLite 一起删了：那三个字段唯一的用途是接住 0.8.1 的 settings.json，
-        // 而这次不做旧数据迁移。它也是全仓最后一处**明文存 API Key** 的路径。
+        // 旧版的扁平字段兜底（ChatApiUrl / ChatApiKey / ChatModel）已经彻底删除，
+        // 不要再加回来 —— 它是全仓最后一处明文存 API Key 的路径。
         if (s.ChatProfiles != null && s.ChatProfiles.TryGetValue(s.ChatProvider ?? "", out var p) && p != null)
         {
             cfg.Url = Get(p, "url");
