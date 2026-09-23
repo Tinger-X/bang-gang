@@ -47,6 +47,7 @@ partial class MainForm
         RebindConversations();
         _input.FocusInput();
         RememberActive();
+        UpdateContextUi();       // 换了一条会话，底部那枚仪表跟着换（没开过口就退回提示文字）
     }
 
     private void DeleteConversation(Conversation c)
@@ -75,6 +76,7 @@ partial class MainForm
         }
         RebindConversations();
         RememberActive();
+        UpdateContextUi();       // 删的若正是当前这条，这时 _active 已经是 null → 退回提示文字
     }
 
     // ---------------- 对话标题 ----------------
@@ -273,6 +275,8 @@ partial class MainForm
         // 用户这句先落盘，再等回复：回复要跑好几秒（还可能中途暂停、被杀），
         // 不能让刚打出来的问题跟着那一轮一起悬着。
         PersistChat(_active);
+        // 这条会话刚刚开了口 —— 底部那行从快捷键提示切成上下文仪表。
+        UpdateContextUi();
         StartReply();
     }
 
@@ -301,6 +305,28 @@ partial class MainForm
 
         /// <summary>第一段思考到达的时刻（<see cref="Environment.TickCount64"/>）。0 = 还没开始思考。</summary>
         public long ReasonStart;
+
+        // ---- 上下文仪表要的几个数（见 MainForm.Context.cs）----
+
+        /// <summary>第一段增量（正文或思考）到达的时刻。0 = 还没开始。生成速度的分母从它起算。</summary>
+        public long FirstDelta;
+
+        /// <summary>最后一段增量到达的时刻。用来算「生成这一段花了多久」。</summary>
+        public long LastDelta;
+
+        /// <summary>
+        /// **第一轮**请求服务端报的输入 token（0 = 没报）。用它当锚点，不用最后一轮的 ——
+        /// 工具的返回全文只在当轮发给模型、不进历史，最后一轮的输入里含着它们，
+        /// 拿它当「下次要发多少」会平白高估一大截。
+        /// </summary>
+        public int FirstPromptTokens;
+
+        /// <summary>本轮所有请求加起来生成了多少 token（含思考）。</summary>
+        public int SumCompletion;
+
+        /// <summary>本轮所有请求的生成耗时之和（毫秒）。分子分母各自累加再相除，
+        /// 比「取最后一轮」诚实：用户看到的是「这一轮总共生成了多少、平均多快」。</summary>
+        public long SumGenMs;
     }
 
     private StreamState? _stream;
@@ -338,7 +364,9 @@ partial class MainForm
         if (ReferenceEquals(_active, conv)) _chatView.AddMessage(st.Msg, waiting: true);
 
         st.Timer = new System.Windows.Forms.Timer { Interval = 40 };
-        st.Timer.Tick += (_, _) => Flush(st);
+        // 先推上下文再刷气泡：Flush 在「这一帧没长」时会提前 return，
+        // 而生成速度得跟着秒表走、不能被那个提前返回一起停掉。
+        st.Timer.Tick += (_, _) => { PushStreamContext(st); Flush(st); };
         st.Timer.Start();
 
         Trace.Log($"llm request provider={_settings.ChatProvider} model={cfg.Model} msgs={history.Count}");
@@ -356,9 +384,12 @@ partial class MainForm
             if (!st.Cts.IsCancellationRequested)
             {
                 FlashStatus("正在等待模型回复…");
+                // 上下文管理：只有真超出窗口时才动手（压缩或滑窗），装得下就原样发出去。
+                // **作用的是 history 这个快照，不是 conv.Messages** —— 见 ContextManager 的注释。
+                var send = await PrepareHistoryAsync(conv, cfg, history, st.Cts.Token);
                 // 工具循环：一轮里模型可能要来回好几次（见 MainForm.Tools.cs）。
                 // 工具全关、或模型没要求调用时，它就是「发一次、读一次」，和以前一样。
-                var res = await RunToolLoop(cfg, conv, st, history);
+                var res = await RunToolLoop(cfg, conv, st, send);
 
                 Flush(st);
                 // 上限用完时流是「正常」结束的（finish_reason=length），不主动看一眼就只剩
@@ -401,6 +432,7 @@ partial class MainForm
                 _input.Busy = false;          // 只有最新那一轮才有资格把发送键变回「发送」
             }
             conv.RefreshTitle();
+            FinishContext(st);      // 用这一轮真实的 usage 钉住估算，并把最终速度留给仪表
             if (ReferenceEquals(_active, conv))
             {
                 RebindConversations();
@@ -526,6 +558,13 @@ partial class MainForm
     /// 卡到 128 的话思考还没写完预算就没了，正文一个字都吐不出来（同
     /// <see cref="TruncationNote"/> 那条坑）。上限宽一点没有代价 —— 提示词已经把它压在
     /// 十几个字上，模型自己就会停。
+    /// </summary>
+    /// <summary>
+    /// 起名用的配置：逐字段拷贝一份，**故意不带工具、不带上下文那两段**。
+    ///
+    /// <c>CtxSummary</c> / <c>CtxNote</c> 不在下面这张清单里是有意的：起名只看第一条用户消息，
+    /// 把整段对话摘要塞进去既没必要、又会让这个轻量请求悄悄变重。
+    /// 将来往 <see cref="LlmConfig"/> 加字段时，也照这个规矩想一下再决定要不要带过来。
     /// </summary>
     private static LlmConfig TitleConfig(LlmConfig chat) => new()
     {

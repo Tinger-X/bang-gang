@@ -31,6 +31,14 @@ internal static class Program
         // 数据库层自检（见 OfflineDb）：DLL 探测、建表、中文往返、外键级联、附件引用计数。
         // 这些错了都很安静（数据没存进去、孤儿行留着），靠界面要绕一大圈才发现。
         if (OfflineDb.TryRun()) return;
+
+        // 各设置页的内容高度 vs 可视高度（见 OfflinePages）。往页面里加了一行之后跑一下，
+        // 比开程序点开设置目测滚动条可靠 —— 超几个像素的表现就是一根多余的竖线。
+        if (OfflinePages.TryRun()) return;
+
+        // 输入框底部那枚上下文仪表画成 PNG（见 OfflineMeter）。圆环是手画的，
+        // 而且明暗两套调色板 —— 只对着一套调是最容易漏的错，所以一次出两版。
+        if (OfflineMeter.TryRun()) return;
 #endif
 
         // 单实例：重复启动时把已有窗口带到前台后退出

@@ -32,6 +32,21 @@ internal sealed class LlmConfig
     public string Reinforce = "";
 
     /// <summary>
+    /// 上下文压缩出来的摘要（「压缩」策略）。非空时会被缀在 system 提示词**后面**。
+    ///
+    /// **不新插一条 system / user 消息**：<see cref="LlmClient.BuildMessages"/> 里那段注释
+    /// 讲过了，不少兼容接口只认**开头那一条** system，后面再插一条要么被忽略、
+    /// 要么直接报错。缀在原来那条的尾巴上，两边都不得罪。
+    /// </summary>
+    public string CtxSummary = "";
+
+    /// <summary>
+    /// 滑窗策略下「省略了 N 条更早的消息」这句说明。同样缀在 system 提示词后面 ——
+    /// 不告诉模型的话，它会以为用户的第一句话就是刚才那句，对着没头没尾的上下文发呆。
+    /// </summary>
+    public string CtxNote = "";
+
+    /// <summary>
     /// 要提供给模型的工具（见 <see cref="ToolRegistry.SchemaFor"/>）。null 或空 = 这次请求不带工具。
     ///
     /// <b>注意</b>：给会话起名那条路（<c>MainForm.TitleConfig</c>）是逐字段拷贝出来的，
@@ -111,6 +126,19 @@ internal sealed class LlmStreamResult
     public int ReasoningTokens;
 
     /// <summary>
+    /// 这一轮**发进去**的 token 数（服务端没报就是 0）。
+    /// 它是上下文仪表唯一的权威数据，也是把本地估算「钉」在真实值上的锚点 ——
+    /// 估算器只擅长算增量，有了它，误差才不会随对话变长而越滚越大。
+    /// </summary>
+    public int PromptTokens;
+
+    /// <summary>这一轮**生成**的 token 数（含思考，服务端没报就是 0）。生成速度的分母用它。</summary>
+    public int CompletionTokens;
+
+    /// <summary>两者之和（服务端没报就是 0）。</summary>
+    public int TotalTokens;
+
+    /// <summary>
     /// 这一轮模型要求调用的工具，按序列里出现的位置排好、参数已拼完整。
     /// 空 = 模型正常回答完了，没有要用工具。
     /// </summary>
@@ -161,10 +189,22 @@ internal static class LlmClient
     /// 两个内容回调都在**后台线程**上被调用，调用方自己负责切回 UI 线程。
     /// <paramref name="onToolStart"/> 在某条调用的函数名拼全的那一刻触发一次。
     /// </summary>
-    public static async Task<LlmStreamResult> StreamAsync(
+    public static Task<LlmStreamResult> StreamAsync(
         LlmConfig cfg, JsonArray messages,
         Action<string> onDelta, Action<string> onReasoning,
         Action<string>? onToolStart, CancellationToken ct)
+        => StreamCore(cfg, messages, onDelta, onReasoning, onToolStart, ct, _withStreamOptions);
+
+    /// <summary>
+    /// 这个进程里还带不带 <c>stream_options</c>。第一次被网关明确拒绝之后就置 false，
+    /// 之后所有请求都不再带 —— 不然每一轮都要撞一次 400 再重试，白白多花一个来回。
+    /// </summary>
+    private static bool _withStreamOptions = true;
+
+    private static async Task<LlmStreamResult> StreamCore(
+        LlmConfig cfg, JsonArray messages,
+        Action<string> onDelta, Action<string> onReasoning,
+        Action<string>? onToolStart, CancellationToken ct, bool withUsage)
     {
         var result = new LlmStreamResult();
         var body = new JsonObject
@@ -176,6 +216,10 @@ internal static class LlmClient
         };
         // 0 = 不限：干脆不带这个字段。带上 0 会被接口读成「一个 token 都不许回」。
         if (cfg.MaxTokens > 0) body["max_tokens"] = cfg.MaxTokens;
+
+        // 流式下 OpenAI 默认**不报** usage，要显式要。我们的上下文仪表靠它拿真实用量，
+        // 拿不到就只能全程估算。有些网关见到不认识的字段会直接 400，所以下面有降级重试。
+        if (withUsage) body["stream_options"] = new JsonObject { ["include_usage"] = true };
 
         // DeepClone 是必须的：这个 JsonArray 在工具循环里会被复用好几轮，
         // 而 JsonNode 只能挂在一个父节点下面 —— 直接放进去，第二轮就是
@@ -202,6 +246,18 @@ internal static class LlmClient
             string detail = "";
             try { detail = await resp.Content.ReadAsStringAsync(ct).ConfigureAwait(false); }
             catch { /* 读不到正文就用状态码说话 */ }
+
+            // 网关不认 stream_options：去掉它重发一次。
+            // **在读到任何正文之前重发是安全的** —— 这里连响应流都还没打开，
+            // 不存在「同一段回复收两遍」。所以这个重试可以放心放在这一层，
+            // 不必像工具降级那样上升到调用方（调用方根本无从判断是哪个字段被拒了）。
+            if (withUsage && LooksLikeStreamOptionsRejection(detail))
+            {
+                _withStreamOptions = false;
+                Trace.Log("llm: gateway rejected stream_options, retrying without usage");
+                return await StreamCore(cfg, messages, onDelta, onReasoning, onToolStart, ct, false)
+                             .ConfigureAwait(false);
+            }
             throw new LlmException(Describe(resp.StatusCode, detail));
         }
 
@@ -227,6 +283,11 @@ internal static class LlmClient
             if (!string.IsNullOrEmpty(chunk.Value.Content)) onDelta(chunk.Value.Content);
             if (!string.IsNullOrEmpty(chunk.Value.Finish)) result.Finish = chunk.Value.Finish;
             if (chunk.Value.ReasoningTokens > 0) result.ReasoningTokens = chunk.Value.ReasoningTokens;
+            // 用量只在最后那一帧报一次（那一帧的 choices 是空的，见 ChunkOf）。
+            // 不累加而是直接覆盖：一轮请求只会报一次，累加反而会在网关重复报时翻倍。
+            if (chunk.Value.PromptTokens > 0) result.PromptTokens = chunk.Value.PromptTokens;
+            if (chunk.Value.CompletionTokens > 0) result.CompletionTokens = chunk.Value.CompletionTokens;
+            if (chunk.Value.TotalTokens > 0) result.TotalTokens = chunk.Value.TotalTokens;
             if (chunk.Value.Tools != null) Accumulate(chunk.Value.Tools, calls, onToolStart);
         }
 
@@ -272,8 +333,16 @@ internal static class LlmClient
     internal static JsonArray BuildMessages(LlmConfig cfg, IReadOnlyList<ChatMessage> history)
     {
         var arr = new JsonArray();
-        if (cfg.SystemPrompt.Trim().Length > 0)
-            arr.Add(new JsonObject { ["role"] = "system", ["content"] = cfg.SystemPrompt.Trim() });
+        // 上下文那两段（摘要 / 省略说明）**缀在 system 提示词后面**，而不是另起一条 system
+        // 或插一条 user：这条路径上的不少兼容接口只认开头那一条 system。
+        // 它们本身就是提示词的一部分，缀着反而语义更顺。
+        string sys = cfg.SystemPrompt.Trim();
+        if (cfg.CtxSummary.Length > 0)
+            sys = (sys.Length > 0 ? sys + "\n\n" : "") + "以下是本次对话较早内容的摘要：\n" + cfg.CtxSummary;
+        if (cfg.CtxNote.Length > 0)
+            sys = (sys.Length > 0 ? sys + "\n\n" : "") + cfg.CtxNote;
+        if (sys.Length > 0)
+            arr.Add(new JsonObject { ["role"] = "system", ["content"] = sys });
 
         for (int i = 0; i < history.Count; i++)
         {
@@ -407,6 +476,28 @@ internal static class LlmClient
     }
 
     /// <summary>
+    /// 网关是不是因为不认识 <c>stream_options</c> 而拒了这次请求。
+    ///
+    /// 判据比 <see cref="LooksLikeToolRejection"/> 更严：这里**先要求正文里点名了那个字段**，
+    /// 再看有没有「不支持 / 未知字段」这类措辞。不这么严的话，一个恰好提到
+    /// "unknown model" 的 400 会被误判成「去掉 stream_options 就好了」，
+    /// 于是用户看到的是**同一个错误被重试一遍**，还多花一个来回。
+    /// </summary>
+    internal static bool LooksLikeStreamOptionsRejection(string message)
+    {
+        string m = (message ?? "").ToLowerInvariant();
+        if (!m.Contains("stream_options") && !m.Contains("include_usage")) return false;
+        foreach (string k in new[]
+        {
+            "not support", "unsupported", "does not support", "不支持",
+            "unknown", "unrecognized", "no such", "invalid_request",
+            "unexpected", "not allowed", "extra fields", "additional properties",
+        })
+            if (m.Contains(k)) return true;
+        return false;
+    }
+
+    /// <summary>
     /// 图片附件编码成 data URL。小图原样发（截图是 PNG，重编码成 JPEG 会把界面文字糊掉），
     /// 大图或非常见格式先缩到 <see cref="MaxEdge"/> 再编成 JPEG。
     /// </summary>
@@ -485,7 +576,7 @@ internal static class LlmClient
 
     // ---------------- 响应 ----------------
 
-    /// <summary>一条 SSE 数据里可能带的几样东西：正文增量、思考增量、工具调用碎片、结束原因。</summary>
+    /// <summary>一条 SSE 数据里可能带的几样东西：正文增量、思考增量、工具调用碎片、结束原因、用量。</summary>
     private readonly struct Chunk
     {
         public readonly string? Content;
@@ -493,13 +584,20 @@ internal static class LlmClient
         public readonly string? Finish;
         public readonly int ReasoningTokens;
 
+        // 用量。服务端没报就是 0 —— 「不知道」和「用了 0 个」在下游是同一件事（都退回估算）。
+        public readonly int PromptTokens;
+        public readonly int CompletionTokens;
+        public readonly int TotalTokens;
+
         /// <summary>这一帧携带的工具调用碎片；没有就是 null。</summary>
         public readonly List<ToolFrag>? Tools;
 
-        public Chunk(string? content, string? reasoning, string? finish, int reasoningTokens, List<ToolFrag>? tools)
+        public Chunk(string? content, string? reasoning, string? finish, int reasoningTokens,
+                     List<ToolFrag>? tools, int promptTokens = 0, int completionTokens = 0, int totalTokens = 0)
         {
             Content = content; Reasoning = reasoning; Finish = finish;
             ReasoningTokens = reasoningTokens; Tools = tools;
+            PromptTokens = promptTokens; CompletionTokens = completionTokens; TotalTokens = totalTokens;
         }
     }
 
@@ -539,7 +637,26 @@ internal static class LlmClient
         // 有些网关错误是**以 200 + 一条 error 帧**回来的，只看状态码会当成「模型没说话」
         if (o["error"] is JsonObject err) throw new LlmException(ErrText(err) ?? "接口返回了一个错误");
 
-        if (o["choices"] is not JsonArray { Count: > 0 } ch) return null;
+        // **usage 必须在看 choices 之前读。**
+        // 开了 stream_options.include_usage 之后，最后那一帧长这样：
+        //     {"choices":[],"usage":{...}}
+        // —— choices 是**空数组**。原来那句 `is not JsonArray { Count: > 0 }` 会在读到
+        // usage 之前就 return null，于是用量**永远收不到**，而现象只是「token 一直是 0」，
+        // 安静得像是服务端没报。
+        int rt = 0, pt = 0, ct = 0, tt = 0;
+        if (o["usage"] is JsonObject u)
+        {
+            pt = IntOf(u["prompt_tokens"]);
+            ct = IntOf(u["completion_tokens"]);
+            tt = IntOf(u["total_tokens"]);
+            if (u["completion_tokens_details"] is JsonObject det) rt = IntOf(det["reasoning_tokens"]);
+        }
+
+        if (o["choices"] is not JsonArray { Count: > 0 } ch)
+            // 纯用量帧（上面那种）：有用量就照常带出去，没有就当它不是内容帧
+            return pt + ct + tt > 0
+                ? new Chunk(null, null, null, rt, null, pt, ct, tt)
+                : null;
         if (ch[0] is not JsonObject c0) return null;
 
         string? content = null, reasoning = null, finish = Str(c0["finish_reason"]);
@@ -557,16 +674,14 @@ internal static class LlmClient
             tools = ToolsOf(mm["tool_calls"]);
         }
 
-        // 结束帧上挂着 usage，思考用了多少 token 只有这里报（有些网关干脆不报，那就是 0）
-        int rt = 0;
-        if (o["usage"] is JsonObject u && u["completion_tokens_details"] is JsonObject det
-            && det["reasoning_tokens"] is JsonValue rv && rv.TryGetValue<int>(out var rti))
-            rt = rti;
-
         if (content == null && reasoning == null && finish == null && rt == 0
             && (tools == null || tools.Count == 0)) return null;
-        return new Chunk(content, reasoning, finish, rt, tools);
+        return new Chunk(content, reasoning, finish, rt, tools, pt, ct, tt);
     }
+
+    /// <summary>取一个可能不存在的整数。取不到返回 0，不抛。</summary>
+    private static int IntOf(JsonNode? n)
+        => n is JsonValue v && v.TryGetValue<int>(out int i) ? i : 0;
 
     /// <summary>
     /// 取这一帧里的工具调用碎片。取不出一条合法的就返回 null（而不是空表）——

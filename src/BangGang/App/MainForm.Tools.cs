@@ -112,7 +112,9 @@ partial class MainForm
     {
         try
         {
-            return await LlmClient.StreamAsync(cfg, msgs, OnDelta, OnReason, OnToolStart, st.Cts.Token);
+            var r = await LlmClient.StreamAsync(cfg, msgs, OnDelta, OnReason, OnToolStart, st.Cts.Token);
+            NoteUsage(st, r);
+            return r;
         }
         catch (LlmException ex) when (allowToolFallback && cfg.Tools is { Count: > 0 }
                                       && LlmClient.LooksLikeToolRejection(ex.Message))
@@ -124,21 +126,53 @@ partial class MainForm
             cfg.Tools = null;
             Trace.Log("tools rejected, retrying without: " + ex.Message);
             PostToUi(() => FlashStatus("当前模型不支持工具调用，本次已自动关闭"));
-            return await LlmClient.StreamAsync(cfg, msgs, OnDelta, OnReason, null, st.Cts.Token);
+            var r = await LlmClient.StreamAsync(cfg, msgs, OnDelta, OnReason, null, st.Cts.Token);
+            NoteUsage(st, r);
+            return r;
         }
 
-        void OnDelta(string s) { lock (st.Gate) st.Pending.Append(s); }
+        void OnDelta(string s)
+        {
+            lock (st.Gate)
+            {
+                long now = Environment.TickCount64;
+                if (st.FirstDelta == 0) st.FirstDelta = now;
+                st.LastDelta = now;
+                st.Pending.Append(s);
+            }
+        }
 
         void OnReason(string s)
         {
             lock (st.Gate)
             {
-                if (st.ReasonStart == 0) st.ReasonStart = Environment.TickCount64;
+                long now = Environment.TickCount64;
+                if (st.ReasonStart == 0) st.ReasonStart = now;
+                // 思考也是「生成」，而且往往是最先到的那一段 —— 打点必须连它一起算，
+                // 否则思考几十秒的时间里速度恒为 0，看着像卡死了。
+                if (st.FirstDelta == 0) st.FirstDelta = now;
+                st.LastDelta = now;
                 st.PendingReason.Append(s);
             }
         }
 
         void OnToolStart(string name) =>
             PostToUi(() => FlashStatus("正在调用 " + ToolRegistry.LabelOf(name) + "…"));
+    }
+
+    /// <summary>
+    /// 把这一轮的用量并进本轮的合计（见 <c>MainForm.Context.cs</c>）。
+    /// 一轮里可能发好几次请求（工具往返），速度要按「总共生成了多少 ÷ 总共花了多久」算，
+    /// 而不是取最后一次 —— 后者会把前面几轮的生成悄悄丢掉。
+    /// </summary>
+    private static void NoteUsage(StreamState st, LlmStreamResult r)
+    {
+        if (st.FirstPromptTokens == 0 && r.PromptTokens > 0) st.FirstPromptTokens = r.PromptTokens;
+        st.SumCompletion += r.CompletionTokens;
+        // 生成耗时只算「真有内容在流」的那一段，**不含工具执行时间** ——
+        // 读一个文件要几秒，算进去会把速度稀释得没有意义。
+        if (st.FirstDelta > 0 && st.LastDelta > st.FirstDelta) st.SumGenMs += st.LastDelta - st.FirstDelta;
+        st.FirstDelta = 0;      // 下一轮重新打点
+        st.LastDelta = 0;
     }
 }

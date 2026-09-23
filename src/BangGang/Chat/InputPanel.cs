@@ -9,6 +9,7 @@ internal sealed class InputPanel : Panel, IMessageFilter
     private readonly DraftStrip _draft;
     private readonly TextBox _box;
     private readonly Label _hint;
+    private readonly ContextMeter _meter;
     private readonly HintText _ph;
     private readonly IconButton _send, _attach;
     public List<Attachment> Draft { get; } = new();
@@ -96,6 +97,7 @@ internal sealed class InputPanel : Panel, IMessageFilter
     private int _contentInset;
     private bool _focused;
     private int _hintW = -1;
+    private int _meterW = -1;
     private int _lineH = -1;
     private Font? _lineHFont;   // 量 _lineH 时用的那个 Font 实例，换字体就得重量
 
@@ -231,7 +233,17 @@ internal sealed class InputPanel : Panel, IMessageFilter
         _ph.BringToFront();
         _box.Resize += (_, _) => UpdatePh();
 
-        // 底部工具行的提示文字。**必须是 Label（Static）**，别换成自绘控件。
+        // 底部工具行的提示文字。
+        //
+        // **这里从「必须是一个 Label」变成了「Label + 一个自绘控件并存」**，说清楚为什么：
+        // 原来那句「必须是 Label（Static），别换成自绘控件」真正依赖的是下面 LayoutCard 里
+        // 讲的两条性质 —— **宽度是常量**、**动画里只平移不变尺寸**。这两条与「谁画」无关，
+        // 换成自绘控件只要照做就同样成立。
+        //
+        // 之所以不直接把 Label 换掉：它承载的那串快捷键提示是现成且验证过的
+        // （AutoEllipsis / MiddleCenter 全省事），而这一行现在有**两种内容**
+        // —— 还没开口时显示快捷键、开口之后显示上下文仪表。两个控件共用
+        // LayoutCard 算出来的同一个矩形、同一时刻只有一个 Visible，各干各的那一件。
         _hint = new Label
         {
             AutoSize = false,
@@ -243,6 +255,10 @@ internal sealed class InputPanel : Panel, IMessageFilter
             Text = "Enter 发送 · Shift+Enter 换行 · 可拖入/粘贴文件与图片",
         };
         Controls.Add(_hint);
+
+        // 上下文仪表：和上面的提示文字占同一个矩形，默认不可见（还没开口时显示提示）。
+        _meter = new ContextMeter { Visible = false };
+        Controls.Add(_meter);
 
         // 左：添加附件。平时不画底衬，悬浮才浮出一个圆 —— 参考产品里那个「+」就是这个手感。
         _attach = new IconButton(IconButton.Kind.Plus)
@@ -376,10 +392,15 @@ internal sealed class InputPanel : Panel, IMessageFilter
         int hLeft = _attach.Right + 8;
         int hRight = _send.Left - 8;
         if (hRight - hLeft < 40) { hLeft = card.Left; hRight = card.Right; }
-        int hintW = Math.Min(HintWidth(), Math.Max(40, hRight - hLeft));
+        // 宽度取「提示文字」与「上下文仪表」两者最坏情况的较大值 —— 两个控件共用同一个矩形，
+        // 谁 Visible 谁说了算，宽度天然是常量（理由见上面那一整段）。
+        int want = Math.Max(HintWidth(), MeterWidth());
+        int hintW = Math.Min(want, Math.Max(40, hRight - hLeft));
         int hCenter = (hLeft + hRight) / 2;
-        _hint.Bounds = new Rectangle(hCenter - hintW / 2, rowTop, hintW,
-                                     Math.Max(16, card.Bottom - CardEdgeBand - rowTop));
+        var rowRect = new Rectangle(hCenter - hintW / 2, rowTop, hintW,
+                                    Math.Max(16, card.Bottom - CardEdgeBand - rowTop));
+        _hint.Bounds = rowRect;
+        _meter.Bounds = rowRect;
 
         UpdatePh();
         UpdateBar();
@@ -420,6 +441,33 @@ internal sealed class InputPanel : Panel, IMessageFilter
             _hintW = TextRenderer.MeasureText(_hint.Text, _hint.Font).Width + 2 * HintPadX;
         return _hintW;
     }
+
+    /// <summary>
+    /// 上下文仪表那个矩形的宽度。**按最坏情况预留**（<c>100% · 999.9K/999.9K · 999.9 tok/s</c>），
+    /// 而不是按当前数字 —— 数字每秒钟都在变，跟着量就等于每帧改宽度，
+    /// 那正是上面 LayoutCard 里那段「宽度必须是常量」要避免的事。
+    /// </summary>
+    private int MeterWidth()
+    {
+        if (_meterW < 0)
+            _meterW = ContextMeter.MeasureWorstWidth() + 2 * HintPadX;
+        return _meterW;
+    }
+
+    /// <summary>
+    /// 切到上下文仪表。<paramref name="info"/> 的 <c>Window</c> 非正数时退回快捷键提示
+    /// （那就是「还没有第一轮对话」的状态）。
+    /// </summary>
+    public void SetContext(CtxInfo info)
+    {
+        bool on = info.Window > 0;
+        _hint.Visible = !on;
+        _meter.Visible = on;
+        if (on) _meter.Set(info);
+    }
+
+    /// <summary>退回快捷键提示。切到没开过口的会话、回到欢迎页时调。</summary>
+    public void ClearContext() => SetContext(default);
 
     /// <summary>
     /// 提示文字离标签左右边缘的留白。**这个数有下限，不是排版口味**。
@@ -899,6 +947,7 @@ internal sealed class InputPanel : Panel, IMessageFilter
         _box.ForeColor = Theme.TextMain;
         _hint.BackColor = Theme.InputBg;
         _hint.ForeColor = Theme.TextMuted;
+        _meter.Restyle();
         _ph.BackColor = Theme.InputBg;
         _ph.ForeColor = Theme.TextMuted;
         UpdateSendState();

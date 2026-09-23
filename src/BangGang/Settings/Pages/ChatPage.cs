@@ -51,8 +51,23 @@ internal sealed class ChatPage : SettingsPage
     private readonly TextArea _sys = new(FieldW, 3, "例如：你是帮帮，回答简洁准确，用中文。");
     private readonly TextArea _rein = new(FieldW, 3, "例如：只回答与本次对话相关的问题，不要跑题。");
 
-    private int _bTemp, _bTokens;
-    private string _bSys = "", _bRein = "";
+    /// <summary>上下文处理方式。索引 ↔ 存储值写成两个纯函数，别在六处各写一遍三元表达式。</summary>
+    private static readonly string[] CtxModes = { "最新", "压缩" };
+
+    private readonly SegmentedControl _ctxMode = new(CtxModes, 34);
+
+    /// <summary>
+    /// 上下文窗口滑条。8K 起步 —— 比这更小的模型现在基本见不到了，而这个下限也顺带
+    /// 挡住了「手滑拖到最左边导致每轮都在压缩」。
+    /// </summary>
+    private readonly SliderBar _ctxWindow = new(FieldW)
+    {
+        Min = 8192, Max = 262144, Step = 8192, Value = 32768,
+        Format = v => (v / 1024).ToString(CultureInfo.InvariantCulture) + "K",
+    };
+
+    private int _bTemp, _bTokens, _bCtxWindow;
+    private string _bSys = "", _bRein = "", _bCtxMode = "compact";
 
     public ChatPage() : base("对话参数", "这些参数会随每次请求一起发给模型，只影响对话本身")
     {
@@ -76,6 +91,21 @@ internal sealed class ChatPage : SettingsPage
         prompts.Height = prompts.MeasureHeight();
         Stack.Controls.Add(prompts);
 
+        // ---- 上下文 ----
+        //
+        // 单独开一张卡（而不是往「生成参数」里塞一行）：那一页的内容高度预算是死的
+        // （见 PromptRowH 的注释），塞进去会变成 524 —— 超出的那点会让滚动条占满 92% 的轨道，
+        // 拖不动、又像一道多余的竖线。新开一张卡是 664，滚动条 73%，
+        // 与「工具调用」页同一个量级，看着就是一根正常的滚动条。
+        _ctxMode.Changed += MarkChanged;
+        _ctxWindow.Changed += MarkChanged;
+
+        var ctx = new GroupCard("上下文", "聊得久了、内容超出模型能记住的长度时怎么办");
+        ctx.Add(new SettingRow("上下文处理方式", "超长时丢掉最老的消息，或把它们压成一段摘要", _ctxMode));
+        ctx.Add(new SettingRow("上下文窗口", "按所用模型填；填小了只是提前压缩，填大了会被接口拒绝", _ctxWindow));
+        ctx.Height = ctx.MeasureHeight();
+        Stack.Controls.Add(ctx);
+
         AddFooterAction("恢复默认", () =>
         {
             var d = new AppSettings();
@@ -83,11 +113,18 @@ internal sealed class ChatPage : SettingsPage
             _tokens.Value = d.ChatMaxTokens <= 0 ? UnlimitedMark : d.ChatMaxTokens;
             _sys.Text = d.ChatSystemPrompt;
             _rein.Text = d.ChatReinforce;
+            _ctxMode.Select(CtxModeIndex(d.ChatContextMode), false);
+            _ctxWindow.Value = d.ChatContextWindow;
             MarkChanged();
         }, NonDefault);
 
         FinishContent();
     }
+
+    /// <summary>索引 ↔ 存储值的双向映射（照 UiPage 里那对纯函数的写法）。</summary>
+    private static int CtxModeIndex(string? mode) => mode == "latest" ? 0 : 1;
+
+    private static string CtxModeValue(int idx) => idx == 0 ? "latest" : "compact";
 
     /// <summary>当前值是否已偏离出厂默认（决定底栏「恢复默认」是否显示）。</summary>
     private bool NonDefault()
@@ -96,7 +133,9 @@ internal sealed class ChatPage : SettingsPage
         return _temp.Value != (int)Math.Round(d.ChatTemperature * TempScale)
             || _tokens.Value != (d.ChatMaxTokens <= 0 ? UnlimitedMark : d.ChatMaxTokens)
             || _sys.Text != d.ChatSystemPrompt
-            || _rein.Text != d.ChatReinforce;
+            || _rein.Text != d.ChatReinforce
+            || CtxModeValue(_ctxMode.SelectedIndex) != d.ChatContextMode
+            || _ctxWindow.Value != d.ChatContextWindow;
     }
 
     public override void Rebind(AppSettings s)
@@ -106,6 +145,8 @@ internal sealed class ChatPage : SettingsPage
         _tokens.Value = s.ChatMaxTokens <= 0 ? UnlimitedMark : s.ChatMaxTokens;
         _sys.Text = s.ChatSystemPrompt ?? "";
         _rein.Text = s.ChatReinforce ?? "";
+        _ctxMode.Select(CtxModeIndex(s.ChatContextMode), false);
+        _ctxWindow.Value = Math.Clamp(s.ChatContextWindow, _ctxWindow.Min, _ctxWindow.Max);
         _sys.ClearUndoBuffers();
         _rein.ClearUndoBuffers();
 
@@ -116,6 +157,8 @@ internal sealed class ChatPage : SettingsPage
         _bTokens = _tokens.Value;
         _bSys = _sys.Text;
         _bRein = _rein.Text;
+        _bCtxMode = CtxModeValue(_ctxMode.SelectedIndex);
+        _bCtxWindow = _ctxWindow.Value;
         MarkClean();
     }
 
@@ -125,11 +168,15 @@ internal sealed class ChatPage : SettingsPage
         target.ChatMaxTokens = _tokens.Value >= UnlimitedMark ? 0 : _tokens.Value;
         target.ChatSystemPrompt = _sys.Text;
         target.ChatReinforce = _rein.Text;
+        target.ChatContextMode = CtxModeValue(_ctxMode.SelectedIndex);
+        target.ChatContextWindow = _ctxWindow.Value;
     }
 
     protected override bool ComputeDirty() =>
         _temp.Value != _bTemp ||
         _tokens.Value != _bTokens ||
         _sys.Text != _bSys ||
-        _rein.Text != _bRein;
+        _rein.Text != _bRein ||
+        CtxModeValue(_ctxMode.SelectedIndex) != _bCtxMode ||
+        _ctxWindow.Value != _bCtxWindow;
 }

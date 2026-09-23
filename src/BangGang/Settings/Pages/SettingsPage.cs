@@ -262,7 +262,24 @@ internal abstract class SettingsPage : Panel, IThemed
         if (_body is not ScrollArea area || Stack == null) return;
         Stack.ArrangeAndResize(Math.Max(40, area.ClientSize.Width - 18));
         area.Relayout(Math.Max(40, area.ClientSize.Width - 18), Stack.ContentHeight);
+
+        // 页面内容高度 vs 可视高度的实测出口（只写 Debug 的交互日志）。
+        //
+        // 为什么值得单记一行：各页的行高、卡片留白都是硬编码像素，而内容区高度
+        // （见 ChatPage 顶上那段注释）是死的。两者一旦分家，表现**只是**「多出一根
+        // 拖不动、像多余竖线的滚动条」—— 不实际量一次，光看截图会以为那是设计如此。
+        // 加一行内容时在这里 grep 一下，比目测可靠，也不依赖桌面。
+        if (_lastContent != Stack.ContentHeight || _lastView != area.ClientSize.Height)
+        {
+            _lastContent = Stack.ContentHeight;
+            _lastView = area.ClientSize.Height;
+            Trace.Log($"settings page '{_title.Text}': content={_lastContent} view={_lastView}"
+                      + (_lastContent > _lastView ? $" (超出 {_lastContent - _lastView})" : ""));
+        }
     }
+
+    private int _lastContent = -1;
+    private int _lastView = -1;
 
     /// <summary>页面被切换显示时强制重排内容（隐藏期间的自动布局会被 WinForms 跳过）。</summary>
     protected override void OnVisibleChanged(EventArgs e)
