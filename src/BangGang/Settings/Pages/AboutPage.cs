@@ -19,7 +19,6 @@ internal sealed class AboutPage : SettingsPage
     private static IconButton Link() => new(IconButton.Kind.Link, SC.GroupBg) { Clickable = true };
 
     private readonly SettingRow _version = new("当前版本", "程序内显示的版本号", Blank());
-    private readonly SettingRow _status = new("更新状态", "点右下角的「检查更新」问一次官网", Blank());
 
     private PillButton? _action;
     private UpdateInfo? _pending;      // 已经下好、等着用户点确认的那个安装包
@@ -66,16 +65,8 @@ internal sealed class AboutPage : SettingsPage
         limits.Height = limits.MeasureHeight();
         Stack.Controls.Add(limits);
 
-        // ---- 更新 ----
-        // 不带副标题：这一张只有一行状态，而那句「从官网取最新版本」和下面按钮上的字
-        // 说的是同一件事。
-        var update = new GroupCard("更新");
-        update.Add(_status);
-        update.Height = update.MeasureHeight();
-        Stack.Controls.Add(update);
-
         _action = AddFooterAction("检查更新", OnAction);
-        HideSave();     // 这一页没有设置项，底栏只留「检查更新」
+        HideSave();     // 这一页没有设置项，底栏只留「检查更新」+ 它左边那行更新状态
 
         FinishContent();
     }
@@ -96,27 +87,27 @@ internal sealed class AboutPage : SettingsPage
 
         if (_downloaded != null)
         {
-            if (Updater.RunInstaller(_downloaded))
-                SetStatus("正在启动安装程序", "安装程序会自动关闭本程序；装完后从开始菜单重新打开即可");
-            else
-                SetStatus("启动安装程序失败", "安装包在 " + _downloaded + "，可以手动双击运行");
+            SetStatus(Updater.RunInstaller(_downloaded)
+                ? "正在启动安装程序，它会自动关闭本程序；装完后从开始菜单重新打开即可"
+                : "启动安装程序失败，安装包在 " + _downloaded + "，可以手动双击运行");
             return;
         }
 
         _busy = true;
         SetAction("检查中…", enabled: false);
-        SetStatus("正在检查更新", "正在问官网有没有新版本");
+        SetStatus("正在检查更新…");
         try
         {
             var (info, message) = await Updater.CheckAsync(MainForm.AppVersion, CancellationToken.None);
             if (info == null)
             {
-                SetStatus("已是最新", message);
+                SetStatus(message);
                 SetAction("检查更新", enabled: true);
                 return;
             }
 
-            SetStatus("正在下载 " + info.Version, Describe(info) + "，0%");
+            string size = BangGang.AttachTypes.SizeText(info.Size);
+            SetStatus("正在下载 " + info.Version + "（" + size + "） 0%");
             long lastTick = 0;
             string path = await Updater.DownloadAsync(info, p =>
             {
@@ -125,20 +116,18 @@ internal sealed class AboutPage : SettingsPage
                 long now = Environment.TickCount64;
                 if (now - lastTick < 200 && p < 1.0) return;
                 lastTick = now;
-                SetStatus("正在下载 " + info.Version, Describe(info) + "，" + (int)Math.Round(p * 100) + "%");
+                SetStatus("正在下载 " + info.Version + "（" + size + "） " + (int)Math.Round(p * 100) + "%");
             }, CancellationToken.None);
 
             _pending = info;
             _downloaded = path;
-            string note = info.Sha256 == null
-                ? "（服务端未提供校验值，本次只核对了大小）"
-                : "（校验通过）";
-            SetStatus("已下载 " + info.Version, Describe(info) + note + "。点右下角「运行安装程序」继续");
+            string note = info.Sha256 == null ? "，服务端未提供校验值，本次只核对了大小" : "，校验通过";
+            SetStatus("已下载 " + info.Version + "（" + size + "）" + note + "，点右下角「运行安装程序」继续");
             SetAction("运行安装程序", enabled: true);
         }
         catch (Exception ex)
         {
-            SetStatus("更新失败", ex.Message);
+            SetStatus("更新失败：" + ex.Message);
             SetAction("检查更新", enabled: true);
             Trace.Log("update failed: " + ex.Message);
         }
@@ -148,11 +137,12 @@ internal sealed class AboutPage : SettingsPage
         }
     }
 
-    private static string Describe(UpdateInfo i) =>
-        (i.Variant == "without-runtime" ? "依赖已装运行时" : "自带运行时")
-        + "，" + BangGang.AttachTypes.SizeText(i.Size);
-
-    private void SetStatus(string title, string desc) => _status.SetText(title, desc);
+    /// <summary>
+    /// 底栏那行状态的唯一出口。**只收一整句**：发布失败的一句是 <c>Updater</c> 给的完整话
+    /// （「已是最新版本（v0.9.32）。」），再套一层标题就成了「已是最新：已是最新版本…」——
+    /// 两句话说的是同一件事，还占掉了本来就不宽的那一行。
+    /// </summary>
+    private void SetStatus(string text) => SetFooterState(text);
 
     private void SetAction(string text, bool enabled)
     {
@@ -173,6 +163,9 @@ internal sealed class AboutPage : SettingsPage
     public override void Rebind(AppSettings s)
     {
         _version.SetText("当前版本", MainForm.AppVersion);
+        // 每次打开浮窗都回到干净状态：上一次那句「已是最新版本」不该跨会话留着 ——
+        // 它说的是「刚才那一刻问过」，而这中间官网可能已经发了新版。
+        SetFooterState("");
         MarkClean();
     }
 

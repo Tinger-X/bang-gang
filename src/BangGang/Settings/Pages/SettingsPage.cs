@@ -57,6 +57,7 @@ internal abstract class SettingsPage : Panel, IThemed
         Stack.ControlAdded += (_, _) => LayoutStack();
 
         _state.AutoSize = false;
+        _state.AutoEllipsis = true;   // 「软件说明」页会往这行写更新的进展，长了要收尾而不是硬裁
         _state.Font = Theme.UI(9.5f);
         _state.ForeColor = SC.InkMuted;
         _state.BackColor = SC.CardBg;
@@ -137,20 +138,24 @@ internal abstract class SettingsPage : Panel, IThemed
 
     private void UpdateSaveUi()
     {
-        if (IsDirty)
+        // 状态字被这一页接管了（见 SetFooterState）就别再写它 ——
+        // 否则一次 Rebind / MarkClean 就会把「正在下载 42%」冲成「已是最新」。
+        if (!_stateOwned)
         {
-            _save.On = true;
-            _state.Text = "有未保存的修改";
-            _state.ForeColor = SC.Accent;
+            if (IsDirty)
+            {
+                _state.Text = "有未保存的修改";
+                _state.ForeColor = SC.Accent;
+            }
+            else
+            {
+                _state.Text = "已是最新";
+                _state.ForeColor = SC.InkMuted;
+            }
+            _state.Invalidate();
         }
-        else
-        {
-            _save.On = false;
-            _state.Text = "已是最新";
-            _state.ForeColor = SC.InkMuted;
-        }
+        _save.On = IsDirty;
         _save.Invalidate();
-        _state.Invalidate();
 
         // 条件显示的底栏按钮（「恢复默认」只在值偏离默认时出现）。
         foreach (var (b, pred) in _footerActions)
@@ -196,7 +201,7 @@ internal abstract class SettingsPage : Panel, IThemed
     private void LayoutFooter()
     {
         int y = Height - FooterH + (FooterH - _save.Height) / 2;
-        // 保存键收起来时不占位：不收的话「检查更新」会被推到离右缘 108+10 px 的地方，
+        // 保存键收起来时不占位：不收的话底栏那几个按钮会被推到离右缘 118px 的地方，
         // 而那片空白本来是该由保存键填的，看着像少画了一个按钮。
         int right = Width - PadX - (_saveHidden ? 0 : _save.Width);
         if (!_saveHidden) _save.SetBounds(right, y, _save.Width, _save.Height);
@@ -209,26 +214,40 @@ internal abstract class SettingsPage : Panel, IThemed
             right -= b.Width + 10;
             b.SetBounds(right, y, b.Width, b.Height);
         }
-        if (!_saveHidden)
-            _state.SetBounds(PadX, Height - FooterH + (FooterH - 20) / 2, Math.Max(60, right - PadX - 16), 20);
+        _state.SetBounds(PadX, Height - FooterH + (FooterH - 20) / 2, Math.Max(60, right - PadX - 16), 20);
     }
 
     private bool _saveHidden;
+    private bool _stateOwned;
 
     /// <summary>
-    /// 把底栏那颗「保存」连它左边的状态字一起收起来。
+    /// 把底栏那颗「保存」收起来，只留下次级动作按钮（「软件说明」页于是只剩「检查更新」）。
     ///
-    /// 「软件说明」页用它 —— 那一页**没有任何设置项**（<see cref="ApplyTo"/> 是空的、
-    /// <see cref="ComputeDirty"/> 恒假），摆一颗永远灰着的「保存」，用户会以为自己漏了什么没存；
-    /// 旁边那行「已是最新」也会和页面里真正的更新状态混成两句话在说同一件事。
-    /// 底栏于是只剩那枚「检查更新」。
+    /// 那一页**没有任何设置项**（<see cref="ApplyTo"/> 是空的、<see cref="ComputeDirty"/> 恒假），
+    /// 摆一颗永远灰着的「保存」，用户会以为自己漏了什么没存。
+    ///
+    /// **左侧那行状态字留着** —— 见 <see cref="SetFooterState"/>。
     /// </summary>
     protected void HideSave()
     {
         _saveHidden = true;
         _save.Visible = false;
-        _state.Visible = false;
         LayoutFooter();
+    }
+
+    /// <summary>
+    /// 底栏左侧那行状态字改由**这一页自己写**，而不是由「有没有未保存的修改」决定。
+    ///
+    /// 「软件说明」页用它显示检查更新的进展（正在检查 / 已是最新 / 下载到 42% / 校验失败）。
+    /// 那些话本来占着页面里一张「更新」卡片，去掉那张卡之后，底栏这行就是它该在的地方 ——
+    /// 按钮在右、结果在左，是同一件事的两半。
+    /// </summary>
+    protected void SetFooterState(string text)
+    {
+        _stateOwned = true;
+        _state.Text = text;
+        _state.ForeColor = SC.InkMuted;
+        _state.Invalidate();
     }
 
     private void LayoutStack()
