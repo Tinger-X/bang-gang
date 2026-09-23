@@ -54,6 +54,18 @@ internal static class WebPage
             string tag = html[(lt + 1)..gt].Trim();
             i = gt + 1;
 
+            // HTML 注释要整段跳过：跳到 --> 为止，**不是**跳到下一个 > 为止。
+            //
+            // 注释里出现一个大于号（`<!-- a > b -->`）之后，剩下的 `-->` 之前那些看着像标签的
+            // 东西就会被当成真标签 —— 实测能从一个注释里收出一条根本不存在的样式表。
+            // 没有 --> 时一直跳到文末：浏览器对没闭合的注释也是这么处理的。
+            if (tag.StartsWith("!--", StringComparison.Ordinal))
+            {
+                int end = html.IndexOf("-->", lt, StringComparison.Ordinal);
+                i = end < 0 ? html.Length : end + 3;
+                continue;
+            }
+
             bool closing = tag.Length > 0 && tag[0] == '/';
             string name = TagName(tag);
             if (name.Length == 0) continue;

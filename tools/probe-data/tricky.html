@@ -1,0 +1,23 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>正则陷阱</title>
+  <link rel="stylesheet" href="head-real.css">
+</head>
+<body>
+  <p>正文第一段</p>
+
+  <script>
+    // 这一整块都不是真的引用，正则扫过去会全抓出来
+    document.write('<script src="fake-from-js.js"><\/script>');
+    var html = '<link rel="stylesheet" href="fake-in-js.css">';
+  </script>
+
+  <!-- <link rel="stylesheet" href="commented-out.css"> -->
+  <!-- 这条注释里有个大于号 a > b，后面还跟着 <link href="after-gt.css"> -->
+
+  <img src="real-photo.jpg" alt="真实图片">
+  <a href="real-page.html">真实链接</a>
+  <p>正文第二段</p>
+</body>
+</html>
