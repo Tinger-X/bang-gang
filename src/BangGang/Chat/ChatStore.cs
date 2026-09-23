@@ -1,86 +1,37 @@
-using System.Text.Json;
+using System.Globalization;
 
 namespace BangGang;
 
 /// <summary>
-/// 一条会话的落盘结构。外面包一层而不是直接把 <see cref="Conversation"/> 序列化出去，
-/// 是为了给版本号留个位置：将来字段的含义变了，能靠它分辨新旧文件。
-/// </summary>
-internal sealed class ChatFile
-{
-    public int Version { get; set; } = 1;
-    public Conversation? Conversation { get; set; }
-}
-
-/// <summary>
-/// 0.8.1 及以前「所有会话挤在一个 conversations.json 里」的格式。
+/// 会话的本地持久化：**SQLite 库里的行**（<c>conversations</c> / <c>messages</c> /
+/// <c>tool_calls</c> / <c>message_attachments</c>），重启后照原样接着聊。
 ///
-/// 现在只剩一个用途：升级后第一次启动时把老数据搬进 <see cref="ChatStore.Dir"/>，
-/// 搬完这个类型就没用了。留着它，是为了不让用户已经聊出来的历史因为换了个存放方式
-/// 就消失（见 <see cref="ChatStore.Load"/>）。
-/// </summary>
-internal sealed class LegacyStoreFile
-{
-    public int Version { get; set; } = 1;
-    public string? ActiveId { get; set; }
-    public List<Conversation>? Conversations { get; set; }
-}
-
-/// <summary>
-/// 会话的本地持久化：**一条会话一个文件**，都放 <c>&lt;BaseDirectory&gt;\chats\</c>（和设置放一起），
-/// 文件名就是会话的 id，重启后照原样接着聊。
+/// 从「一条会话一个 JSON 文件」换过来之后，原来那四条约定有的作废、有的换了形态，
+/// 但**语义一条都没丢**——它们是被踩出来的，不是文风：
 ///
-/// 四条约定：
+/// 1. **没有消息的会话不占行**。空会话是「点了加号但还没开口」的产物，它只在内存里活着；
+///    正文和附件都为空的助手消息同样不算数（那是流式回复还没落地时的占位气泡，
+///    程序中途被杀才会留着它）。所以 <see cref="Save"/> 发现一条会话已经空了时会
+///    **把它的行删掉** —— 规则是「库里有行 ⟺ 有内容」。判据仍是
+///    <see cref="ChatMessage.IsEmpty"/>，那里把**思考过程**与**工具调用**都算作内容。
+/// 2. **写是原子的**。原来靠「先写 .tmp 再改名」，现在靠 SQLite 事务 ——
+///    整个 <see cref="Save"/> 在一个事务里，断电最坏也只是丢掉这一次的新增。
+/// 3. **读回来的东西当成外来的**。建表时列全是 <c>NOT NULL DEFAULT ''</c>，
+///    所以 NULL 那类问题在库这一层就没了；剩下要兜的是「反序列化回来的时间戳解析不了」
+///    与「标题是空的」这两种。
+/// 4. **id 仍然要在写入前校验字符集**（<see cref="IsId"/>）。它的原意是防路径穿越，
+///    现在 id 只是主键、不拼路径，参数化绑定也本来就挡住了注入 —— 留着它是**数据卫生**：
+///    库里不该出现一个界面无法安全显示的 id。
 ///
-/// 1. **文件名说了算**。id 是要拼进路径的，而文件里的那个 <c>Id</c> 字段是磁盘上的内容 ——
-///    谁都能往里写 <c>"../../x"</c>。所以读取时一律认文件名，并且只认字符集合法、长度合适的
-///    文件名（<see cref="IsId"/>），别的一概跳过；写的时候也只写这种 id。这样「文件内容
-///    指使程序往目录外写文件」这件事从根上不成立。
-/// 2. **没有消息的会话不占文件**。空会话是「点了加号但还没开口」的产物，它只在内存里活着 ——
-///    真要写下去，重启一次就多一个文件，用户点几下加号，列表里就攒一串「新对话」永远删不完。
-///    同理，正文和附件都为空的助手消息也不写：那是流式回复还没落地时的占位气泡，程序中途
-///    被杀掉才会留着它，写进去只会让下一次启动冒出一个空气泡。所以 <see cref="Save"/> 在
-///    发现一条会话已经空了时会**把它的文件删掉** —— 规则是「文件存在 ⟺ 有内容」。
-/// 3. **先写临时文件再改名**。直接覆盖原文件的话，写到一半断电 / 被杀，留下的是一个截断的
-///    JSON —— 那一条会话就读不回来了。改名在同一分区上是原子的，最坏也只是丢掉这一次的新增。
-/// 4. 反序列化回来的东西**当成外来的**：字段可能缺失、可能是 null（见 <see cref="Attachment"/>，
-///    <c>"Text": null</c> 能绕过声明的非空），逐个补齐再用。
-///
-/// 附件（<see cref="ImageDir"/> 里的图）**不跟着会话一起删** —— 删会话时只删会话文件。
+/// 附件：**托管附件**（截图/粘贴图，字节是我们的）在没人引用时回收；
+/// **非托管附件**（用户拖进来的文件）永远不碰。分界见 <see cref="AttachmentStore"/>。
 /// </summary>
 internal static class ChatStore
 {
-    /// <summary>会话目录：一个文件一条会话，文件名即会话 id。</summary>
-    public static string Dir => Path.Combine(AppContext.BaseDirectory, "chats");
+    /// <summary>托管附件的目录（转发到 <see cref="AttachmentStore.Dir"/>，老调用点照旧）。</summary>
+    public static string ImageDir => AttachmentStore.Dir;
 
-    /// <summary>0.8.1 的单文件存档位置，只在 <see cref="TryImportLegacy"/> 里读一次。</summary>
-    private static string LegacyPath => Path.Combine(AppContext.BaseDirectory, "conversations.json");
-
-    /// <summary>
-    /// 应用自己产生的图片（粘贴的、截图的）落盘的目录。
-    ///
-    /// 特意**不**放 <c>%TEMP%</c>：那里的文件随时可能被系统或清理工具删掉，而它现在是
-    /// 一条会话消息的附件 —— 重启之后历史还在、图片却读不出来了，用户看到的是一个个空槽。
-    ///
-    /// 只增不删：删会话**不**回收它的图。同一张图可能被多条消息引用着（附件里存的是路径，
-    /// 没有归属关系），按引用删早晚会删到还在用的那张 —— 那是不可逆的，而留着一张孤儿图
-    /// 只是占几 KB 磁盘。真要清理，得先给附件加引用计数，不能靠猜。
-    /// </summary>
-    public static string ImageDir => Path.Combine(AppContext.BaseDirectory, "images");
-
-    /// <summary>取一个还没被占用的图片路径（目录不存在就建）。</summary>
-    public static string NewImagePath(string prefix)
-    {
-        Directory.CreateDirectory(ImageDir);
-        return Path.Combine(ImageDir, $"{prefix}_{DateTime.Now:yyyyMMdd_HHmmssfff}.png");
-    }
-
-    private static readonly JsonSerializerOptions WriteOpt = new() { WriteIndented = true };
-    private static readonly JsonSerializerOptions ReadOpt = new() { PropertyNameCaseInsensitive = true };
-
-    /// <summary>id 能不能直接当文件名用。字符集限定在 <c>[0-9A-Za-z_-]</c>，于是 <c>.</c>、
-    /// <c>\</c>、<c>/</c> 都进不来，「../ 跑到目录外面」也就无从谈起。
-    /// <see cref="Conversation.Id"/> 生成的 Guid("N") 是 32 位十六进制，天然落在这个集合里。</summary>
+    /// <summary>id 能不能当主键用。字符集限定在 <c>[0-9A-Za-z_-]</c>；见类注释第 4 条。</summary>
     private static bool IsId(string? s)
     {
         if (string.IsNullOrEmpty(s) || s.Length > 64) return false;
@@ -89,186 +40,365 @@ internal static class ChatStore
         return true;
     }
 
-    private static string PathFor(string id) => Path.Combine(Dir, id + ".json");
-
     /// <summary>
-    /// 这条会话里真正值得写下去的消息。空会话（一条都没有）返回空表。
-    ///
-    /// 「值得」的判据在 <see cref="ChatMessage.IsEmpty"/> 里 —— 那里把**思考过程**
-    /// 也算作内容：暂停在一轮思考中途、或者长度上限全被思考吃掉时，正文是空的而
-    /// 思考是满的，用户明明看见了一整屏字，只按正文判就等于凭空吃掉这一轮。
+    /// 这条会话里真正值得写下去的消息。一条都没有就返回空表（见类注释第 1 条）。
     /// </summary>
     private static List<ChatMessage> Persistable(Conversation c) =>
         c.Messages.Where(m => m != null && !m.IsEmpty).ToList();
 
+    // 时间统一按 ISO 8601 往返格式存成 TEXT：既能排序，又能精确解析回 DateTime，
+    // 且不受机器区域设置影响（用的是 InvariantCulture）。存成 Unix 秒也行，
+    // 但那样打开数据库看是一串数字，排查时还得心算。
+    private static string Iso(DateTime t) =>
+        t.ToString("o", CultureInfo.InvariantCulture);
+
+    private static DateTime ParseTime(string? s, DateTime fallback)
+    {
+        if (string.IsNullOrEmpty(s)) return fallback;
+        return DateTime.TryParse(s, CultureInfo.InvariantCulture,
+                                 DateTimeStyles.RoundtripKind, out var t) ? t : fallback;
+    }
+
     /// <summary>
-    /// 把一条会话写进它自己的文件。
+    /// 把一条会话写进库。
     ///
     /// 调用点都在「这条会话的内容有了一次定稿」的地方 —— 用户发了消息、贴了一条助手消息、
-    /// 一期回复收尾 —— 而不是流式刷新的每一帧上：一期回复几十帧，写几十次盘没有意义。
+    /// 一期回复收尾 —— 而不是流式刷新的每一帧上。
+    ///
+    /// 实现上是**先把会话整个删掉再重建**（消息、工具调用、附件关联一并重来）。
+    /// 这么做而不是逐条 upsert，是因为 <see cref="ChatMessage"/> 没有稳定 id：
+    /// 全量重建让「库里的附件引用」永远等于「消息此刻真实持有的附件」，
+    /// 不会残留上一次保存留下的悬空引用。代价是每轮保存 O(消息数) 次插入 ——
+    /// 在一个事务里跑，几百条消息也是毫秒级。
     /// </summary>
     public static void Save(Conversation c)
     {
         if (!IsId(c.Id)) return;
+        if (!Db.Available) return;
 
-        // 没内容的会话不配有自己的文件；已经有文件的（内容被删光了、或者刚立起空气泡就被
-        // 杀掉）那就把文件收走 —— 不变量是「文件在 ⟺ 里面有内容」。
         var msgs = Persistable(c);
         if (msgs.Count == 0) { Delete(c.Id); return; }
 
         try
         {
-            var f = new ChatFile
+            var db = Db.Conn;
+            db.Begin();
+            try
             {
-                Conversation = new Conversation
+                // 删旧行。ON DELETE CASCADE 会把这条会话的 messages / tool_calls /
+                // message_attachments 一并带走（外键是每连接开关，在 Db 开库时打开，
+                // 探针里有一条断言专门盯着它）。
+                Exec(db, "DELETE FROM conversations WHERE id = ?", c.Id);
+
+                using (var st = db.Prepare(
+                    "INSERT INTO conversations(id, title, title_locked, created_at, updated_at, " +
+                    "summary, summary_upto, last_prompt_tokens) VALUES(?,?,?,?,?,?,?,?)"))
                 {
-                    Id = c.Id,
-                    Title = c.Title,
-                    TitleLocked = c.TitleLocked,
-                    CreatedAt = c.CreatedAt,
-                    UpdatedAt = c.UpdatedAt,
-                    Messages = msgs,
-                },
-            };
-            Directory.CreateDirectory(Dir);
-            string tmp = PathFor(c.Id) + ".tmp";
-            File.WriteAllText(tmp, JsonSerializer.Serialize(f, WriteOpt));
-            File.Move(tmp, PathFor(c.Id), overwrite: true);
+                    st.Bind(1, c.Id)
+                      .Bind(2, c.Title ?? "")
+                      .Bind(3, c.TitleLocked)
+                      .Bind(4, Iso(c.CreatedAt))
+                      .Bind(5, Iso(c.UpdatedAt))
+                      .Bind(6, c.CtxSummary ?? "")
+                      .Bind(7, c.CtxSummaryUpto)
+                      .Bind(8, c.LastPromptTokens);
+                    st.Step();
+                }
+
+                for (int i = 0; i < msgs.Count; i++) WriteMessage(db, c.Id, i, msgs[i]);
+
+                db.Commit();
+            }
+            catch
+            {
+                db.Rollback();
+                throw;
+            }
         }
         catch { /* 存不下就算了：这是「记住历史」，不该把正在进行的对话打断 */ }
     }
 
+    private static void WriteMessage(SqliteDb db, string convId, int seq, ChatMessage m)
+    {
+        using (var st = db.Prepare(
+            "INSERT INTO messages(conv_id, seq, role, when_utc, text, reasoning, reasoning_ms, warning) " +
+            "VALUES(?,?,?,?,?,?,?,?)"))
+        {
+            st.Bind(1, convId)
+              .Bind(2, (long)seq)
+              .Bind(3, m.Role ?? "")
+              .Bind(4, Iso(m.When))
+              .Bind(5, m.Text ?? "")
+              .Bind(6, m.Reasoning ?? "")
+              .Bind(7, (long)m.ReasoningMs)
+              .Bind(8, m.Warning ?? "");
+            st.Step();
+        }
+        long msgId = db.LastInsertRowid;
+
+        var calls = m.ToolCalls;
+        if (calls != null)
+            for (int i = 0; i < calls.Count; i++)
+            {
+                var t = calls[i];
+                if (t == null) continue;
+                using var st = db.Prepare(
+                    "INSERT INTO tool_calls(msg_id, seq, call_id, name, args, result, brief, ok, ms) " +
+                    "VALUES(?,?,?,?,?,?,?,?,?)");
+                st.Bind(1, msgId).Bind(2, (long)i)
+                  .Bind(3, t.Id ?? "").Bind(4, t.Name ?? "").Bind(5, t.Args ?? "")
+                  .Bind(6, t.Result ?? "").Bind(7, t.Brief ?? "").Bind(8, t.Ok)
+                  .Bind(9, (long)t.Ms);
+                st.Step();
+            }
+
+        var files = m.Attachments;
+        if (files != null)
+            for (int i = 0; i < files.Count; i++)
+            {
+                var a = files[i];
+                if (a == null) continue;
+                string key = AttachmentStore.KeyOf(a);
+                bool managed = AttachmentStore.IsManaged(a.Path);
+
+                // 附件本体。INSERT OR IGNORE：同一张图被多条消息引用时只有第一行会写进去，
+                // 后面几次是空操作。name/size 取第一次见到的那个 —— 同一份字节在不同消息里
+                // 可能被起不同的名字（「粘贴图片」vs「截图_142233.png」），先到先得即可。
+                using (var st = db.Prepare(
+                    "INSERT OR IGNORE INTO attachments(hash, managed, name, size, created_at) VALUES(?,?,?,?,?)"))
+                {
+                    st.Bind(1, key).Bind(2, managed).Bind(3, a.Name ?? "")
+                      .Bind(4, a.Size).Bind(5, Iso(DateTime.Now));
+                    st.Step();
+                }
+
+                // 关联。非托管附件多存一个 src —— 它才是真正的路径来源，
+                // 而托管附件的路径由哈希现拼（见 Load），不必存两份。
+                using (var st = db.Prepare(
+                    "INSERT INTO message_attachments(msg_id, seq, hash, kind, name, src) VALUES(?,?,?,?,?,?)"))
+                {
+                    st.Bind(1, msgId).Bind(2, (long)i).Bind(3, key)
+                      .Bind(4, string.IsNullOrEmpty(a.Kind) ? "file" : a.Kind)
+                      .Bind(5, a.Name ?? "")
+                      .Bind(6, a.Path);
+                    st.Step();
+                }
+            }
+    }
+
     /// <summary>
-    /// 删掉一条会话的文件（连带上次写到一半留下的临时文件）。
-    /// **附件不删**，理由见 <see cref="ImageDir"/>。
+    /// 删掉一条会话。
+    ///
+    /// <paramref name="keepPaths"/> 是**当前输入框草稿里还拿着的那些附件路径**，
+    /// 它们不参与回收。为什么要它：草稿里的图已经落盘了、但还没有任何消息引用它，
+    /// 所以引用数是 0；如果用户刚把同一张图发出去过、又把这张删掉的会话一并带上，
+    /// 按引用数判就会把草稿里那张也收走，发送时变成一个破图。
+    /// 草稿是进程内状态，只有调用方知道，所以由调用方传进来。
+    ///
+    /// **顺序是有讲究的：先提交库、再删文件。** 崩在中间只会在磁盘上留几个孤儿文件
+    /// （几 KB，下次删会话或启动清扫还会捡到）；反过来则是「库里有行、文件没了」——
+    /// 用户看到打不开的空槽，**不可逆**。
     /// </summary>
-    public static void Delete(string id)
+    public static void Delete(string id, IReadOnlyCollection<string>? keepPaths = null)
     {
         if (!IsId(id)) return;
+        if (!Db.Available) return;
+
+        var doomed = new List<string>();
         try
         {
-            string p = PathFor(id);
-            if (File.Exists(p)) File.Delete(p);
-            string tmp = p + ".tmp";
-            if (File.Exists(tmp)) File.Delete(tmp);
+            var db = Db.Conn;
+
+            // 先记下这条会话碰过哪些托管附件 —— 事务之后要照这份名单去回收文件
+            using (var st = db.Prepare(
+                "SELECT DISTINCT a.hash FROM message_attachments ma " +
+                "JOIN attachments a ON a.hash = ma.hash " +
+                "WHERE a.managed = 1 AND ma.msg_id IN (SELECT id FROM messages WHERE conv_id = ?)"))
+            {
+                st.Bind(1, id);
+                while (st.Step()) doomed.Add(st.Text(0));
+            }
+
+            db.Begin();
+            try
+            {
+                Exec(db, "DELETE FROM conversations WHERE id = ?", id);
+
+                // 顺手收掉已经没人引用的附件行。**不删文件** —— 文件在事务外删，
+                // 理由见上面那段「顺序是有讲究的」。
+                db.Exec("DELETE FROM attachments WHERE managed = 1 " +
+                        "AND hash NOT IN (SELECT hash FROM message_attachments)");
+                db.Commit();
+            }
+            catch
+            {
+                db.Rollback();
+                throw;
+            }
         }
-        catch { /* 删不掉（文件被占用 / 没权限）就算了，下次 Save 会把它覆盖掉 */ }
+        catch { return; }
+
+        // 事务提交之后才动磁盘
+        AttachmentStore.Reclaim(doomed, keepPaths);
     }
 
     /// <summary>
-    /// 读出全部历史会话。目录不在 / 单个文件读不动 / 解析失败都跳过 ——
-    /// 一份坏掉的存档不该拦住程序启动，也不该连累别的会话。
+    /// 读出全部历史会话。
     ///
-    /// <paramref name="LegacyActiveId"/> 只有一种情况会非空：这次启动刚刚把 0.8.1 的单文件
-    /// 存档搬进 <c>chats/</c>，顺手把「当时开着哪条」也带了回来。平时它是 null ——
-    /// 新布局里没有这个指针，它归 <see cref="AppSettings.ActiveChatId"/> 管。
+    /// **保持「全量载入内存」**：侧栏搜索（<c>RebindConversations</c>）是纯内存的
+    /// <c>Title.Contains</c> + <c>Messages.Any(...)</c>，气泡渲染、文件工具按附件找路径
+    /// 也都遍历 <c>Messages</c>。改成按需查询要动这几处的调用契约，而这是个人聊天工具，
+    /// 全量载入的量级完全撑得住 —— 这次换存储要的是「可靠 + 加密 + 附件能回收」，不是省内存。
+    ///
+    /// 四条查询铺一次全库，没有 N+1。
     /// </summary>
-    public static (List<Conversation> List, string? LegacyActiveId) Load()
-    {
-        var list = ReadAll();
-        if (list.Count > 0) return (list, null);
-
-        // chats/ 是空的：可能只是没聊过，也可能是刚从 0.8.1 升上来。后者要把老存档搬过来。
-        string? active = TryImportLegacy();
-        if (active == null) return (list, null);
-        return (ReadAll(), active);
-    }
-
-    private static List<Conversation> ReadAll()
+    public static List<Conversation> Load()
     {
         var list = new List<Conversation>();
+        if (!Db.Available) return list;
+
         try
         {
-            if (!Directory.Exists(Dir)) return list;
-            foreach (string path in Directory.GetFiles(Dir))
+            var db = Db.Conn;
+            var byId = new Dictionary<string, Conversation>(StringComparer.Ordinal);
+
+            using (var st = db.Prepare(
+                "SELECT id, title, title_locked, created_at, updated_at, summary, summary_upto, " +
+                "last_prompt_tokens FROM conversations"))
             {
-                // 临时文件（xxx.json.tmp）的扩展名不是 .json，这里天然被排除；
-                // 再挡一道 IsId，别的杂七杂八的文件也一并跳过去。
-                if (!string.Equals(Path.GetExtension(path), ".json", StringComparison.OrdinalIgnoreCase)) continue;
-                string id = Path.GetFileNameWithoutExtension(path);
-                if (!IsId(id)) continue;
-                var c = ReadOne(path, id);
-                if (c != null) list.Add(c);
+                while (st.Step())
+                {
+                    string id = st.Text(0);
+                    if (!IsId(id)) continue;
+                    var c = new Conversation
+                    {
+                        Id = id,
+                        Title = st.Text(1),
+                        TitleLocked = st.Int64(2) != 0,
+                        CreatedAt = ParseTime(st.Text(3), DateTime.Now),
+                        UpdatedAt = ParseTime(st.Text(4), DateTime.Now),
+                        CtxSummary = st.Text(5),
+                        CtxSummaryUpto = (int)st.Int64(6),
+                        LastPromptTokens = (int)st.Int64(7),
+                    };
+                    if (string.IsNullOrEmpty(c.Title)) c.Title = "新对话";
+                    byId[id] = c;
+                }
+            }
+
+            // msgId -> 它落在哪条消息上。工具调用与附件关联都靠它归位。
+            var slot = new Dictionary<long, ChatMessage>();
+
+            using (var st = db.Prepare(
+                "SELECT id, conv_id, role, when_utc, text, reasoning, reasoning_ms, warning " +
+                "FROM messages ORDER BY conv_id, seq"))
+            {
+                while (st.Step())
+                {
+                    if (!byId.TryGetValue(st.Text(1), out var c)) continue;
+                    var m = new ChatMessage
+                    {
+                        Role = st.Text(2),
+                        When = ParseTime(st.Text(3), c.UpdatedAt),
+                        Text = st.Text(4),
+                        Reasoning = st.Text(5),
+                        ReasoningMs = (int)st.Int64(6),
+                        Warning = st.Text(7),
+                    };
+                    slot[st.Int64(0)] = m;
+                    c.Messages.Add(m);
+                }
+            }
+
+            using (var st = db.Prepare(
+                "SELECT msg_id, call_id, name, args, result, brief, ok, ms " +
+                "FROM tool_calls ORDER BY msg_id, seq"))
+            {
+                while (st.Step())
+                {
+                    if (!slot.TryGetValue(st.Int64(0), out var m)) continue;
+                    m.ToolCalls.Add(new ToolCall
+                    {
+                        Id = st.Text(1), Name = st.Text(2), Args = st.Text(3),
+                        Result = st.Text(4), Brief = st.Text(5),
+                        Ok = st.Int64(6) != 0, Ms = (int)st.Int64(7),
+                    });
+                }
+            }
+
+            using (var st = db.Prepare(
+                "SELECT ma.msg_id, ma.hash, ma.kind, ma.name, ma.src, a.managed, a.size " +
+                "FROM message_attachments ma JOIN attachments a ON a.hash = ma.hash " +
+                "ORDER BY ma.msg_id, ma.seq"))
+            {
+                while (st.Step())
+                {
+                    if (!slot.TryGetValue(st.Int64(0), out var m)) continue;
+                    string hash = st.Text(1);
+                    bool managed = st.Int64(5) != 0;
+                    m.Attachments.Add(new Attachment
+                    {
+                        Kind = st.Text(2),
+                        Name = st.Text(3),
+                        // 托管附件的路径由哈希现拼（文件名就是哈希），非托管的用存下来的 src
+                        Path = managed ? Path.Combine(AttachmentStore.Dir, hash + ".png")
+                                       : (st.Text(4) ?? ""),
+                        Size = st.Int64(6),
+                    });
+                }
+            }
+
+            foreach (var c in byId.Values)
+            {
+                // 一条消息都没有的会话不该出现在列表里（正常不会发生，
+                // 是手改库或将来某个 bug 留下的）。跳过而不删：读取路径不该动数据。
+                if (Persistable(c).Count == 0) continue;
+                list.Add(c);
             }
         }
-        catch { /* 目录读不动就当没有历史 */ }
+        catch { /* 库读不动就当没有历史 */ }
+
         return list;
     }
 
-    private static Conversation? ReadOne(string path, string id)
-    {
-        try
-        {
-            var f = JsonSerializer.Deserialize<ChatFile>(File.ReadAllText(path), ReadOpt);
-            var c = f?.Conversation;
-            if (c == null) return null;
-            c.Id = id;                      // 文件名说了算，见类注释第 1 条
-            Coerce(c);
-            // 空的会话文件不当历史（正常不会出现，是上一版或手改留下的）。跳过而不删：
-            // 读取路径不该动磁盘 —— 判断错了就是直接吃掉用户的一份聊天记录。
-            if (Persistable(c).Count == 0) return null;
-            return c;
-        }
-        catch { return null; }
-    }
-
-    /// <summary>把反序列化回来的东西补齐成能直接用的样子（见类注释第 4 条）。</summary>
-    private static void Coerce(Conversation c)
-    {
-        if (c.Title == null) c.Title = "新对话";
-        if (c.Messages == null) c.Messages = new();
-        foreach (var m in c.Messages)
-        {
-            m.Text = m.Text ?? "";
-            // 思考过程和截断说明同样可能是 JSON 里的 null：反序列化不看非空声明，
-            // 而气泡那边（以及文本发回模型那条路）都当它们是普通字符串在用。
-            m.Reasoning = m.Reasoning ?? "";
-            m.Warning = m.Warning ?? "";
-            if (m.Attachments == null) m.Attachments = new();
-            // 工具记录同理。这里漏了的话，手改过的文件（或别的版本写出的 "ToolCalls": null）
-            // 会让气泡那边的 Count / 遍历直接打穿。
-            if (m.ToolCalls == null) m.ToolCalls = new();
-            foreach (var a in m.Attachments)
-            {
-                a.Name = a.Name ?? "";
-                a.Kind = string.IsNullOrEmpty(a.Kind) ? "file" : a.Kind;
-            }
-        }
-    }
-
     /// <summary>
-    /// 把 0.8.1 的单文件存档拆成一条一个文件。返回当时开着的那条会话的 id（没得搬就返回 null）。
+    /// 启动时收一次孤儿附件。
     ///
-    /// 只有 <c>chats/</c> 里一条会话都没有时才会走这里 —— 也就是「换过来之后第一次启动」。
-    /// 搬完把老文件删掉：内容已经按新规则安置好了，留着只会在下次启动再搬一遍。
-    /// 写文件失败（磁盘满 / 没权限）时**不删**老文件，宁可下次启动再试一次，也不能把
-    /// 用户的聊天记录变成孤儿。
+    /// **只在这里做「全库对照」式的清扫，不在别处做**：此刻一定没有草稿
+    /// （草稿是进程内状态，而这是启动），所以「没人引用」这个判断是可靠的。
+    /// 平时那条 <see cref="Delete"/> 走的是「按名单回收」，名单来自被删会话自己碰过的附件，
+    /// 不会去动别的。
+    ///
+    /// 再强调一次红线：**只删库里有行、且引用数为 0、且确实是我们自己目录里的文件**。
+    /// 绝不按「文件不在表里」去删 —— 库一旦损坏重建，那样会一次删光用户所有截图。
     /// </summary>
-    private static string? TryImportLegacy()
+    public static void SweepOrphans()
     {
+        if (!Db.Available) return;
         try
         {
-            if (!File.Exists(LegacyPath)) return null;
-            var f = JsonSerializer.Deserialize<LegacyStoreFile>(File.ReadAllText(LegacyPath), ReadOpt);
-            var convs = f?.Conversations;
-            if (convs == null || convs.Count == 0) return null;
-
-            var keep = new List<Conversation>();
-            foreach (var c in convs)
+            var db = Db.Conn;
+            var doomed = new List<string>();
+            using (var st = db.Prepare(
+                "SELECT hash FROM attachments WHERE managed = 1 " +
+                "AND hash NOT IN (SELECT hash FROM message_attachments)"))
             {
-                if (c == null) continue;
-                if (string.IsNullOrEmpty(c.Id) || !IsId(c.Id)) c.Id = Guid.NewGuid().ToString("N");
-                Coerce(c);
-                if (Persistable(c).Count == 0) continue;   // 空会话照旧不落盘，不为迁移破例
-                Save(c);
-                keep.Add(c);
+                while (st.Step()) doomed.Add(st.Text(0));
             }
+            if (doomed.Count == 0) return;
 
-            if (!keep.All(c => File.Exists(PathFor(c.Id)))) return null;   // 没搬干净，留着下次再来
-            File.Delete(LegacyPath);
-            Trace.Log($"chat store: imported {keep.Count} conversation(s) into chats/");
-            return f!.ActiveId;
+            db.Exec("DELETE FROM attachments WHERE managed = 1 " +
+                    "AND hash NOT IN (SELECT hash FROM message_attachments)");
+            AttachmentStore.Reclaim(doomed, null);
+            Trace.Log($"chat store: swept {doomed.Count} orphan attachment(s)");
         }
-        catch { return null; }
+        catch { /* 清扫失败不影响使用 */ }
+    }
+
+    private static void Exec(SqliteDb db, string sql, string arg)
+    {
+        using var st = db.Prepare(sql);
+        st.Bind(1, arg);
+        st.Step();
     }
 }

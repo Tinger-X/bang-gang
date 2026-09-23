@@ -682,13 +682,12 @@ internal sealed class InputPanel : Panel, IMessageFilter
         return false;
     }
 
-    private static string SaveClipboardImage(Image img)
-    {
-        // 同 MainForm 的截图：不再丢进 %TEMP%，否则重启后这条消息的图就没了
-        string p = ChatStore.NewImagePath("clip");
-        img.Save(p, System.Drawing.Imaging.ImageFormat.Png);
-        return p;
-    }
+    /// <summary>
+    /// 把粘贴进来的图落盘成附件。与截图走同一条路（<see cref="AttachmentStore.Store"/>，
+    /// 内容寻址）：不再丢进 <c>%TEMP%</c>，否则重启后这条消息的图就没了；
+    /// 也没了「同一张图贴两次占两份文件」。
+    /// </summary>
+    private static string SaveClipboardImage(Image img) => AttachmentStore.Store(img);
 
     // ---------------- 附件草稿 ----------------
 

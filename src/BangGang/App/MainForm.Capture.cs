@@ -33,7 +33,7 @@ partial class MainForm
                 using var img = ScreenGrab.CaptureRegion(overlay.SelectedRectangle);
                 if (img != null)
                 {
-                    string path = SaveTempPng(img);
+                    string path = SaveShot(img);
                     EnsureActive();
                     try { Clipboard.SetImage(img); } catch { }
                     _input.Add(new Attachment { Kind = "image", Name = $"截图_{DateTime.Now:HHmmss}.png", Path = path });
@@ -44,13 +44,14 @@ partial class MainForm
         finally { _overlayActive = false; }
     }
 
-    private static string SaveTempPng(Image img)
-    {
-        // 落盘目录从 %TEMP% 挪到了 <see cref="ChatStore.ImageDir"/>：这张截图会作为附件
-        // 留在一条消息里，而 %TEMP% 的文件随时可能被清掉 —— 重启后历史还在、图没了。
-        string p = ChatStore.NewImagePath("shot");
-        img.Save(p, System.Drawing.Imaging.ImageFormat.Png);
-        return p;
-    }
+    /// <summary>
+    /// 把截图落盘成附件。走 <see cref="AttachmentStore.Store"/>（内容寻址），于是：
+    /// 同一张图截两次只占一份文件，且删会话时能按哈希数引用、没人用了才回收。
+    ///
+    /// 目录仍是 <see cref="ChatStore.ImageDir"/> 而不是 <c>%TEMP%</c>：这张截图会作为附件
+    /// 留在一条消息里，而 %TEMP% 的文件随时可能被系统或清理工具删掉 ——
+    /// 重启后历史还在、图却没了。
+    /// </summary>
+    private static string SaveShot(Image img) => AttachmentStore.Store(img);
 
 }

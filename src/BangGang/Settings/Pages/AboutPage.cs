@@ -65,6 +65,32 @@ internal sealed class AboutPage : SettingsPage
         limits.Height = limits.MeasureHeight();
         Stack.Controls.Add(limits);
 
+        // ---- 数据存储：**只在出问题时才出现** ----
+        //
+        // 平时这一块根本不在页面上：正常路径下用户不需要知道我们拿什么存数据。
+        // 它存在的唯一理由是「出了问题时不要安静地降级」——
+        // 存储用不了的话，聊天记录和设置都不会落盘，而界面上一点异样都没有，
+        // 用户要等到某天发现记录没了才知道。宁可在这儿明说一句。
+        var storage = new GroupCard("数据存储", "这里列出的都是需要你知道的问题");
+        bool bother = false;
+        if (!Db.Available)
+        {
+            storage.Add(new SettingRow("无法保存数据",
+                "系统缺少数据库组件，本次运行的聊天记录与设置都不会保存", Blank()));
+            bother = true;
+        }
+        if (SettingsRepo.HasUndecryptable)
+        {
+            storage.Add(new SettingRow("密钥解不开",
+                "换过机器或 Windows 账户，API Key 需要在「模型接入」里重填一次", Blank()));
+            bother = true;
+        }
+        if (bother)
+        {
+            storage.Height = storage.MeasureHeight();
+            Stack.Controls.Add(storage);
+        }
+
         _action = AddFooterAction("检查更新", OnAction);
         HideSave();     // 这一页没有设置项，底栏只留「检查更新」+ 它左边那行更新状态
 

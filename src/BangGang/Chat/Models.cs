@@ -27,9 +27,9 @@ public class Conversation
     /// <summary>
     /// 输入框里还没发出去的那半句（正文）。
     ///
-    /// **不落盘**：<see cref="ChatStore.Save"/> 只挑 Id / Title / 两个时间 / Messages 这五个字段
-    /// 写进文件，这里加的字段进不去 —— 那是有意的（草稿是临时状态，重启后照旧从头开始，
-    /// 和 0.9.13 之前的行为一致）。将来往 Save 里加字段时别顺手把它带上。
+    /// **不落盘**：<see cref="ChatStore.Save"/> 只挑 Id / Title / 两个时间 / Messages /
+    /// 下面那几个上下文字段写进库，这里加的字段进不去 —— 那是有意的（草稿是临时状态，
+    /// 重启后照旧从头开始，和 0.9.13 之前的行为一致）。将来往 Save 里加字段时别顺手把它带上。
     ///
     /// 存在对话上而不是存在输入区里，是因为它天然属于一条对话：切走时留在本条上、切回来再
     /// 装回去（两端都在 <c>MainForm.ActivateConversation</c>），删掉这条时它跟着一起没 ——
@@ -39,6 +39,27 @@ public class Conversation
 
     /// <summary>见 <see cref="DraftText"/>：那半句带着的附件。</summary>
     public List<Attachment> DraftFiles { get; set; } = new();
+
+    /// <summary>
+    /// 上下文压缩出来的摘要（「压缩」策略，见 <c>MainForm.Context</c>）。
+    /// 空串 = 这条会话还没压缩过。
+    ///
+    /// **不作为一条消息存在 <see cref="Messages"/> 里**：那份列表是界面与搜索的账本
+    /// （侧栏搜索遍历它、气泡按它渲染、文件工具按它找附件路径），塞一条合成消息进去，
+    /// 要么得给它开气泡特例，要么它会出现在搜索结果里 —— 两头都不对。
+    /// </summary>
+    public string CtxSummary { get; set; } = "";
+
+    /// <summary><see cref="CtxSummary"/> 覆盖到了第几条消息（Messages 的下标）。</summary>
+    public int CtxSummaryUpto { get; set; }
+
+    /// <summary>
+    /// 上一轮请求服务端报回来的真实输入 token 数。0 = 还没拿到过。
+    ///
+    /// 拿它当**锚点**校准本地估算：估算器只擅长算「增量」，
+    /// 有锚点之后就变成「锚点 + 锚点之后新增的消息」，误差不再随对话变长而累积。
+    /// </summary>
+    public int LastPromptTokens { get; set; }
 
     /// <summary>
     /// 依据首条用户消息等生成显示标题。标题定稿过（见 <see cref="TitleLocked"/>）就直接返回，
@@ -168,8 +189,14 @@ public class Attachment
 {
     public string Kind { get; set; } = "file"; // "image" | "file"
     public string Name { get; set; } = "";
-    public string? Path { get; set; }          // 源文件路径（录音/拖入等）
-    public string? ImageDataPath { get; set; } // 截图临时文件等
+
+    /// <summary>
+    /// 文件路径。**两种附件这个字段的含义不同**（分界见 <see cref="AttachmentStore"/>）：
+    /// 托管附件（截图 / 粘贴图）指向我们自己的 <c>images/&lt;sha256&gt;.png</c>；
+    /// 非托管附件（用户拖进来的文件）指向**用户自己的文件**，我们从没复制过它，
+    /// 所以也永远不删它。
+    /// </summary>
+    public string? Path { get; set; }
 
     /// <summary>
     /// 文件大小（字节）。加进来的时候抓一次就**不再跟随磁盘变化** —— 卡片上那半句
@@ -182,32 +209,12 @@ public class Attachment
     public static Attachment ForFile(string name, string path) => new() { Kind = "file", Name = name, Path = path };
     public static Attachment ForClipboardImage(string name, string path) => new() { Kind = "image", Name = name, Path = path };
 
-    /// <summary>加载图片以便展示（失败返回 null）。</summary>
-    public Image? LoadImage(int maxW, int maxH)
-    {
-        try
-        {
-            if (Path == null || !System.IO.File.Exists(Path)) return null;
-            using var full = Image.FromFile(Path);
-            var bmp = new Bitmap(full, Scale(full.Width, full.Height, maxW, maxH));
-            return bmp;
-        }
-        catch { return null; }
-    }
-
-    private static Size Scale(int w, int h, int maxW, int maxH)
-    {
-        if (w <= maxW && h <= maxH) return new Size(w, h);
-        double k = Math.Min((double)maxW / w, (double)maxH / h);
-        return new Size(Math.Max(1, (int)(w * k)), Math.Max(1, (int)(h * k)));
-    }
-
     /// <summary>
     /// 列表缩略图：按**铺满**缩放 —— 短边也至少有 <paramref name="box"/> 那么长。
     ///
-    /// 和 <see cref="LoadImage"/> 的「装下」正好相反，因为用途不同：气泡里要看清整张图，
-    /// 附件格子里只回答「这是哪一张」。装下的话一张 2000×200 的全景会被压成 176×17，
-    /// 再铺进 44px 的方格就得放大 2.5 倍 —— 糊成一片。这里保证短边够长，由画的那一头裁。
+    /// 气泡里要看清整张图、附件格子里只回答「这是哪一张」，用途不同所以缩放方式也不同：
+    /// 按「装下」缩的话，一张 2000×200 的全景会被压成 176×17，再铺进 44px 的方格
+    /// 就得放大 2.5 倍 —— 糊成一片。这里保证短边够长，由画的那一头裁。
     ///
     /// 原图本来就比格子小就不放大：那时糊是必然的，但至少不额外损失一次重采样。
     /// </summary>

@@ -51,19 +51,50 @@ internal static class OfflineBubble
 
         try
         {
-            string dir = Path.GetDirectoryName(Path.GetFullPath(src)) ?? ".";
+            Conversation? conv;
+            string dir;
+
+            // 以 .json 结尾 → 按**一份会话 JSON** 读（手工造的 fixture 仍然有用，
+            // 不必为了试一段排版先去建一条真会话）。
+            // 否则 → 当成**会话 id**，从库里取（BANGGANG_BUBBLE_OUT 可指定输出目录）。
+            if (src.EndsWith(".json", StringComparison.OrdinalIgnoreCase))
+            {
+                string full = Path.GetFullPath(src);
+                dir = Path.GetDirectoryName(full) ?? ".";
+                string json = File.ReadAllText(full, Encoding.UTF8);
+                conv = JsonNode.Parse(json)?["Conversation"]?.Deserialize<Conversation>(ReadOpt);
+            }
+            else
+            {
+                string outDir = Environment.GetEnvironmentVariable("BANGGANG_BUBBLE_OUT") ?? "";
+                dir = outDir.Length > 0 ? outDir : Directory.GetCurrentDirectory();
+
+                var all = ChatStore.Load();
+                conv = all.FirstOrDefault(c => c.Id == src);
+                if (conv is null)
+                {
+                    string ids = string.Join(", ", all.Select(c => c.Id));
+                    Console.WriteLine($"库里没有会话 {src}。现有：{(ids.Length > 0 ? ids : "(空)")}");
+                    return true;
+                }
+            }
+
+            if (conv is null)
+            {
+                Console.WriteLine("这份 JSON 里没有 Conversation（顶层要有 Conversation 字段）");
+                return true;
+            }
+
             foreach (bool dark in new[] { false, true })
-                Render(src, dir, dark);
+                Render(conv, dir, dark);
         }
         catch (Exception ex) { Console.WriteLine("bubble render failed: " + ex); }
         return true;    // 已经是离屏模式了，别再把窗口开起来
     }
 
-    private static void Render(string src, string dir, bool dark)
+    private static void Render(Conversation conv, string dir, bool dark)
     {
-        string json = File.ReadAllText(src, Encoding.UTF8);
-        var conv = JsonNode.Parse(json)?["Conversation"]?.Deserialize<Conversation>(ReadOpt);
-        if (conv?.Messages == null || conv.Messages.Count == 0)
+        if (conv.Messages == null || conv.Messages.Count == 0)
         {
             Console.WriteLine("这份会话里没有消息");
             return;

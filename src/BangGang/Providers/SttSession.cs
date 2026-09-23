@@ -38,11 +38,8 @@ internal sealed class SttConfig
             cfg.ApiSecret = Get(p, "secret2");
             cfg.ResourceId = Get(p, "model");
         }
-        // 旧版扁平字段兜底
-        if (cfg.Url.Length == 0) cfg.Url = s.SttApiUrl ?? "";
-        if (cfg.AppId.Length == 0) cfg.AppId = s.SttAppId ?? "";
-        if (cfg.ApiKey.Length == 0) cfg.ApiKey = s.SttApiKey ?? "";
-        if (cfg.ResourceId.Length == 0) cfg.ResourceId = s.SttModel ?? "";
+        // 这里原来还有一段「旧版扁平字段兜底」（SttApiUrl / SttAppId / SttApiKey / SttModel），
+        // 随持久化换到 SQLite 一起删了 —— 理由同 LlmConfig.From。
         // 预设默认值兜底（地址 / 资源 ID 预设里带默认值，用户没填也能用）
         var preset = cfg.Preset;
         if (preset != null)

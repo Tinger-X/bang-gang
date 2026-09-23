@@ -52,7 +52,14 @@ public class ShortcutSetting
         (vk >= 0x41 && vk <= 0x5A) || (vk >= 0x30 && vk <= 0x39) || vk is >= 0x70 and <= 0x7B;
 }
 
-/// <summary>应用设置（System.Text.Json 持久化）。</summary>
+/// <summary>
+/// 应用设置。持久化在 SQLite 的 <c>settings</c> 表里：一项一行，敏感项走 DPAPI 加密
+/// （见 <see cref="SettingsRepo"/>）。
+///
+/// 内存里这份**永远是明文** —— 加解密只发生在读写库的那两个边界上。
+/// 这样上层（<c>LlmConfig.From</c>、各个设置页、语音那套）一行都不用改，
+/// 也就不会出现「某处拿到的是密文」这种事。
+/// </summary>
 public class AppSettings
 {
     public List<ShortcutSetting> Shortcuts { get; set; } = DefaultShortcuts();
@@ -82,6 +89,19 @@ public class AppSettings
     /// <summary>强化信息：附在每次提问之后，用来把模型拉回当前话题。留空表示不发送。</summary>
     public string ChatReinforce { get; set; } = "";
 
+    /// <summary>
+    /// 上下文处理方式：<c>"latest"</c> = 丢弃最老的消息（滑窗）；<c>"compact"</c> = 用模型把
+    /// 早期对话压成一段摘要。默认压缩 —— 滑窗丢掉的是一整段事实，摘要把它们留了下来。
+    /// </summary>
+    public string ChatContextMode { get; set; } = "compact";
+
+    /// <summary>
+    /// 模型的上下文窗口（token）。**默认取小不取大**，因为失败方向不对称：
+    /// 填小了只是提前压缩、损失一点早期细节；**填大了会被接口直接拒绝，整轮对话发不出去**。
+    /// 所以不确定时宁可按小的填。真值由每轮回来的 usage 校准（见 <c>Conversation.LastPromptTokens</c>）。
+    /// </summary>
+    public int ChatContextWindow { get; set; } = 32768;
+
     // ---------- 工具调用（见 Tools/，开关在 ToolsPage） ----------
     /// <summary>工具调用总开关。关掉之后下面那几个单开关一律失效（请求里根本不带 tools）。</summary>
     public bool ToolsEnabled { get; set; } = true;
@@ -100,22 +120,16 @@ public class AppSettings
     public string RecordMode { get; set; } = "hold";
 
     /// <summary>
-    /// 上次开着的那条会话的 id，下次启动直接回到它（空串 = 没有，随便挑最近更新的那条）。
+    /// 上次开着的那条会话的 id（空串 = 没有）。
     ///
-    /// 放这儿而不是 <see cref="ChatStore.Dir"/>：那个目录的约定是「一个文件一条会话」，
-    /// 混一个不是会话的文件进去，读的时候就得给它开个特例。而这东西和主题、透明度一样，
-    /// 属于「应用自己的状态」，settings.json 本来就是放这个的。
+    /// 和主题、透明度一样属于「应用自己的状态」，所以留在设置里、跟着设置一起落库，
+    /// 而不是混进会话存储 —— 那边「一条会话一行」的约定不该为一个指针开特例。
+    ///
+    /// **不给它加指向 conversations.id 的外键**：它会合法地指向一条已被删掉的会话
+    /// （<c>DeleteConversation</c> 之后到 <c>RememberActive()</c> 之间有一瞬），
+    /// 加了外键就得在每条删除路径上补 NULL。
     /// </summary>
     public string ActiveChatId { get; set; } = "";
-
-    // 旧版扁平字段：仅用于兼容旧 settings.json，加载时会迁移到“自定义”档位
-    public string ChatApiUrl { get; set; } = "";
-    public string ChatApiKey { get; set; } = "";
-    public string ChatModel { get; set; } = "";
-    public string SttApiUrl { get; set; } = "";
-    public string SttAppId { get; set; } = "";
-    public string SttApiKey { get; set; } = "";
-    public string SttModel { get; set; } = "";
 
     /// <summary>取某个服务商的参数档位（不存在则创建）。</summary>
     public Dictionary<string, string> ProfileOf(bool chat, string provider)
@@ -129,39 +143,14 @@ public class AppSettings
         return p;
     }
 
-    /// <summary>把旧版扁平字段迁移为“自定义”档位。</summary>
-    private void MigrateLegacyProfiles()
-    {
-        ChatProfiles ??= new();
-        SttProfiles ??= new();
-        if (ChatProfiles.Count == 0 &&
-            (ChatApiUrl.Length > 0 || ChatApiKey.Length > 0 || ChatModel.Length > 0))
-        {
-            ChatProfiles["自定义"] = new Dictionary<string, string>
-            {
-                ["url"] = ChatApiUrl,
-                ["key"] = ChatApiKey,
-                ["model"] = ChatModel,
-            };
-        }
-        if (SttProfiles.Count == 0 &&
-            (SttApiUrl.Length > 0 || SttAppId.Length > 0 || SttApiKey.Length > 0 || SttModel.Length > 0))
-        {
-            // 语音侧的「自定义」档已随预设一起取消（只保留火山 / 讯飞，见 Providers.Stt 注释）；
-            // 旧档案按 URL 认亲：认不出就先按火山档收着，字段对不上由用户到设置页重选。
-            string host = SttApiUrl.Contains("xfyun") || SttApiUrl.Contains("ifly") ? "讯飞（实时转写）" : "火山引擎（流式）";
-            SttProfiles[host] = new Dictionary<string, string>
-            {
-                ["url"] = SttApiUrl,
-                ["appid"] = SttAppId,
-                ["key"] = SttApiKey,
-                ["model"] = SttModel,
-            };
-        }
-        if (string.IsNullOrWhiteSpace(ChatProvider)) ChatProvider = "自定义";
-        if (string.IsNullOrWhiteSpace(SttProvider)) SttProvider = "火山引擎（流式）";
-        if (SttProvider == "自定义") SttProvider = "火山引擎（流式）";   // 0.9.8 起语音侧不再有自定义档
-    }
+    // 这里原来有七个「旧版扁平字段」（ChatApiUrl / ChatApiKey / ChatModel / SttApiUrl /
+    // SttAppId / SttApiKey / SttModel）以及把它们搬进档位的 MigrateLegacyProfiles()。
+    // 随持久化换到 SQLite 一起删掉了 —— 那套东西唯一的用途是从 0.8.1 的 settings.json
+    // 迁数据，而这次**不做任何旧数据迁移**（项目尚未推广，从空库起步）。
+    //
+    // 顺带的好处不是「少几行」：那三个 `*ApiKey` 字段是**全仓最后一处明文存密钥的路径**
+    // （LlmConfig.From 会拿它们兜底、LlmPage.ApplyTo 会写它们）。留着它们，
+    // 「敏感信息一律加密」这句话就永远有个例外。
 
     // ---------- 外观 ----------
     /// <summary>"system" | "light" | "dark"</summary>
@@ -259,65 +248,57 @@ public class AppSettings
         TextMutedColor = muted.ToArgb();
     }
 
-    public static string SettingsPath =>
-        Path.Combine(AppContext.BaseDirectory, "settings.json");
-
+    /// <summary>
+    /// 从库里读一份设置；库不可用（或还是空的）就给一份出厂设置。
+    ///
+    /// 下面这几个兜底留着：快捷方式空表、主题模式空串、上下文窗口非正数。
+    /// 换到 SQLite 之后它们不再是「手改文件改坏了」的产物，而是「某一版写下去时就是空的」——
+    /// 但兜底本身照样有价值，一版都不该少。
+    /// </summary>
     public static AppSettings Load()
     {
-        try
-        {
-            if (File.Exists(SettingsPath))
-            {
-                var s = JsonSerializer.Deserialize<AppSettings>(File.ReadAllText(SettingsPath));
-                if (s != null)
-                {
-                    if (s.Shortcuts == null || s.Shortcuts.Count == 0) s.Shortcuts = DefaultShortcuts();
-                    if (string.IsNullOrEmpty(s.ThemeMode)) s.ThemeMode = "system";
-                    s.MigrateLegacyProfiles();
-                    s.ApplyTheme();
-                    return s;
-                }
-            }
-        }
-        catch { }
-        var d = new AppSettings();
-        d.ApplyTheme();
-        return d;
+        var s = SettingsRepo.Load();
+        if (s.Shortcuts == null || s.Shortcuts.Count == 0) s.Shortcuts = DefaultShortcuts();
+        if (string.IsNullOrEmpty(s.ThemeMode)) s.ThemeMode = "system";
+        if (string.IsNullOrEmpty(s.ChatProvider)) s.ChatProvider = "自定义";
+        if (string.IsNullOrEmpty(s.SttProvider)) s.SttProvider = "火山引擎（流式）";
+        if (s.ChatContextWindow <= 0) s.ChatContextWindow = 32768;
+        if (s.ChatContextMode != "latest" && s.ChatContextMode != "compact") s.ChatContextMode = "compact";
+        s.ApplyTheme();
+        return s;
     }
 
-    public void Save()
-    {
-        try { File.WriteAllText(SettingsPath, JsonSerializer.Serialize(this, new JsonSerializerOptions { WriteIndented = true })); }
-        catch { /* 目录只读时忽略 */ }
-    }
+    /// <summary>整份写回。只在「用户点了保存」这条路上调用。</summary>
+    public void Save() => SettingsRepo.Save(this);
+
+    /// <summary>
+    /// 只写「上次开着哪条会话」这一项。
+    ///
+    /// 单独开一条路是因为 <c>MainForm.RememberActive()</c> **每次切换会话都会写一次** ——
+    /// 走整份写回的话，每点一下都要重新 DPAPI 加密那两个密钥块，白白拖慢一次点击。
+    /// </summary>
+    public void SaveActiveChat() => SettingsRepo.SaveActiveChat(ActiveChatId);
 
     /// <summary>
     /// 用设置界面里那份改好的设置覆盖当前这份。
     ///
-    /// <see cref="ActiveChatId"/> **故意不在这里**：设置界面里没有这一项，浮窗手上那份是
+    /// 实现是**照着 <see cref="SettingsRepo.Fields"/> 那张表逐字段拷**，而不是手写一长串赋值。
+    /// 手写的那种，新加一个字段忘了写进来是**静默**的 —— 症状是「设置里改了、保存、
+    /// 回来又变回去」，而原因藏在另一个文件的另一段代码里。照表拷就不会漏，而且新字段
+    /// 只要登记进表就自动生效。
+    ///
+    /// 字符串进、字符串出这一趟不是白绕的：它顺带把集合类字段做了一次深拷贝
+    /// （序列化 + 反序列化），不会出现两份设置共用同一个字典的隐患。
+    ///
+    /// <see cref="ActiveChatId"/> **故意跳过**：设置界面里没有这一项，浮窗手上那份是
     /// 打开浮窗那一刻抄的快照。照抄回来就等于「用户开着浮窗切了个会话，一点保存又被拽回去」。
     /// </summary>
     public void CopyFrom(AppSettings o)
     {
-        Shortcuts = o.Shortcuts.Select(x => new ShortcutSetting { Action = x.Action, Ctrl = x.Ctrl, Alt = x.Alt, Shift = x.Shift, Vk = x.Vk }).ToList();
-        ChatProvider = o.ChatProvider; ChatVision = o.ChatVision;
-        ChatProfiles = o.ChatProfiles.ToDictionary(kv => kv.Key, kv => new Dictionary<string, string>(kv.Value));
-        SttProvider = o.SttProvider;
-        SttProfiles = o.SttProfiles.ToDictionary(kv => kv.Key, kv => new Dictionary<string, string>(kv.Value));
-        ChatApiUrl = o.ChatApiUrl; ChatApiKey = o.ChatApiKey; ChatModel = o.ChatModel;
-        SttApiUrl = o.SttApiUrl; SttAppId = o.SttAppId; SttApiKey = o.SttApiKey; SttModel = o.SttModel;
-        ChatTemperature = o.ChatTemperature; ChatMaxTokens = o.ChatMaxTokens;
-        ChatSystemPrompt = o.ChatSystemPrompt; ChatReinforce = o.ChatReinforce;
-        // 工具开关：这一串漏一个的表现是「关掉之后保存，回来又自己开了」——
-        // CopyFrom 是手写逐字段拷贝，新加的字段不写进来就永远拷不过去。
-        ToolsEnabled = o.ToolsEnabled;
-        ToolNow = o.ToolNow; ToolCalc = o.ToolCalc; ToolClipboard = o.ToolClipboard;
-        ToolFile = o.ToolFile; ToolWebSearch = o.ToolWebSearch;
-        ToolWebFetch = o.ToolWebFetch; ToolSysInfo = o.ToolSysInfo;
-        RecordMode = o.RecordMode;
-        ThemeMode = o.ThemeMode; WindowBorder = o.WindowBorder;
-        Accent = o.Accent; Opacity = o.Opacity;
-        ChatBg = o.ChatBg; SideBg = o.SideBg; PanelBg = o.PanelBg;
-        TextColor = o.TextColor; TextMutedColor = o.TextMutedColor;
+        foreach (var f in SettingsRepo.Fields)
+        {
+            if (f.Key == "app.active_chat_id") continue;
+            f.Set(this, f.Get(o));
+        }
     }
 }

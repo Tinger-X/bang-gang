@@ -171,14 +171,9 @@ internal sealed class LlmPage : SettingsPage
         target.SttProvider = _stt.Provider.SelectedItem;
         target.SttProfiles = _working.SttProfiles.ToDictionary(kv => kv.Key, kv => new Dictionary<string, string>(kv.Value));
 
-        // 同步旧版扁平字段，保证向下兼容
-        target.ChatApiUrl = Get(_chat, "url");
-        target.ChatApiKey = Get(_chat, "key");
-        target.ChatModel = Get(_chat, "model");
-        target.SttApiUrl = Get(_stt, "url");
-        target.SttAppId = Get(_stt, "appid");
-        target.SttApiKey = Get(_stt, "key");
-        target.SttModel = Get(_stt, "model");
+        // 这里原来还会同步七个「旧版扁平字段」（ChatApiUrl / ChatApiKey / ...）。
+        // 那些字段连同 MigrateLegacyProfiles 一起删了（不迁移旧数据），
+        // 顺带消掉了全仓最后一处明文存密钥的路径。
     }
 
     protected override bool ComputeDirty()

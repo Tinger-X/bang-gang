@@ -27,6 +27,10 @@ internal static class Program
         // 把全部线框图标与开关的各种状态画成 PNG（见 OfflineIcons）。图标是手画的、
         // 开关的禁用态是新加的，两样都「不看就等于没验」。
         if (OfflineIcons.TryRun()) return;
+
+        // 数据库层自检（见 OfflineDb）：DLL 探测、建表、中文往返、外键级联、附件引用计数。
+        // 这些错了都很安静（数据没存进去、孤儿行留着），靠界面要绕一大圈才发现。
+        if (OfflineDb.TryRun()) return;
 #endif
 
         // 单实例：重复启动时把已有窗口带到前台后退出

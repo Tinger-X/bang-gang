@@ -53,7 +53,11 @@ partial class MainForm
     {
         CancelRename();              // 标题改到一半的输入条跟着这条一起收掉
         _conversations.Remove(c);
-        ChatStore.Delete(c.Id);          // 会话文件跟着删；它的附件不删，见 ChatStore.ImageDir
+        // 会话行跟着删。它引用过的**托管附件**（截图 / 粘贴图）在没人引用之后会被回收；
+        // 用户拖进来的文件永远不碰。草稿里还拿着的那些要排除掉 —— 它们引用数为 0
+        // （还没被任何消息引用），但显然不该在这时候被收走。
+        var keep = _input.Draft.Select(a => a.Path ?? "").Where(p => p.Length > 0).ToList();
+        ChatStore.Delete(c.Id, keep);
         if (_active == c)
         {
             // 这条对话连同它的草稿一起没了。**不留存**：SaveDraftTo 是给「切走、回头还要回来」
@@ -205,13 +209,14 @@ partial class MainForm
     /// <c>_chatUI</c> 就是构造函数里设的不可见、<c>_welcome</c> 默认可见，
     /// 于是自然停在欢迎页。**别在这里补一句「让欢迎页可见」** —— 那会多出一个
     /// 只在启动那一瞬成立的状态，往后再有人加一条退出会话的路径就又对不上了。
-    ///
-    /// <see cref="ChatStore.Load"/> 的 0.8.1 单文件导入照跑：历史要迁进 <c>chats\</c>，
-    /// 只是迁完不再顺手打开它。它一起带回来的「当时开着哪条」同理不再被读。
     /// </summary>
     private void RestoreConversations()
     {
-        var (list, _) = ChatStore.Load();
+        // 顺手收一次孤儿附件：此刻一定没有草稿（草稿是进程内状态，而这是启动），
+        // 所以「没人引用」这个判断是可靠的 —— 这是唯一能安全做全库对照清扫的时机。
+        ChatStore.SweepOrphans();
+
+        var list = ChatStore.Load();
         if (list.Count == 0) return;
         _conversations.AddRange(list);
         RebindConversations();
