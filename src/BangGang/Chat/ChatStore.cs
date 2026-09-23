@@ -92,7 +92,7 @@ internal static class ChatStore
 
                 using (var st = db.Prepare(
                     "INSERT INTO conversations(id, title, title_locked, created_at, updated_at, " +
-                    "summary, summary_upto, last_prompt_tokens) VALUES(?,?,?,?,?,?,?,?)"))
+                    "summary, summary_upto, last_prompt_tokens, anchor_msgs) VALUES(?,?,?,?,?,?,?,?,?)"))
                 {
                     st.Bind(1, c.Id)
                       .Bind(2, c.Title ?? "")
@@ -101,7 +101,8 @@ internal static class ChatStore
                       .Bind(5, Iso(c.UpdatedAt))
                       .Bind(6, c.CtxSummary ?? "")
                       .Bind(7, c.CtxSummaryUpto)
-                      .Bind(8, c.LastPromptTokens);
+                      .Bind(8, c.LastPromptTokens)
+                      .Bind(9, c.AnchorMsgs);
                     st.Step();
                 }
 
@@ -300,7 +301,7 @@ internal static class ChatStore
 
             using (var st = db.Prepare(
                 "SELECT id, title, title_locked, created_at, updated_at, summary, summary_upto, " +
-                "last_prompt_tokens FROM conversations"))
+                "last_prompt_tokens, anchor_msgs FROM conversations"))
             {
                 while (st.Step())
                 {
@@ -316,6 +317,7 @@ internal static class ChatStore
                         CtxSummary = st.Text(5),
                         CtxSummaryUpto = (int)st.Int64(6),
                         LastPromptTokens = (int)st.Int64(7),
+                        AnchorMsgs = (int)st.Int64(8),
                     };
                     if (string.IsNullOrEmpty(c.Title)) c.Title = "新对话";
                     byId[id] = c;

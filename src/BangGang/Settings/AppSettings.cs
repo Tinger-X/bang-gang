@@ -98,9 +98,10 @@ public class AppSettings
     /// <summary>
     /// 模型的上下文窗口（token）。**默认取小不取大**，因为失败方向不对称：
     /// 填小了只是提前压缩、损失一点早期细节；**填大了会被接口直接拒绝，整轮对话发不出去**。
-    /// 所以不确定时宁可按小的填。真值由每轮回来的 usage 校准（见 <c>Conversation.LastPromptTokens</c>）。
+    /// 所以不确定时宁可按小的填。可填范围见设置页的滑条（64K–1M）。
+    /// 真值由每轮回来的 usage 校准（见 <c>Conversation.LastPromptTokens</c>）。
     /// </summary>
-    public int ChatContextWindow { get; set; } = 32768;
+    public int ChatContextWindow { get; set; } = 128 * 1024;
 
     // ---------- 工具调用（见 Tools/，开关在 ToolsPage） ----------
     /// <summary>工具调用总开关。关掉之后下面那几个单开关一律失效（请求里根本不带 tools）。</summary>
@@ -259,7 +260,10 @@ public class AppSettings
         if (string.IsNullOrEmpty(s.ThemeMode)) s.ThemeMode = "system";
         if (string.IsNullOrEmpty(s.ChatProvider)) s.ChatProvider = "自定义";
         if (string.IsNullOrEmpty(s.SttProvider)) s.SttProvider = "火山引擎（流式）";
-        if (s.ChatContextWindow <= 0) s.ChatContextWindow = 32768;
+        if (s.ChatContextWindow <= 0) s.ChatContextWindow = 128 * 1024;
+        // 夹到设置页滑条的可选范围内。老库里那份是个更早版本的默认值（32K），
+        // 不夹的话它在滑条上会显示成最左端、而内存里仍是 32K —— 界面和实际行为分家。
+        s.ChatContextWindow = Math.Clamp(s.ChatContextWindow, 64 * 1024, 1024 * 1024);
         if (s.ChatContextMode != "latest" && s.ChatContextMode != "compact") s.ChatContextMode = "compact";
         s.ApplyTheme();
         return s;

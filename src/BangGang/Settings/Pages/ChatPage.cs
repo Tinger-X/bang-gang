@@ -57,13 +57,21 @@ internal sealed class ChatPage : SettingsPage
     private readonly SegmentedControl _ctxMode = new(CtxModes, 34);
 
     /// <summary>
-    /// 上下文窗口滑条。8K 起步 —— 比这更小的模型现在基本见不到了，而这个下限也顺带
-    /// 挡住了「手滑拖到最左边导致每轮都在压缩」。
+    /// 上下文窗口滑条：**64K–1M**。
+    ///
+    /// 下限 64K：窗口比这还小的模型现在基本见不到了，而这个下限也顺带挡住了
+    /// 「手滑拖到最左边、于是每轮都在压缩」。上限 1M：再大的窗口（少数长上下文模型）
+    /// 也很少有人真往满里聊，拖到最右当「够用」即可。
+    ///
+    /// 步长 8192 —— 120 格，拖起来仍有颗粒度，也不会吸附出没人打算设的数。
     /// </summary>
     private readonly SliderBar _ctxWindow = new(FieldW)
     {
-        Min = 8192, Max = 262144, Step = 8192, Value = 32768,
-        Format = v => (v / 1024).ToString(CultureInfo.InvariantCulture) + "K",
+        Min = 64 * 1024, Max = 1024 * 1024, Step = 8 * 1024, Value = 128 * 1024,
+        // 到了 1048576 还写「1024K」读着别扭，单独给它一个 M
+        Format = v => v >= 1024 * 1024
+            ? "1M"
+            : (v / 1024).ToString(CultureInfo.InvariantCulture) + "K",
     };
 
     private int _bTemp, _bTokens, _bCtxWindow;

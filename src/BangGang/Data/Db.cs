@@ -123,7 +123,8 @@ internal static class Db
               updated_at         TEXT NOT NULL,
               summary            TEXT NOT NULL DEFAULT '',
               summary_upto       INTEGER NOT NULL DEFAULT 0,
-              last_prompt_tokens INTEGER NOT NULL DEFAULT 0);
+              last_prompt_tokens INTEGER NOT NULL DEFAULT 0,
+              anchor_msgs        INTEGER NOT NULL DEFAULT 0);
 
             CREATE TABLE IF NOT EXISTS messages (
               id           INTEGER PRIMARY KEY AUTOINCREMENT,

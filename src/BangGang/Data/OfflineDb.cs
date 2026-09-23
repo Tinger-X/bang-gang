@@ -443,6 +443,51 @@ internal static class OfflineDb
               dst.ActiveChatId == "keep-me");
         Check("CopyFrom 是深拷贝，两份设置不共用同一个字典",
               !ReferenceEquals(dst.ChatProfiles, back2.ChatProfiles));
+
+        ContextMath();
+    }
+
+    /// <summary>
+    /// 「现在用了多少 token」这个数是怎么来的。这是上下文仪表上那个数字的**唯一来源**，
+    /// 而它有两个容易搞错的地方：锚点该不该信、压缩之后口径有没有变。
+    /// 两处都只体现在数字上，肉眼看不出来，所以在这里钉住。
+    /// </summary>
+    private static void ContextMath()
+    {
+        Console.WriteLine();
+        Console.WriteLine("---- 11. 上下文用量计算 ----");
+
+        var cfg = new LlmConfig { SystemPrompt = "你是助手", MaxTokens = 2048 };
+        var conv = new Conversation { Id = "probe-ctx", Title = "c" };
+        for (int i = 0; i < 3; i++)
+            conv.Messages.Add(new ChatMessage { Role = "user", Text = "你好", When = DateTime.Now });
+
+        int est = ContextManager.Used(conv, cfg);
+        Check("没有锚点时走全量估算", est > 0);
+
+        // 钉一个远小于估算的「真实值」——模拟估算偏高（系数是故意保守的那些）
+        conv.LastPromptTokens = 5;
+        conv.AnchorMsgs = conv.Messages.Count;
+        Check("**有锚点时以服务端报的真实值为准，不再被高估的估算盖住**",
+              ContextManager.Used(conv, cfg) == 5, "实际 " + ContextManager.Used(conv, cfg));
+
+        conv.Messages.Add(new ChatMessage { Role = "assistant", Text = "答", When = DateTime.Now });
+        Check("锚点之后新增的那条按估算加上去", ContextManager.Used(conv, cfg) > 5);
+
+        // 压缩：前 3 条被摘要覆盖。**真实流程里压缩总是发生在发请求之前**，
+        // 所以紧接着会拿到一次新的真实值、把锚点重新钉到压缩后的口径上。
+        conv.CtxSummary = "前面互相打了招呼。";
+        conv.CtxSummaryUpto = 3;
+        conv.LastPromptTokens = 50;
+        conv.AnchorMsgs = conv.Messages.Count;
+        Check("压缩后用量反映的是压缩后的历史，不是压缩前的",
+              ContextManager.Used(conv, cfg) == 50, "实际 " + ContextManager.Used(conv, cfg));
+
+        // 锚点落在被摘要覆盖的区间之前 = 它量的是另一份历史，必须作废
+        conv.LastPromptTokens = 99999;
+        conv.AnchorMsgs = 0;
+        Check("**锚点早于摘要覆盖区间时自动作废，退回估算**（不然会永远判超、反复压缩）",
+              ContextManager.Used(conv, cfg) < 99999, "实际 " + ContextManager.Used(conv, cfg));
     }
 
     /// <summary>造一张纯色小图并走真实的内容寻址落盘。</summary>

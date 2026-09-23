@@ -355,6 +355,12 @@ partial class MainForm
         /// <summary>本轮所有请求的生成耗时之和（毫秒）。分子分母各自累加再相除，
         /// 比「取最后一轮」诚实：用户看到的是「这一轮总共生成了多少、平均多快」。</summary>
         public long SumGenMs;
+
+        /// <summary>
+        /// 这一轮发出去的历史有多少条。收尾时连同真实 token 一起钉成**锚点**
+        /// （见 <c>ContextManager.Used</c>）：下次算用量就是「这个真实值 + 之后新增的」。
+        /// </summary>
+        public int AnchoredMsgs;
     }
 
     private StreamState? _stream;
@@ -415,6 +421,9 @@ partial class MainForm
                 // 上下文管理：只有真超出窗口时才动手（压缩或滑窗），装得下就原样发出去。
                 // **作用的是 history 这个快照，不是 conv.Messages** —— 见 ContextManager 的注释。
                 var send = await PrepareHistoryAsync(conv, cfg, history, st.Cts.Token);
+                // 锚点量到哪儿 = 快照的条数（服务端报的输入量对应的就是这份边界，
+                // 至于其中被裁掉多少不影响它：裁掉的那些本来就不在这次的真实值里）。
+                st.AnchoredMsgs = history.Count;
                 // 工具循环：一轮里模型可能要来回好几次（见 MainForm.Tools.cs）。
                 // 工具全关、或模型没要求调用时，它就是「发一次、读一次」，和以前一样。
                 var res = await RunToolLoop(cfg, conv, st, send);

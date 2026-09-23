@@ -91,22 +91,39 @@ internal static class ContextManager
     }
 
     /// <summary>
-    /// 这条会话现在大致占了多少 token。
+    /// 这条会话现在占了窗口多少 token。
     ///
-    /// 取「整段估算」与「上一轮服务端报的真实值」里**较大的那个**。理由：
-    /// <c>LastPromptTokens</c> 是某一刻的实况，而从那以后历史只可能变长 ——
-    /// 所以它是**下限**。取 max 保证永不低报，而低报正是危险的那一侧
-    /// （以为装得下 → 不压缩 → 被接口 400 顶回来，整轮白跑）。
+    /// 两种口径，**优先用第一种**：
+    /// <list type="number">
+    ///   <item><b>有锚点</b> —— 上一轮服务端报的真实输入量 + 那次之后新增的消息。
+    ///     这是准的，而且误差不随对话变长累积（新增的几条本来就是小量）。</item>
+    ///   <item><b>没锚点</b> —— 全程估算。只在这条会话还没发过任何一次请求、
+    ///     或者网关不报 usage 时才走到。</item>
+    /// </list>
+    ///
+    /// 两种口径都**从 <see cref="Conversation.CtxSummaryUpto"/> 往后数** ——
+    /// 被摘要覆盖过的那一段不再逐条计入，它现在以摘要的形式存在着。
+    /// 漏掉这一点的后果很具体：压缩过一次之后每一轮都判「还是超」，于是**反复压缩同一段内容**。
     /// </summary>
     public static int Used(Conversation c, LlmConfig cfg)
     {
-        int n = Estimate(cfg.SystemPrompt) + Estimate(cfg.Reinforce)
-              + Estimate(c.CtxSummary) + 8;
-        foreach (var m in c.Messages)
-            if (m != null && !m.IsEmpty) n += EstimateMessage(m);
+        int from = Math.Clamp(c.CtxSummaryUpto, 0, c.Messages.Count);
 
-        return Math.Max(n, c.LastPromptTokens);
+        // 锚点覆盖的范围必须和当前口径一致：压缩会把 from 推后，那时旧锚点量的是
+        // 另一份历史，作废（退回全量估算）。下一轮拿到新的真实值会重新钉上。
+        if (c.LastPromptTokens > 0 && c.AnchorMsgs >= from && c.AnchorMsgs <= c.Messages.Count)
+        {
+            int since = 0;
+            for (int i = c.AnchorMsgs; i < c.Messages.Count; i++) since += Count(c.Messages[i]);
+            return c.LastPromptTokens + since;
+        }
+
+        int est = Estimate(cfg.SystemPrompt) + Estimate(cfg.Reinforce) + Estimate(c.CtxSummary) + 8;
+        for (int i = from; i < c.Messages.Count; i++) est += Count(c.Messages[i]);
+        return est;
     }
+
+    private static int Count(ChatMessage? m) => m != null && !m.IsEmpty ? EstimateMessage(m) : 0;
 
     /// <summary>这条会话是不是已经越过阈值了。</summary>
     public static bool OverLimit(int used, int window)

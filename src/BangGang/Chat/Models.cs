@@ -56,10 +56,16 @@ public class Conversation
     /// <summary>
     /// 上一轮请求服务端报回来的真实输入 token 数。0 = 还没拿到过。
     ///
-    /// 拿它当**锚点**校准本地估算：估算器只擅长算「增量」，
-    /// 有锚点之后就变成「锚点 + 锚点之后新增的消息」，误差不再随对话变长而累积。
+    /// 拿它当**锚点**：下一次算「用了多少」就是「这个真实值 + 锚点之后新增的消息」，
+    /// 而不是拿本地估算硬猜整段 —— 估算器只擅长算增量，误差不会随对话变长而累积。
     /// </summary>
     public int LastPromptTokens { get; set; }
+
+    /// <summary>
+    /// 锚点量到哪儿：<see cref="LastPromptTokens"/> 那一次请求发出时，
+    /// <see cref="Messages"/> 有多少条。见 <c>ContextManager.Used</c>。
+    /// </summary>
+    public int AnchorMsgs { get; set; }
 
     /// <summary>
     /// 依据首条用户消息等生成显示标题。标题定稿过（见 <see cref="TitleLocked"/>）就直接返回，

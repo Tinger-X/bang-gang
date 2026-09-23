@@ -148,26 +148,36 @@ internal sealed class ContextMeter : Control, IThemed
 
     // ---------------- 文案 ----------------
 
-    /// <summary>「48% · 12.4K/32K · 8.4 tok/s」。拿不到任何数字时给一串占位，绝不显示空环。</summary>
+    /// <summary>「61% · ↑20K ↓32K · 46.8 tok/s」。窗口未知时是空串。</summary>
     private static string Label(CtxInfo c)
     {
         if (c.Window <= 0) return "";
         string speed = c.TokPerSec > 0.05 ? " · " + c.TokPerSec.ToString("0.0") + " tok/s" : "";
-        return c.Percent + "% · " + K(c.Used) + "/" + K(c.Window) + speed;
+        return c.Percent + "% · ↑" + K(c.Used) + " ↓" + K(c.Window) + speed;
     }
 
     /// <summary>按最坏情况量一次宽度用（见 InputPanel.MeterWidth）。</summary>
     public static int MeasureWorstWidth()
     {
-        const string worst = "100% · 999.9K/999.9K · 999.9 tok/s";
+        // 故意留得比真实最大还宽一点：窗口最大是 1M（显示成「1M」），而这里按 999.9K 算。
+        // 预留多一点是安全的 —— 这是个常量宽度，宽出来的部分在居中时两边均摊。
+        const string worst = "100% · ↑999.9K ↓999.9K · 999.9 tok/s";
         return RingD + RingGap + TextRenderer.MeasureText(worst, SF.Get(9.5f)).Width;
     }
 
-    /// <summary>token 数的显示缩写：812 / 8.4K / 128K。</summary>
+    /// <summary>
+    /// token 数的显示缩写：812 / 8.4K / 128K / 1M。
+    ///
+    /// **按 1024 进制，和设置页滑条一致。** 这不是小事：滑条上写着「128K」，
+    /// 而 131072 按 1000 进制缩写出来是「131K」—— 用户会以为设置没生效。
+    /// 同一个数字在两个地方必须长得一样。
+    /// </summary>
     private static string K(int n)
     {
-        if (n < 1000) return n.ToString();
-        if (n < 10000) return (n / 1000.0).ToString("0.0") + "K";
-        return (n / 1000).ToString("0") + "K";
+        if (n < 1024) return n.ToString();
+        if (n < 10 * 1024) return (n / 1024.0).ToString("0.0") + "K";
+        if (n < 1024 * 1024) return (n / 1024).ToString("0") + "K";
+        // 窗口上限是 1M，写成「1024K」读着别扭，单独给一档
+        return (n / (1024.0 * 1024)).ToString("0.#") + "M";
     }
 }

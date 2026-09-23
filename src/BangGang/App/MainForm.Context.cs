@@ -72,7 +72,14 @@ partial class MainForm
     {
         // 钉的是**第一轮**的 prompt_tokens：工具的返回全文只在当轮发给模型、不进历史，
         // 最后一轮的输入里含着它们，拿它当「下次要发多少」会平白高估一大截。
-        if (st.FirstPromptTokens > 0) st.Conv.LastPromptTokens = st.FirstPromptTokens;
+        //
+        // 锚点只在真拿到过 usage 时才钉 —— 没拿到（网关不报）就让它保持 0，
+        // 下次仍走全量估算。写一个「估算出来的锚点」进去等于把猜测当成事实存档。
+        if (st.FirstPromptTokens > 0)
+        {
+            st.Conv.LastPromptTokens = st.FirstPromptTokens;
+            st.Conv.AnchorMsgs = st.AnchoredMsgs;
+        }
 
         // 分子优先用服务端权威值（本来就含思考 token）；拿不到就退回估算。
         int gen = st.SumCompletion > 0
@@ -121,9 +128,8 @@ partial class MainForm
                 {
                     conv.CtxSummary = summary;
                     conv.CtxSummaryUpto = from + cut;
-                    // 锚点作废：它量的是**压缩前**那份历史，留着会让 max() 每轮都判「还是超」
-                    // 于是反复压缩。下一轮拿到真实 usage 时会自动重新钉上。
-                    conv.LastPromptTokens = 0;
+                    // **锚点不用动**：Used() 会因为 AnchorMsgs 落到 CtxSummaryUpto 之前而
+                    // 自动作废它、退回估算。下一轮拿到真实 usage 时会重新钉上。
                     cfg.CtxSummary = summary;
                     PersistChat(conv);
                     FlashStatus($"已把较早的 {cut} 条对话压成摘要");

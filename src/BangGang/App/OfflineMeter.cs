@@ -19,13 +19,13 @@ internal static class OfflineMeter
     /// <summary>要画的几档。<c>live=false</c> 是「上一轮留下的静态数字」那种淡色状态。</summary>
     private static readonly (int Used, int Window, double Tps, bool Live)[] Cases =
     {
-        (0,       32768, 0,    true),   // 空：只有轨道
-        (4200,    32768, 12.4, true),
-        (20000,   32768, 46.8, true),
-        (28000,   32768, 8.4,  false),  // 空闲：数字变淡
-        (32000,   32768, 55.1, true),   // 接近满：环转红
-        (32768,   32768, 3.2,  true),   // 满圈：走 DrawEllipse 那条路
-        (999900,  999900, 999.9, true), // 最坏情况的宽度
+        (0,            128 * 1024, 0,     true),   // 空：只有轨道
+        (16 * 1024,    128 * 1024, 12.4,  true),
+        (80 * 1024,    128 * 1024, 46.8,  true),
+        (110 * 1024,   128 * 1024, 8.4,   false),  // 空闲：数字变淡
+        (124 * 1024,   128 * 1024, 55.1,  true),   // 接近满：环转红
+        (128 * 1024,   128 * 1024, 3.2,   true),   // 满圈：走 DrawEllipse 那条路
+        (1024 * 1024,  1024 * 1024, 999.9, true),  // 滑条拉满：窗口显示成 1M
     };
 
     public static bool TryRun()
@@ -106,8 +106,8 @@ internal static class OfflineMeter
 
             var states = new (string Tag, CtxInfo Info)[]
             {
-                ("hint", default),                                     // 还没开口：显示快捷键提示
-                ("meter", new CtxInfo(20000, 32768, 46.8, true)),      // 开口之后：显示仪表
+                ("hint", default),                                          // 还没开口：显示快捷键提示
+                ("meter", new CtxInfo(80 * 1024, 128 * 1024, 46.8, true)),  // 开口之后：显示仪表
             };
 
             int h = 0;
