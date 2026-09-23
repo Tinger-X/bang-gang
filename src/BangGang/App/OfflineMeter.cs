@@ -84,6 +84,68 @@ internal static class OfflineMeter
 
         // 顺带报一下预留宽度，跟 InputPanel 那边实际分到的比一比
         Console.WriteLine($"最坏情况宽度 {ContextMeter.MeasureWorstWidth()}px（InputPanel 还会再加 2×HintPadX=96）");
+
+        RenderPanel(dir);
+    }
+
+    /// <summary>
+    /// 把**整个输入面板**画出来，两种状态各一张：还没开口（快捷键提示）与开口之后（上下文仪表）。
+    ///
+    /// 单画那个圆环证明不了集成对不对 —— 真正有风险的是「两个控件共用 LayoutCard 算出来的
+    /// 同一个矩形、同一时刻只有一个可见」，以及新的宽度预留会不会把两侧按钮挤掉。
+    /// 这两件事只有把整块面板画出来才看得见。
+    /// </summary>
+    private static void RenderPanel(string dir)
+    {
+        const int w = 1200;      // 默认窗口宽度，接近用户实际看到的样子
+
+        foreach (bool dark in new[] { false, true })
+        {
+            var settings = new AppSettings { ThemeMode = dark ? "dark" : "light" };
+            settings.ApplyTheme();
+
+            var states = new (string Tag, CtxInfo Info)[]
+            {
+                ("hint", default),                                     // 还没开口：显示快捷键提示
+                ("meter", new CtxInfo(20000, 32768, 46.8, true)),      // 开口之后：显示仪表
+            };
+
+            int h = 0;
+            var panels = new List<(string Tag, InputPanel Panel, Bitmap Bmp)>();
+            foreach (var (tag, info) in states)
+            {
+                var p = new InputPanel { Width = w };
+                p.SetContext(info);
+                p.Height = p.PreferredHeight;
+                // 量真实矩形，别靠截图目测 —— 仓库里那条「EnumChildWindows + GetWindowRect
+                // 比截图可靠」的经验在这里同样成立（DrawToBitmap 画子控件有自己的怪癖）。
+                foreach (Control child in p.Controls)
+                    Console.WriteLine($"    {tag}  {child.GetType().Name,-14} "
+                                      + $"x={child.Left,5} w={child.Width,5} right={child.Right,5} vis={child.Visible}");
+                var bmp = new Bitmap(w, p.Height);
+                p.DrawToBitmap(bmp, new Rectangle(0, 0, w, p.Height));
+                panels.Add((tag, p, bmp));
+                h += p.Height;
+            }
+
+            using var canvas = new Bitmap(w, h);
+            using (var g = Graphics.FromImage(canvas))
+            {
+                g.Clear(Theme.ChatBg);
+                int y = 0;
+                foreach (var (_, panel, bmp) in panels)
+                {
+                    g.DrawImage(bmp, 0, y);
+                    y += panel.Height;
+                }
+            }
+
+            string outPath = Path.Combine(dir, dark ? "out-panel-dark.png" : "out-panel-light.png");
+            canvas.Save(outPath, System.Drawing.Imaging.ImageFormat.Png);
+            Console.WriteLine($"rendered panel {w}x{h} -> {outPath}");
+
+            foreach (var (_, panel, bmp) in panels) { bmp.Dispose(); panel.Dispose(); }
+        }
     }
 }
 #endif
