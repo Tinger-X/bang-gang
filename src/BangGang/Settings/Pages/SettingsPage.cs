@@ -12,6 +12,9 @@ internal abstract class SettingsPage : Panel, IThemed
     private const int HeaderH = 92;
     private const int FooterH = 58;
 
+    /// <summary>内容区与底栏之间留的缝（见 <see cref="OnResize"/>）。</summary>
+    private const int BodyBottomGap = 5;
+
     public event Action<SettingsPage>? SaveRequested;
     public event Action? DirtyChanged;
 
@@ -193,7 +196,11 @@ internal abstract class SettingsPage : Panel, IThemed
         int w = Width - PadX * 2;
         _title.SetBounds(PadX, 26, Math.Max(40, w - 46), 28);
         _desc.SetBounds(PadX, 56, Math.Max(40, w - 46), 20);
-        _body.SetBounds(PadX, HeaderH, Math.Max(40, w), Math.Max(40, Height - HeaderH - FooterH));
+        // 内容区下缘比底栏那条分隔线再高 5px：不留的话滚到底的最后一行直接贴着线 ——
+        // 卡片自己有 12px 下边距，但那是**卡片容器**的，滚动区把它裁掉之后就只剩内容贴着线。
+        // 5px 是看着定的（先试了 2px，偏挤）。
+        _body.SetBounds(PadX, HeaderH, Math.Max(40, w),
+                        Math.Max(40, Height - HeaderH - FooterH - BodyBottomGap));
         LayoutFooter();
         LayoutStack();
     }
