@@ -106,12 +106,12 @@ internal sealed partial class SettingsOverlay : Panel, IPopupHost, IMessageFilte
         _host.BackColor = SC.CardBg;
         _card.Controls.Add(_host);
 
-        AddPage(new ShortcutsPage(), "快捷按键", Glyph.Win);
-        AddPage(new LlmPage(), "模型接入", Glyph.Nodes);
-        AddPage(new ChatPage(), "对话参数", Glyph.Tune);
-        AddPage(new ToolsPage(), "工具调用", Glyph.Tools);
-        AddPage(new UiPage(), "界面外观", Glyph.Wand);
-        AddPage(new AboutPage(), "软件说明", Glyph.Info);
+        AddPage(new ShortcutsPage(), "快捷按键", NavIcon.Win);
+        AddPage(new LlmPage(), "模型接入", NavIcon.Llm);
+        AddPage(new ChatPage(), "对话参数", NavIcon.Param);
+        AddPage(new ToolsPage(), "工具调用", NavIcon.Tool);
+        AddPage(new UiPage(), "界面外观", NavIcon.Ui);
+        AddPage(new AboutPage(), "软件说明", NavIcon.About);
 
         // ---- 右上角关闭 ----
         _close.Click += (_, _) => RequestClose(QuitScope.Settings);
@@ -145,7 +145,7 @@ internal sealed partial class SettingsOverlay : Panel, IPopupHost, IMessageFilte
         }
     }
 
-    private void AddPage(SettingsPage page, string navLabel, Glyph icon)
+    private void AddPage(SettingsPage page, string navLabel, NavIcon icon)
     {
         var nav = new NavItem(navLabel, icon);
         nav.Click += (_, _) => SelectPage(_navs.IndexOf(nav));

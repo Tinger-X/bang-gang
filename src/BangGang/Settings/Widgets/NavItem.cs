@@ -4,17 +4,17 @@ namespace BangGang;
 
 internal sealed class NavItem : Control, IThemed
 {
-    /// <summary>图标框的边长。和别处的线框图标同一档（见 <see cref="Gfx.DrawGlyph"/> 的调用点）。</summary>
+    /// <summary>图标框的边长。</summary>
     internal const int NavIconBox = 18;
 
     private bool _hover;
 
-    public Glyph Icon { get; }
+    public NavIcon Icon { get; }
     public string Label { get; }
     public bool Selected { get; set; }
     public bool Dot { get; set; }
 
-    public NavItem(string label, Glyph icon)
+    public NavItem(string label, NavIcon icon)
     {
         Label = label;
         Icon = icon;
@@ -38,8 +38,9 @@ internal sealed class NavItem : Control, IThemed
         else if (_hover) RP.Fill(g, rc, 10, SC.AccentHover);
 
         Color ink = Selected ? SC.Accent : SC.Ink;
-        Gfx.DrawGlyph(g, Icon, new RectangleF(14, (Height - NavIconBox) / 2f, NavIconBox, NavIconBox),
-                      Selected ? SC.Accent : SC.InkMuted, 1.5f);
+        // 这套图标是**填充**图形（见 NavIcons），走 FillPath 而不是描边；颜色和文字同一套。
+        NavIcons.Draw(g, Icon, new RectangleF(14, (Height - NavIconBox) / 2f, NavIconBox, NavIconBox),
+                      Selected ? SC.Accent : SC.InkMuted);
         var textRc = new Rectangle(42, 0, Width - 42 - (Dot ? 24 : 12), Height);
         // 选中只改颜色，不改字号/粗细
         TextRenderer.DrawText(g, Label, SF.Get(11.5f), textRc, ink,

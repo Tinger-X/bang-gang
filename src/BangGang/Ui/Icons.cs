@@ -5,14 +5,11 @@ namespace BangGang;
 /// <summary>
 /// 图标形状。除 <see cref="Glyph.Link"/> 外都是 1.6px 圆头线条；
 /// <see cref="Glyph.Link"/> 照搬的是一张**实心**参考图，笔画粗细由形状自己定，见那里的注释。
+///
+/// **设置页左栏那六个不在这里** —— 它们是填充图形，走 <see cref="NavIcons"/>，
+/// 和这一套线框图标是两种东西，别混。
 /// </summary>
-internal enum Glyph
-{
-    // ---- 设置页左栏那六个（形状照 shoots/ 里那几张 SVG 重画成线框版）----
-    Win, Nodes, Tune, Tools, Wand, Info,
-    // ---- 其余各处零散用的 ----
-    Link, Eye, EyeOff, Close, Check, Copy, ChevDown, ChevRight,
-}
+internal enum Glyph { Link, Eye, EyeOff, Close, Check, Copy, ChevDown, ChevRight }
 
 internal static class Gfx
 {
@@ -51,95 +48,6 @@ internal static class Gfx
         using var br = new SolidBrush(c);
         switch (gl)
         {
-            case Glyph.Win:
-                // 快捷按键：一扇四格的窗户。
-                //
-                // 原图是 Windows 徽标那种四块**分离**的窗格，但 18px 下每格只有 4px 见方、
-                // 而笔宽就要占掉 1.5px，四格里那个洞会糊死。所以收成一个方框加贯通十字 ——
-                // 四格的读法一样成立，而且这个尺寸下才真的看得见格子。
-                using (var win = RP.Path(
-                    new Rectangle((int)Math.Round(cx - s * 0.84f), (int)Math.Round(cy - s * 0.84f),
-                                  (int)Math.Round(s * 1.68f), (int)Math.Round(s * 1.68f)),
-                    (int)Math.Round(s * 0.26f)))
-                    g.DrawPath(pen, win);
-                g.DrawLine(pen, cx, cy - s * 0.84f, cx, cy + s * 0.84f);
-                g.DrawLine(pen, cx - s * 0.84f, cy, cx + s * 0.84f, cy);
-                break;
-
-            case Glyph.Nodes:
-                // 模型接入：中心一个圆点，四条朝对角伸出去的短柱。照 llm.svg 的构成 ——
-                // 那个图形就是四段圆头短柱围着一个点。圆头笔帽本身就给出了短柱两端的样子。
-                {
-                    // 沿 45° 走 d 距离时，x/y 上各走 d·k —— 这两个 k 是在**算坐标**，
-                    // 不是在缩图形。写错成「把已经算好的坐标再乘一次 k」会让整个图形
-                    // 缩到 0.44s，比旁边几个小一圈（第一版就是这么错的）。
-                    const float k = 0.70710678f;
-                    float from = s * 0.32f * k, to = s * 1.06f * k;
-                    foreach (var (dx, dy) in new[] { (-1, -1), (1, -1), (-1, 1), (1, 1) })
-                        g.DrawLine(pen, cx + dx * from, cy + dy * from, cx + dx * to, cy + dy * to);
-                    g.FillEllipse(br, cx - s * 0.17f, cy - s * 0.17f, s * 0.34f, s * 0.34f);
-                }
-                break;
-
-            case Glyph.Tune:
-                // 对话参数：三条滑轨加旋钮，三个旋钮位置错开（照 param.svg）。
-                {
-                    float[] kx = { -0.30f, 0.36f, -0.10f };
-                    for (int i = 0; i < 3; i++)
-                    {
-                        float y = cy + (i - 1) * s * 0.62f;
-                        g.DrawLine(pen, cx - s * 0.92f, y, cx + s * 0.92f, y);
-                        g.FillEllipse(br, cx + kx[i] * s - s * 0.22f, y - s * 0.22f, s * 0.44f, s * 0.44f);
-                    }
-                }
-                break;
-
-            case Glyph.Tools:
-                // 工具调用：交叉的扳手与螺丝刀（照 tool.svg）。
-                //
-                // 原图是两把**实心**工具叠在一起，那个密度线框画不出来。只保留「一眼认得出是哪两把」
-                // 的特征：一把的末端开叉（开口扳手的钳口），另一把两端各一道横杠（螺丝刀的刀口与手柄），
-                // 其余全收成一根斜杆。再多加一笔这个尺寸就成一团墨了。
-                {
-                    void L(float x1, float y1, float x2, float y2) =>
-                        g.DrawLine(pen, cx + x1 * s, cy + y1 * s, cx + x2 * s, cy + y2 * s);
-
-                    // 扳手：左上 → 右下的一根斜杆，右下端一个开口叉
-                    L(-0.65f, -0.65f, 0.35f, 0.35f);
-                    L(0.35f, 0.35f, 0.79f, 0.40f);
-                    L(0.35f, 0.35f, 0.40f, 0.79f);
-
-                    // 螺丝刀：左下 → 右上的一根斜杆，右上端一道刀口、左下端一道手柄
-                    L(-0.60f, 0.60f, 0.60f, -0.60f);
-                    L(0.42f, -0.78f, 0.78f, -0.42f);
-                    L(-0.76f, 0.44f, -0.44f, 0.76f);
-                }
-                break;
-
-            case Glyph.Wand:
-                // 界面外观：一根斜魔杖加两颗星（照 ui.svg）。左上那头一道小方框是握柄的分界，
-                // 原图上就有；两颗星一大一小错开，比排成一样大更像「撒出去的」。
-                {
-                    g.DrawLine(pen, cx - s * 0.26f, cy - s * 0.26f, cx + s * 0.72f, cy + s * 0.72f);
-                    using (var grip = RP.Path(
-                        new Rectangle((int)Math.Round(cx - s * 0.56f), (int)Math.Round(cy - s * 0.56f),
-                                      (int)Math.Round(s * 0.30f), (int)Math.Round(s * 0.30f)),
-                        (int)Math.Round(s * 0.08f)))
-                        g.DrawPath(pen, grip);
-
-                    FourStar(g, br, cx + s * 0.50f, cy - s * 0.58f, s * 0.34f);
-                    FourStar(g, br, cx - s * 0.64f, cy + s * 0.12f, s * 0.19f);
-                }
-                break;
-
-            case Glyph.Info:
-                // 软件说明：一个带缺口的圆环加一个感叹号（照 about.svg）。缺口留在左上，
-                // 原图那个环就是断在那儿的 —— 断口是它和「一个圆圈」唯一的区别，别填上。
-                g.DrawArc(pen, cx - s * 0.84f, cy - s * 0.84f, s * 1.68f, s * 1.68f, 245f, 300f);
-                g.DrawLine(pen, cx, cy - s * 0.32f, cx, cy + s * 0.16f);
-                g.FillEllipse(br, cx - s * 0.13f, cy + s * 0.30f, s * 0.26f, s * 0.26f);
-                break;
-
             case Glyph.Link:
                 // 外部链接：一圈**粗圆角方框**，右上角断开，一支同样粗的箭头穿过缺口指到框外。
                 //
@@ -272,22 +180,6 @@ internal static class Gfx
     /// 关闭态先拿 <paramref name="back"/>（输入框底色）画一道加粗斜杠再画细斜杠：
     /// 直接画细线的话斜杠和虹膜会糊在一起，看不出「划掉」的意思。
     /// </summary>
-    /// <summary>
-    /// 四角星：魔杖旁边那些「闪一下」用的。做成四角而不是五角 —— 18px 下五角星的那几个
-    /// 内凹角会糊成一个圆点，四角星至少还看得出是个星。
-    /// </summary>
-    private static void FourStar(Graphics g, Brush br, float cx, float cy, float r)
-    {
-        float w = r * 0.30f;
-        g.FillPolygon(br, new[]
-        {
-            new PointF(cx, cy - r), new PointF(cx + w, cy - w),
-            new PointF(cx + r, cy), new PointF(cx + w, cy + w),
-            new PointF(cx, cy + r), new PointF(cx - w, cy + w),
-            new PointF(cx - r, cy), new PointF(cx - w, cy - w),
-        });
-    }
-
     private static void Eye(Graphics g, Pen pen, Brush br, float cx, float cy, float s, bool off, Color? back)
     {
         float ex = s * 0.92f;              // 眼眶半宽（留出笔宽，别贴到矩形边上被裁）

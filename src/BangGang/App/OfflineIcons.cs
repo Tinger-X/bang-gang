@@ -32,6 +32,7 @@ internal static class OfflineIcons
             DrawIcons(Path.Combine(dir, "out-icons.png"), s);
             DrawRealSize(Path.Combine(dir, "out-icons-18.png"), s);
             DrawSwitches(Path.Combine(dir, "out-switches.png"), s);
+            DrawNavIcons(Path.Combine(dir, "out-navicons.png"), s);
         }
         catch (Exception ex) { Console.WriteLine("icon sheet failed: " + ex); }
         return true;
@@ -109,6 +110,53 @@ internal static class OfflineIcons
         }
         bmp.Save(path, System.Drawing.Imaging.ImageFormat.Png);
         Console.WriteLine($"icons @18px -> {path}");
+    }
+
+    /// <summary>
+    /// 设置页左栏那套图标，两档尺寸画一遍。
+    ///
+    /// 大图看形状**像不像原图**（弧解错了、路径没闭合，大图上一眼看得出来）；
+    /// 18px 那一行按真实尺寸看它们彼此匀不匀 —— 这几张图各自的留白不一样，
+    /// 归一化按路径外框铺满（见 NavIcons.Draw），匀不匀只有并排看才知道。
+    /// </summary>
+    private static void DrawNavIcons(string path, AppSettings settings)
+    {
+        var icons = Enum.GetValues<NavIcon>();
+        const int big = 96, small = NavItem.NavIconBox, pad = 18, colW = 120;
+
+        settings.ThemeMode = "light";
+        settings.ApplyTheme();
+
+        int w = pad * 2 + colW * icons.Length;
+        int h = pad * 2 + big + 26 + small + 26;
+
+        using var bmp = new Bitmap(w, h);
+        using (var g = Graphics.FromImage(bmp))
+        {
+            g.SmoothingMode = SmoothingMode.AntiAlias;
+            g.TextRenderingHint = TextRenderingHint.AntiAlias;
+            g.Clear(Color.White);
+
+            // 18px 那一行画在一条浅色带上，模拟左栏的底色
+            int bandY = pad + big + 26;
+            using (var band = new SolidBrush(SC.RailBg)) g.FillRectangle(band, 0, bandY, w, small + 26);
+
+            foreach (var ic in icons)
+                Console.WriteLine($"  {ic,-6} 外框 {NavIcons.Bounds(ic)}");
+
+            for (int i = 0; i < icons.Length; i++)
+            {
+                float x = pad + i * colW;
+                NavIcons.Draw(g, icons[i], new RectangleF(x, pad, big, big), Color.FromArgb(30, 34, 40));
+                NavIcons.Draw(g, icons[i], new RectangleF(x, bandY + 10, small, small), SC.InkMuted);
+
+                using var f = new Font("Consolas", 8f);
+                g.DrawString(icons[i].ToString(), f, Brushes.Gray, x, pad + big + 4);
+                g.DrawString(small + "px", f, Brushes.Gray, x, bandY + small + 12);
+            }
+        }
+        bmp.Save(path, System.Drawing.Imaging.ImageFormat.Png);
+        Console.WriteLine($"nav icons -> {path}");
     }
 
     /// <summary>
