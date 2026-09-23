@@ -19,6 +19,7 @@ internal static class ToolRegistry
         CalcTool.Def,
         ClipboardTool.Def,
         FileTool.Def,
+        WebSearchTool.Def,
         WebFetchTool.Def,
         SysInfoTool.Def,
     };
@@ -39,6 +40,7 @@ internal static class ToolRegistry
             "calc" => s.ToolCalc,
             "clipboard" => s.ToolClipboard,
             "read_file" => s.ToolFile,
+            "web_search" => s.ToolWebSearch,
             "web_fetch" => s.ToolWebFetch,
             "sys_info" => s.ToolSysInfo,
             // 认不出来的名字一律不放行：这一条是给「设置里删了个工具但模型还记着它」兜底的

@@ -92,6 +92,7 @@ public class AppSettings
     public bool ToolCalc { get; set; } = true;
     public bool ToolClipboard { get; set; } = true;
     public bool ToolFile { get; set; } = true;
+    public bool ToolWebSearch { get; set; } = true;
     public bool ToolWebFetch { get; set; } = true;
     public bool ToolSysInfo { get; set; } = true;
 
@@ -311,7 +312,8 @@ public class AppSettings
         // CopyFrom 是手写逐字段拷贝，新加的字段不写进来就永远拷不过去。
         ToolsEnabled = o.ToolsEnabled;
         ToolNow = o.ToolNow; ToolCalc = o.ToolCalc; ToolClipboard = o.ToolClipboard;
-        ToolFile = o.ToolFile; ToolWebFetch = o.ToolWebFetch; ToolSysInfo = o.ToolSysInfo;
+        ToolFile = o.ToolFile; ToolWebSearch = o.ToolWebSearch;
+        ToolWebFetch = o.ToolWebFetch; ToolSysInfo = o.ToolSysInfo;
         RecordMode = o.RecordMode;
         ThemeMode = o.ThemeMode; WindowBorder = o.WindowBorder;
         Accent = o.Accent; Opacity = o.Opacity;

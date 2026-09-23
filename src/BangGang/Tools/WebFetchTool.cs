@@ -109,7 +109,7 @@ internal static class WebFetchTool
                "逐个抓取 —— 页面的信息常常不都在 HTML 里。\n" +
                "抓取有**层次**限制：用户给的页面算第 1 层，它引用的算第 2 层，再引用的算第 3 层，第 4 层" +
                "会被拒绝。同一层里有多少个地址都能抓，限制的只是嵌套深度。\n" +
-               "它只能读**已知网址**的页面，不能用来搜索 —— 没有搜索功能。",
+               "它只能打开**已知的网址**；要找网址用 web_search。",
         Params = ParamsJson,
         Primary = "url",
         Brief = a => "抓取 " + Host(a.Str("url")),

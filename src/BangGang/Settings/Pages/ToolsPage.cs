@@ -17,18 +17,19 @@ internal sealed class ToolsPage : SettingsPage
     private readonly ToggleSwitch _calc = new();
     private readonly ToggleSwitch _clipboard = new();
     private readonly ToggleSwitch _file = new();
+    private readonly ToggleSwitch _webSearch = new();
     private readonly ToggleSwitch _webFetch = new();
     private readonly ToggleSwitch _sysInfo = new();
 
-    /// <summary>六个单工具开关，只为「恢复默认」与批量接线方便，顺序无关。</summary>
+    /// <summary>单工具开关，只为「恢复默认」与批量接线方便，顺序无关。</summary>
     private readonly ToggleSwitch[] _tools;
 
-    private bool _bAll, _bNow, _bCalc, _bClip, _bFile, _bWeb, _bSys;
-    public ToolsPage() : base("工具调用", "让模型在回答时使用本机的工具：查时间、算数、读文件、抓网页等")
+    private bool _bAll, _bNow, _bCalc, _bClip, _bFile, _bSearch, _bWeb, _bSys;
+    public ToolsPage() : base("工具调用", "让模型在回答时使用本机的工具：查时间、算数、读文件、搜网页等")
     {
         ResetContent();
 
-        _tools = new[] { _now, _calc, _clipboard, _file, _webFetch, _sysInfo };
+        _tools = new[] { _now, _calc, _clipboard, _file, _webSearch, _webFetch, _sysInfo };
         foreach (var t in _tools) t.Changed += MarkChanged;
         // 总开关一变，下面那排的可用性跟着变（见 SyncToolSwitches）。
         _all.Changed += () => { SyncToolSwitches(); MarkChanged(); };
@@ -40,13 +41,17 @@ internal sealed class ToolsPage : SettingsPage
         Stack.Controls.Add(master);
 
         // ---- 每个工具 ----
+        // 「网页搜索」那一行要说清它和别的工具**不一样**：别的工具都只跟本机或用户自己配的接口说话，
+        // 搜索词会发去 AnySearch（第三方）。这条不写出来，用户从界面上看不出来。
         var tools = new GroupCard("可用的工具", "关掉的工具不会告诉模型，它也就不会去调用");
         tools.Add(new SettingRow("时间日期", "「今天几号」「还有几天」——模型自己不知道今天是哪天", _now));
         tools.Add(new SettingRow("计算器", "精确的算术、百分比、幂与开方；比模型自己心算可靠", _calc));
         tools.Add(new SettingRow("剪贴板", "读当前剪贴板里的文本，「帮我看看我刚复制的东西」", _clipboard));
         tools.Add(new SettingRow("文件读取", "读文本、源码与 .docx / .xlsx / .pptx；读不了 PDF", _file));
-        tools.Add(new SettingRow("网页抓取", "抓取用户给出的网址并读出正文；没有搜索功能", _webFetch));
+        tools.Add(new SettingRow("网页搜索", "用 AnySearch 公开额度，无需配置；搜索词会发送到该服务", _webSearch));
+        tools.Add(new SettingRow("网页抓取", "抓取指定网址并读出正文，可往下深入 3 层", _webFetch));
         tools.Add(new SettingRow("系统信息", "屏幕分辨率与缩放、系统版本、本程序版本", _sysInfo));
+        tools.RowH = 56;      // 这一排的说明比别的页长，行高留宽一点免得挤
         tools.Height = tools.MeasureHeight();
         Stack.Controls.Add(tools);
 
@@ -72,6 +77,7 @@ internal sealed class ToolsPage : SettingsPage
             _calc.On = d.ToolCalc;
             _clipboard.On = d.ToolClipboard;
             _file.On = d.ToolFile;
+            _webSearch.On = d.ToolWebSearch;
             _webFetch.On = d.ToolWebFetch;
             _sysInfo.On = d.ToolSysInfo;
             SyncToolSwitches();
@@ -82,10 +88,10 @@ internal sealed class ToolsPage : SettingsPage
     }
 
     /// <summary>
-    /// 总开关关掉时，下面六个一律不可改。
+    /// 总开关关掉时，下面那排一律不可改。
     ///
     /// **灰掉而不是隐藏**：位置留着，用户看得出「这里本来有东西、只是现在不生效」；
-    /// 藏起来的话，他刚关掉总开关就会以为那些开关丢了。而且这六个的开关状态本身仍然有意义
+    /// 藏起来的话，他刚关掉总开关就会以为那些开关丢了。而且它们的开关状态本身仍然有意义
     /// —— 重新打开总开关时它们要原样还在（<see cref="ToolRegistry.Enabled"/> 也是先看总开关）。
     /// </summary>
     private void SyncToolSwitches()
@@ -99,6 +105,7 @@ internal sealed class ToolsPage : SettingsPage
         var d = new AppSettings();
         return _all.On != d.ToolsEnabled || _now.On != d.ToolNow || _calc.On != d.ToolCalc
             || _clipboard.On != d.ToolClipboard || _file.On != d.ToolFile
+            || _webSearch.On != d.ToolWebSearch
             || _webFetch.On != d.ToolWebFetch || _sysInfo.On != d.ToolSysInfo;
     }
 
@@ -107,16 +114,17 @@ internal sealed class ToolsPage : SettingsPage
         // 先把基线落下来再写控件值：ToggleSwitch 的程序赋值**不**触发 Changed，
         // 所以顺序在这里其实无所谓，但和别的页保持一个写法省得以后看错。
         _bAll = s.ToolsEnabled; _bNow = s.ToolNow; _bCalc = s.ToolCalc; _bClip = s.ToolClipboard;
-        _bFile = s.ToolFile; _bWeb = s.ToolWebFetch; _bSys = s.ToolSysInfo;
+        _bFile = s.ToolFile; _bSearch = s.ToolWebSearch; _bWeb = s.ToolWebFetch; _bSys = s.ToolSysInfo;
 
         _all.On = _bAll;
         _now.On = _bNow;
         _calc.On = _bCalc;
         _clipboard.On = _bClip;
         _file.On = _bFile;
+        _webSearch.On = _bSearch;
         _webFetch.On = _bWeb;
         _sysInfo.On = _bSys;
-        SyncToolSwitches();     // 打开浮窗时总开关可能就是关着的，那六个得一开始就是灰的
+        SyncToolSwitches();     // 打开浮窗时总开关可能就是关着的，那排开关得一开始就是灰的
         MarkClean();
     }
 
@@ -127,11 +135,13 @@ internal sealed class ToolsPage : SettingsPage
         target.ToolCalc = _calc.On;
         target.ToolClipboard = _clipboard.On;
         target.ToolFile = _file.On;
+        target.ToolWebSearch = _webSearch.On;
         target.ToolWebFetch = _webFetch.On;
         target.ToolSysInfo = _sysInfo.On;
     }
 
     protected override bool ComputeDirty() =>
         _all.On != _bAll || _now.On != _bNow || _calc.On != _bCalc || _clipboard.On != _bClip
-        || _file.On != _bFile || _webFetch.On != _bWeb || _sysInfo.On != _bSys;
+        || _file.On != _bFile || _webSearch.On != _bSearch
+        || _webFetch.On != _bWeb || _sysInfo.On != _bSys;
 }
