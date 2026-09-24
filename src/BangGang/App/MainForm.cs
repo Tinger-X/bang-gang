@@ -13,7 +13,7 @@ namespace BangGang;
 public partial class MainForm : Form, IMessageFilter
 {
     public const string WindowTitle = "帮帮";
-    public const string AppVersion = "v0.9.38";
+    public const string AppVersion = "v0.9.39";
 
     private const uint Affinity = Native.WDA_EXCLUDEFROMCAPTURE;
 
@@ -374,6 +374,12 @@ public partial class MainForm : Form, IMessageFilter
         ApplyAffinity();
         CaptureProtector.Install();   // 保护对话框等所有顶层窗口
         ReapplyHotkeys();
+
+        // 开库时如果发生了「旧库被挪开」这种事，在这里说一句。
+        // 它发生在构造函数里（AppSettings.Load 第一次碰数据库），那时顶栏那条状态还没有；
+        // 而它**必须让人看见** —— 上一版的教训是只写在「软件说明」页，
+        // 结果没人知道自己的数据其实一直没在存（见 Db.ProbeOnce 那段注释）。
+        if (Db.TakeNotice() is { Length: > 0 } dbNotice) FlashStatus(dbNotice);
 
         // Debug + BANGGANG_DUMP=1 时，把对话区离屏画成 PNG。
         //

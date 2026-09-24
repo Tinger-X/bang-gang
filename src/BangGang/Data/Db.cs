@@ -28,6 +28,23 @@ internal static class Db
     private static bool _probed;
     private static bool _ok;
     private static string _reason = "";
+    private static string _notice = "";
+
+    /// <summary>
+    /// 开库时发生的一件**用户该知道**的事（目前只有「旧库被挪开了」这一种），
+    /// 没发生就是空串。界面在能显示状态的时候取一次并清掉。
+    ///
+    /// 存在的理由：这类事发生在构造函数里，那时顶栏那条状态还没有；
+    /// 而它又**必须让人看见** —— 上一版的教训是把它只写在「软件说明」页，
+    /// 结果没人知道自己的数据其实一直没在存。
+    /// </summary>
+    public static string TakeNotice()
+    {
+        ProbeOnce();
+        string n = _notice;
+        _notice = "";
+        return n;
+    }
 
     private static readonly object Gate = new();
 
@@ -79,14 +96,29 @@ internal static class Db
                 }
 
                 var db = SqliteDb.Open(FilePath);
+                Configure(db);
 
-                // foreign_keys 是**每连接**的开关，不是存在文件里的设置 —— 漏了它，
-                // ON DELETE CASCADE 会静默不生效，删会话只删掉 conversations 那一行，
-                // 消息全留在库里变成孤儿（而且界面完全看不出问题，直到某天要统计）。
-                db.Exec("PRAGMA foreign_keys = ON");
-                db.Exec("PRAGMA busy_timeout = 3000");
+                // 结构版本对不上（多半是手上这个库由更早的一版建的）：**挪开，从空库重来**。
+                //
+                // 这里原来是「拒绝打开」。那是个坏设计，后果实测过：Db.Available 变 false 之后，
+                // 存图那条路**照样能落盘**（写文件不依赖数据库），而登记与回收全都静默返回 ——
+                // 用户看到的是「程序一切正常，但删掉的图永远留在文件夹里」，
+                // 而唯一的那句说明躺在「软件说明」页，没人会去打开。
+                // **静默降级比直接报错难查得多。**
+                //
+                // 挪开而不是删掉：删是不可逆的，挪开只是让它不再挡路，想找回随时找得回。
+                long ver = db.QueryLong("PRAGMA user_version");
+                if (ver != 0 && ver != SchemaVersion)
+                {
+                    db.Dispose();            // Windows 上文件被占用时改不了名，先松手
+                    string parked = ParkIncompatible(FilePath, ver);
+                    _notice = $"数据库结构已更新，旧数据挪到了 {Path.GetFileName(parked)}，本次从空库重新开始";
+                    Trace.Log("db: parked incompatible store -> " + parked);
+                    db = SqliteDb.Open(FilePath);
+                    Configure(db);
+                }
+
                 EnsureSchema(db);
-
                 _db = db;
                 _ok = true;
             }
@@ -95,6 +127,33 @@ internal static class Db
                 _reason = ex.Message;
             }
         }
+    }
+
+    /// <summary>
+    /// 每连接都要设的那几条。<c>foreign_keys</c> 尤其：它是**每连接**的开关、
+    /// 不是存在文件里的设置 —— 漏了它，<c>ON DELETE CASCADE</c> 会静默失效，
+    /// 删会话只删掉 <c>conversations</c> 那一行，消息全留下来变成孤儿，
+    /// 而界面上完全看不出问题。所以开库路径上每一处 <c>Open</c> 后面都要跟一句这个。
+    /// </summary>
+    private static void Configure(SqliteDb db)
+    {
+        db.Exec("PRAGMA foreign_keys = ON");
+        db.Exec("PRAGMA busy_timeout = 3000");
+    }
+
+    /// <summary>
+    /// 把结构对不上的旧库挪到一边，返回挪到了哪儿。
+    /// **不删**，而且带 <c>-journal</c> 这些伴生文件一起挪 —— 把它们留下的话，
+    /// 新建的同名库会被那个日志文件当成「有未提交的事务」，打开时报出莫名其妙的错。
+    /// </summary>
+    internal static string ParkIncompatible(string path, long oldVersion)
+    {
+        string dst = path + ".v" + oldVersion;
+        for (int n = 2; File.Exists(dst); n++) dst = path + ".v" + oldVersion + "_" + n;
+        File.Move(path, dst);
+        foreach (string ext in new[] { "-journal", "-wal", "-shm" })
+            if (File.Exists(path + ext)) File.Move(path + ext, dst + ext);
+        return dst;
     }
 
     /// <summary>
@@ -181,19 +240,9 @@ internal static class Db
 
         long ver = db.QueryLong("PRAGMA user_version");
 
-        // **这里没有任何迁移代码，是有意的。** 项目尚未推广，数据结构改了就直接改，
-        // 旧库由使用者自己删掉重来 —— 写一套「从上一版升上来」的代码，在没有真实用户
-        // 数据要保的前提下只是凭空多一份要维护、要测试、还测不到的东西。
-        //
-        // 代价是结构一变，手上那个旧库就打不开了。所以下面**明说一句**，
-        // 而不是让它在某条冷路径上以「no such column」的形式炸出来 ——
-        // 那种错看上去像程序坏了，实际只是数据是上一版的。
-        if (ver != 0 && ver != SchemaVersion)
-            throw new SqliteException(
-                "数据库结构是另一个版本的（库 " + ver + "，本程序 " + SchemaVersion +
-                "）。本程序不做旧库迁移，删掉这个文件重新开始即可：" + FilePath, -1);
-
-        // 新库盖个章，下次打开才知道它是不是本版的。
+        // 走到这里版本一定是对的：对不上的那些在 Open 那一步就已经挪开、重开空库了。
+        // **这里不写迁移代码是有意的**（项目尚未推广，结构改了就直接改）——
+        // 但也**不能拒绝打开**：拒绝的后果见 Open 里那段，是静默不落盘。
         if (ver == 0) db.Exec("PRAGMA user_version = " + SchemaVersion);
     }
 }

@@ -45,6 +45,40 @@ internal static class OfflineDb
 
     private static void Run()
     {
+        // ---- 0. 旧库挪开：**真跑一遍用户遇到的那个场景** ----
+        //
+        // 上一版在这里栽过：结构对不上时「拒绝打开」，于是 Db.Available 变 false，
+        // 而存图那条路照样落盘（写文件不依赖数据库）、登记与回收全静默返回 ——
+        // 用户看到的是「程序一切正常，但删掉的图永远留在文件夹里」。
+        // 所以这一段必须真开一次库，而不是只测那个挪文件的辅助函数。
+        Console.WriteLine("---- 0. 结构与本版不符的旧库 ----");
+        string dbPath = Db.FilePath;
+        try { if (File.Exists(dbPath)) File.Delete(dbPath); } catch { }
+        foreach (string ext in new[] { "-journal", "-wal", "-shm" })
+            try { if (File.Exists(dbPath + ext)) File.Delete(dbPath + ext); } catch { }
+
+        // 造一个「上一版建的」库：结构故意对不上
+        using (var old = SqliteDb.Open(dbPath))
+        {
+            old.Exec("CREATE TABLE IF NOT EXISTS marker(x TEXT)");
+            old.Exec("INSERT INTO marker VALUES('上一版留下的')");
+            old.Exec("PRAGMA user_version = 1");
+        }
+
+        Check("结构对不上时**仍然开得起库**（不是静默失效）", Db.Available, Db.UnavailableReason);
+        string notice = Db.TakeNotice();
+        Check("**留了一句给界面显示的说明**", notice.Length > 0, notice);
+        Check("旧库被挪到 .v1", File.Exists(dbPath + ".v1"));
+        if (File.Exists(dbPath + ".v1"))
+        {
+            Check("**旧库没有被删掉**（想找回随时找得回）",
+                  new FileInfo(dbPath + ".v1").Length > 0);
+        }
+        Check("新库是空的、盖了本版的结构号", Db.Conn.QueryLong("PRAGMA user_version") == 2);
+        // 收尾：把挪开的那份清掉，免得下次跑探针时它已经在那儿、撞名
+        try { File.Delete(dbPath + ".v1"); } catch { }
+
+        Console.WriteLine();
         Console.WriteLine("---- 1. DLL 探测 ----");
         string ver = Sqlite.VersionText();
         Console.WriteLine($"winsqlite3 版本        : {(ver.Length > 0 ? ver : "(取不到)")}");
